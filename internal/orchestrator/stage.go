@@ -1,16 +1,21 @@
-package main
+// Package orchestrator is the deterministic process that owns Ticket state,
+// pane placement and Stage transitions (ADR 0001).
+package orchestrator
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"harness/internal/runner"
 )
 
 // Stage is one step of the Pipeline, carried out by a fresh agent session in
@@ -33,7 +38,7 @@ var (
 // Orchestrator owns Ticket state, pane placement and Stage transitions. It
 // makes no judgment calls: what it cannot advance by rule becomes a Wake.
 type Orchestrator struct {
-	run       Runner
+	run       runner.Runner
 	repo      string
 	mainPane  string // the Main session's pane, from HERDR_PANE_ID at launch
 	workspace string
@@ -46,7 +51,33 @@ type Orchestrator struct {
 	mu       sync.Mutex // guards state
 	state    *State
 	reportMu sync.Mutex     // one line at a time into the Main session
-	sessions sync.WaitGroup // Ticket goroutines; Run does not wait for them, because 'stop' must not wait out a Stage
+	unsent   []string       // lines the Main session has not taken yet, oldest first
+	inFlight sync.WaitGroup // Ticket goroutines; Run does not wait for them, because 'stop' must not wait out a Stage
+}
+
+// Config is what 'harness start' knows at launch.
+type Config struct {
+	Run       runner.Runner
+	Repo      string // the Target repo's root
+	MainPane  string // HERDR_PANE_ID of the Main session
+	Workspace string // HERDR_WORKSPACE_ID
+	APIKey    string // TYPESAFE_API_KEY
+	Tick      time.Duration
+	PollPRs   time.Duration
+	Max       int
+	Log       *log.Logger
+}
+
+// New loads the Target repo's state file, so a restarted Orchestrator resumes.
+func New(cfg Config) (*Orchestrator, error) {
+	state, err := loadState(cfg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	return &Orchestrator{
+		run: cfg.Run, repo: cfg.Repo, mainPane: cfg.MainPane, workspace: cfg.Workspace, apiKey: cfg.APIKey,
+		tick: cfg.Tick, pollPRs: cfg.PollPRs, max: cfg.Max, log: cfg.Log, state: state,
+	}, nil
 }
 
 var errParked = errors.New("parked")
@@ -69,14 +100,27 @@ func resultName(st Stage, round int) string {
 	return st.Name + ".md"
 }
 
-// report sends one event line into the Main session's pane.
+// report sends one event line into the Main session's pane. herdr refuses a
+// prompt while the Main session is blocked on a prompt of its own, so a line
+// that cannot be delivered is kept and sent, in order, once it can be.
 func (o *Orchestrator) report(format string, args ...any) {
 	line := "[harness] " + fmt.Sprintf(format, args...)
 	o.log.Print(line)
 	o.reportMu.Lock()
+	o.unsent = append(o.unsent, line)
+	o.reportMu.Unlock()
+	o.flush()
+}
+
+func (o *Orchestrator) flush() {
+	o.reportMu.Lock()
 	defer o.reportMu.Unlock()
-	if _, err := o.run(o.repo, "herdr", "agent", "prompt", o.mainPane, line); err != nil {
-		o.log.Printf("could not reach the Main session: %v", err)
+	for len(o.unsent) > 0 {
+		if _, err := o.run(o.repo, "herdr", "agent", "prompt", o.mainPane, o.unsent[0]); err != nil {
+			o.log.Printf("the Main session did not take %q, will retry: %v", o.unsent[0], err)
+			return
+		}
+		o.unsent = o.unsent[1:]
 	}
 }
 
@@ -98,10 +142,13 @@ func (o *Orchestrator) update(ticket string, change func(*TicketState)) {
 func (o *Orchestrator) ticket(ticket string) TicketState {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if ts := o.state.Tickets[ticket]; ts != nil {
-		return *ts
+	ts := o.state.Tickets[ticket]
+	if ts == nil {
+		return TicketState{}
 	}
-	return TicketState{}
+	snapshot := *ts
+	snapshot.Panes = maps.Clone(ts.Panes)
+	return snapshot
 }
 
 // runStage runs one Stage to its completion rule and returns the result file's
@@ -118,7 +165,11 @@ func (o *Orchestrator) runStage(ctx context.Context, ticket string, st Stage, ro
 	if body, ok := done(); ok {
 		return body, nil
 	}
-	o.update(ticket, func(ts *TicketState) { ts.Stage, ts.Round, ts.Retried = st.Name, round, false })
+	o.update(ticket, func(ts *TicketState) {
+		if ts.Stage != st.Name || ts.Round != round { // a resumed Stage keeps its spent retry
+			ts.Stage, ts.Round, ts.Retried = st.Name, round, false
+		}
+	})
 	inputs = append([][2]string{{"Ticket", ticket}, {"Round", strconv.Itoa(round)}, {"Worktree", o.worktree(ticket)}, {"Run directory", o.runDir(ticket)}, {"Result file", file}}, inputs...)
 
 	for {
@@ -135,7 +186,8 @@ func (o *Orchestrator) runStage(ctx context.Context, ticket string, st Stage, ro
 			return "", fmt.Errorf("%w: %s %s again after a retry", errParked, st.Name, reason)
 		}
 		pane := ts.Panes[st.Name]
-		o.consume("retry-" + ticket) // a retry asked for before this Wake is not an answer to it
+		o.consume("retry-" + ticket) // a command sent before this Wake is not an answer to it
+		o.consume("park-" + ticket)
 		o.report("WAKE %s %s %s at %s", ticket, st.Name, reason, o.locate(pane))
 		switch o.hold(ctx, ticket, pane, done) {
 		case "retry":
@@ -265,7 +317,10 @@ func (o *Orchestrator) hold(ctx context.Context, ticket, pane string, done func(
 	}
 }
 
+// sleep is one tick of every polling loop, and so also the moment undelivered
+// lines are tried again.
 func (o *Orchestrator) sleep(ctx context.Context) bool {
+	o.flush()
 	select {
 	case <-ctx.Done():
 		return false
@@ -328,11 +383,14 @@ func (o *Orchestrator) freshPane(ticket string, st Stage) (string, error) {
 	return pane, nil
 }
 
-func (o *Orchestrator) controlPath(name string) string {
-	return filepath.Join(o.repo, ".harness", "control", name)
+// ControlFile is where a control command (stop, retry-<ticket>, park-<ticket>,
+// address-<ticket>) is left for the running Orchestrator.
+// ponytail: a polled directory; a socket if latency ever matters.
+func ControlFile(repo, name string) string {
+	return filepath.Join(repo, ".harness", "control", name)
 }
 
 // consume reports whether a control command was waiting, and removes it.
 func (o *Orchestrator) consume(name string) bool {
-	return os.Remove(o.controlPath(name)) == nil
+	return os.Remove(ControlFile(o.repo, name)) == nil
 }

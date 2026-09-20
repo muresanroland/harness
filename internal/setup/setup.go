@@ -1,7 +1,8 @@
-package main
+// Package setup is the thin 'harness init': it installs the shipped skills
+// into a Target repo and preflights it.
+package setup
 
 import (
-	"embed"
 	"errors"
 	"fmt"
 	"io"
@@ -9,24 +10,24 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"harness/internal/runner"
+	"harness/skills"
 )
 
-//go:embed skills
-var shippedSkills embed.FS
-
-// installSkills writes the Harness's skills to <repo>/.agents/skills and links
+// InstallSkills writes the Harness's skills to <repo>/.agents/skills and links
 // them from <repo>/.claude/skills. An existing skill file is the Target repo's
 // own and is left alone unless force.
-func installSkills(repo string, force bool) error {
-	err := fs.WalkDir(shippedSkills, "skills", func(path string, d fs.DirEntry, err error) error {
+func InstallSkills(repo string, force bool) error {
+	err := fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		dest := filepath.Join(repo, ".agents", path)
+		dest := filepath.Join(repo, ".agents", "skills", path)
 		if _, err := os.Lstat(dest); err == nil && !force {
 			return nil
 		}
-		body, err := shippedSkills.ReadFile(path)
+		body, err := skills.FS.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -38,7 +39,7 @@ func installSkills(repo string, force bool) error {
 	if err != nil {
 		return err
 	}
-	names, err := shippedSkills.ReadDir("skills")
+	names, err := skills.FS.ReadDir(".")
 	if err != nil {
 		return err
 	}
@@ -54,11 +55,11 @@ func installSkills(repo string, force bool) error {
 			return err
 		}
 	}
-	return ignoreRunDir(repo)
+	return IgnoreRunDir(repo)
 }
 
-// ignoreRunDir adds .harness/ to the Target repo's .gitignore once.
-func ignoreRunDir(repo string) error {
+// IgnoreRunDir adds .harness/ to the Target repo's .gitignore once.
+func IgnoreRunDir(repo string) error {
 	path := filepath.Join(repo, ".gitignore")
 	existing, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -75,8 +76,8 @@ func ignoreRunDir(repo string) error {
 	return os.WriteFile(path, append(existing, ".harness/\n"...), 0o644)
 }
 
-// preflight returns one specific message per missing prerequisite.
-func preflight(repo string, run Runner, env func(string) string) []string {
+// Preflight returns one specific message per missing prerequisite.
+func Preflight(repo string, run runner.Runner, env func(string) string) []string {
 	var missing []string
 	if _, err := os.Stat(filepath.Join(repo, ".beads")); err != nil {
 		missing = append(missing, "no bd workspace here: run 'bd init'")
@@ -105,7 +106,8 @@ func hasSkill(repo, name string) bool {
 	return false
 }
 
-func reportMissing(out io.Writer, missing []string) int {
+// ReportMissing prints each missing prerequisite and returns the exit code.
+func ReportMissing(out io.Writer, missing []string) int {
 	for _, m := range missing {
 		fmt.Fprintln(out, "preflight:", m)
 	}

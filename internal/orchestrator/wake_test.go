@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"context"
@@ -74,7 +74,7 @@ func TestEachWakeTriggerSendsAWakeLineAndRetryRestartsTheStage(t *testing.T) {
 			if got := o.ticket("hx-1").Status; got != statusPROpen {
 				t.Errorf("status after retry = %q, want %q", got, statusPROpen)
 			}
-			if starts := w.called("herdr agent start h-hx-1-implement"); len(starts) != 2 {
+			if starts := w.Called("herdr agent start h-hx-1-implement"); len(starts) != 2 {
 				t.Errorf("implement sessions = %d, want a second, fresh one", len(starts))
 			}
 		})
@@ -97,7 +97,7 @@ func TestBlockedSessionWakesMainThenContinuesWhenTheUserAnswers(t *testing.T) {
 	if got := o.ticket("hx-1").Status; got != statusPROpen {
 		t.Errorf("status = %q, want %q", got, statusPROpen)
 	}
-	if starts := w.called("herdr agent start h-hx-1-implement"); len(starts) != 1 {
+	if starts := w.Called("herdr agent start h-hx-1-implement"); len(starts) != 1 {
 		t.Errorf("a blocked session must not be restarted; sessions = %d", len(starts))
 	}
 }
@@ -151,10 +151,46 @@ func TestNudgedSessionThatThenWritesDoneAdvancesWithoutARetry(t *testing.T) {
 	w.awaitLine("WAKE hx-1 implement went idle")
 	writeFile(t, file, "STATUS: done\n") // the Main session's follow-up prompt worked
 	<-finished
-	if starts := w.called("herdr agent start h-hx-1-implement"); len(starts) != 1 {
+	if starts := w.Called("herdr agent start h-hx-1-implement"); len(starts) != 1 {
 		t.Errorf("implement sessions = %d, want 1", len(starts))
 	}
 	if got := o.ticket("hx-1").Status; got != statusPROpen {
 		t.Errorf("status = %q", got)
+	}
+}
+
+func TestCommandsSentBeforeAWakeDoNotAnswerIt(t *testing.T) {
+	w, o := newWorld(t, &bdTicket{ID: "hx-1"})
+	w.control("park-hx-1") // sent while the Ticket was running normally
+	w.control("retry-hx-1")
+	w.session = func(prompt) (string, string) { return "", "idle" }
+	finished := make(chan struct{})
+	go func() { o.runTicket(context.Background(), "hx-1"); close(finished) }()
+
+	w.awaitLine("WAKE hx-1 implement")
+	select {
+	case <-finished:
+		t.Fatal("a stale command answered the Wake")
+	case <-time.After(20 * time.Millisecond):
+	}
+	w.control("park-hx-1")
+	<-finished
+}
+
+func TestRestartDoesNotGrantASecondRetry(t *testing.T) {
+	w, o := newWorld(t, &bdTicket{ID: "hx-1"})
+	w.session = func(prompt) (string, string) { return "STATUS: failed\n", "idle" }
+	// The state a killed Orchestrator left behind: Implement was already retried.
+	o.update("hx-1", func(ts *TicketState) { ts.Stage, ts.Round, ts.Retried = "implement", 0, true })
+
+	o.runTicket(context.Background(), "hx-1")
+
+	if ts := o.ticket("hx-1"); ts.Status != statusParked {
+		t.Errorf("state after resume = %+v, want parked: a restart must not grant another retry", ts)
+	}
+	for _, line := range w.mainLines() {
+		if strings.Contains(line, "WAKE") {
+			t.Errorf("unexpected %q: the one retry was already spent", line)
+		}
 	}
 }

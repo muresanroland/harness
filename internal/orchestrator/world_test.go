@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"encoding/json"
@@ -14,27 +14,32 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"harness/internal/runner/runnertest"
+	"harness/internal/setup"
 )
 
 // world fakes everything behind the Runner seam: a herdr session, a bd
 // workspace and gh. Sessions "work" synchronously inside 'agent prompt': the
 // session hook decides what result file a Stage's session leaves behind.
 type world struct {
-	*fake
+	*runnertest.Fake
 	t    *testing.T
 	repo string
 
-	mu      sync.Mutex
-	nextID  int
-	tabs    []string
-	panes   []paneInfo
-	agents  map[string]string // pane id -> herdr agent status
-	main    []string          // lines the Main session received
-	tickets []*bdTicket
-	prs     map[string]string // PR url -> gh JSON
-	merged  bool              // every PR is merged as soon as gh is asked about it
-	live    int               // Tickets between worktree creation and tab close
-	peak    int
+	mu          sync.Mutex
+	nextID      int
+	tabs        []string
+	panes       []paneInfo
+	agents      map[string]string // pane id -> herdr agent status
+	main        []string          // lines the Main session received
+	tickets     []*bdTicket
+	prs         map[string]string // PR url -> gh JSON
+	mainBlocked bool              // the Main session refuses prompts: agent_blocked
+	failing     map[string]error  // command prefix -> the error its next call fails with
+	merged      bool              // every PR is merged as soon as gh is asked about it
+	live        int               // Tickets between worktree creation and tab close
+	peak        int
 
 	// session plays one Stage session: it returns the result file's content
 	// ("" writes nothing) and the agent status the session settles in.
@@ -87,18 +92,18 @@ func succeed(p prompt) (string, string) {
 
 func newWorld(t *testing.T, tickets ...*bdTicket) (*world, *Orchestrator) {
 	t.Helper()
-	repo := preparedRepo(t)
-	if err := installSkills(repo, false); err != nil {
+	repo := t.TempDir()
+	if err := setup.InstallSkills(repo, false); err != nil {
 		t.Fatal(err)
 	}
-	w := &world{fake: &fake{}, t: t, repo: repo, agents: map[string]string{}, prs: map[string]string{}, tickets: tickets, session: succeed}
+	w := &world{Fake: &runnertest.Fake{}, t: t, repo: repo, agents: map[string]string{}, prs: map[string]string{}, tickets: tickets, session: succeed}
 	for _, ticket := range tickets {
 		ticket.Status, ticket.IssueType = "open", "task"
 	}
-	w.fake.argv = w.handle
+	w.Fake.Argv = w.handle
 	state, _ := loadState(repo)
 	o := &Orchestrator{
-		run: w.run, repo: repo, mainPane: "main", workspace: "w1", apiKey: "sk-test",
+		run: w.Run, repo: repo, mainPane: "main", workspace: "w1", apiKey: "sk-test",
 		tick: time.Millisecond, max: 3, log: log.New(io.Discard, "", 0), state: state,
 	}
 	return w, o
@@ -127,6 +132,12 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cmd := strings.Join(argv, " ")
+	for prefix, err := range w.failing {
+		if strings.HasPrefix(cmd, prefix) {
+			delete(w.failing, prefix)
+			return "", err
+		}
+	}
 	switch {
 	case strings.HasPrefix(cmd, "herdr tab list"):
 		tabs := []tabInfo{}
@@ -165,6 +176,9 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 		w.agents[flagValue(argv, "--pane")] = "idle"
 		return reply(map[string]any{})
 	case strings.HasPrefix(cmd, "herdr agent prompt"):
+		if argv[3] == "main" && w.mainBlocked {
+			return "", errors.New(`{"error":{"code":"agent_blocked"}}`)
+		}
 		if argv[3] == "main" {
 			w.main = append(w.main, argv[4])
 			return reply(map[string]any{})
@@ -302,4 +316,14 @@ func writeFile(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// failOnce makes the next command starting with prefix fail.
+func (w *world) failOnce(prefix string, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failing == nil {
+		w.failing = map[string]error{}
+	}
+	w.failing[prefix] = err
 }

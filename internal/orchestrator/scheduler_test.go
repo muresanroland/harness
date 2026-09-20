@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"bytes"
@@ -23,7 +23,7 @@ func runEpic(t *testing.T, o *Orchestrator) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the Orchestrator never finished the Epic")
 	}
-	o.sessions.Wait()
+	o.inFlight.Wait()
 }
 
 func TestSchedulerRunsEveryReadyTicketButNeverMoreThanMaxAtOnce(t *testing.T) {
@@ -40,7 +40,7 @@ func TestSchedulerRunsEveryReadyTicketButNeverMoreThanMaxAtOnce(t *testing.T) {
 
 	runEpic(t, o)
 
-	if got := len(w.called("bd worktree create")); got != 5 {
+	if got := len(w.Called("bd worktree create")); got != 5 {
 		t.Errorf("Tickets run = %d, want 5", got)
 	}
 	if w.peak != 3 {
@@ -55,14 +55,14 @@ func TestBlockedTicketStartsOnlyAfterItsDependencyIsMergedAndClosed(t *testing.T
 
 	runEpic(t, o)
 
-	order := strings.Join(w.calls, "\n")
+	order := strings.Join(w.Calls(), "\n")
 	closed := strings.Index(order, "bd close hx-1")
 	started := strings.Index(order, "bd worktree create "+o.worktree("hx-2"))
 	if closed < 0 || started < 0 || started < closed {
 		t.Errorf("hx-2 must start after hx-1 is closed (close at %d, start at %d)", closed, started)
 	}
 	for _, want := range []string{"bd worktree remove " + o.worktree("hx-1"), "git branch -D hx-1"} {
-		if len(w.called(want)) != 1 {
+		if len(w.Called(want)) != 1 {
 			t.Errorf("merge cleanup missing %q", want)
 		}
 	}
@@ -71,20 +71,22 @@ func TestBlockedTicketStartsOnlyAfterItsDependencyIsMergedAndClosed(t *testing.T
 	}
 }
 
-func TestSecondStartInTheSameRepoRefuses(t *testing.T) {
-	w, _ := newWorld(t)
-	release, err := acquireLock(w.repo) // a live Orchestrator: this process
+func TestOneRunPerTargetRepoButAStaleLockDoesNotBlockARestart(t *testing.T) {
+	repo := t.TempDir()
+	release, err := AcquireLock(repo) // a live Orchestrator: this process
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if code := cli([]string{"start", "hx", "--foreground"}, &out, w.repo, w.run, herdrEnv); code == 0 || !strings.Contains(out.String(), "already running") {
-		t.Errorf("second start: exit %d, output %q", code, out.String())
+	if _, err := AcquireLock(repo); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Errorf("second lock = %v, want a refusal", err)
+	}
+	if LockHolder(repo) != os.Getpid() {
+		t.Errorf("LockHolder = %d, want this process", LockHolder(repo))
 	}
 
 	release()
-	os.WriteFile(lockPath(w.repo), []byte("999999"), 0o644) // a killed Orchestrator's stale lock
-	if _, err := acquireLock(w.repo); err != nil {
+	os.WriteFile(lockPath(repo), []byte("999999"), 0o644) // a killed Orchestrator's stale lock
+	if _, err := AcquireLock(repo); err != nil {
 		t.Errorf("a stale lock must not block a restart: %v", err)
 	}
 }
@@ -101,7 +103,7 @@ func TestClosedPRParksTheTicketAndConflictIsReportedExactlyOnce(t *testing.T) {
 	time.Sleep(30 * time.Millisecond) // many more polls
 	w.control("stop")
 	<-finished
-	o.sessions.Wait()
+	o.inFlight.Wait()
 
 	conflicts := 0
 	for _, line := range w.mainLines() {
@@ -115,7 +117,7 @@ func TestClosedPRParksTheTicketAndConflictIsReportedExactlyOnce(t *testing.T) {
 	if got := o.ticket("hx-1").Status; got != statusParked {
 		t.Errorf("hx-1 status = %q, want parked", got)
 	}
-	if len(w.called("bd close")) != 0 {
+	if len(w.Called("bd close")) != 0 {
 		t.Errorf("no Ticket may be closed without a merge")
 	}
 }
@@ -133,13 +135,13 @@ func TestKilledRunResumesAtTheRightStageWithoutRedoingFinishedOnes(t *testing.T)
 		return succeed(p)
 	}
 	o.Run(ctx, "hx")
-	o.sessions.Wait()
+	o.inFlight.Wait()
 	if ts := o.ticket("hx-1"); ts.Status != statusRunning || ts.Stage != "review" || ts.Round != 1 {
 		t.Fatalf("state when killed = %+v", ts)
 	}
 
 	var status bytes.Buffer
-	cli([]string{"status"}, &status, w.repo, w.run, herdrEnv)
+	PrintStatus(&status, w.repo)
 	if !strings.Contains(status.String(), "hx-1") || !strings.Contains(status.String(), "review round 1") {
 		t.Errorf("status output:\n%s", status.String())
 	}
@@ -151,17 +153,17 @@ func TestKilledRunResumesAtTheRightStageWithoutRedoingFinishedOnes(t *testing.T)
 		t.Fatal(err)
 	}
 	resumed := &Orchestrator{run: o.run, repo: o.repo, mainPane: o.mainPane, workspace: o.workspace, tick: o.tick, max: o.max, log: o.log, state: state}
-	before := len(w.called("herdr agent start"))
+	before := len(w.Called("herdr agent start"))
 	runEpic(t, resumed)
 
 	var stages []string
-	for _, call := range w.called("herdr agent start")[before:] {
+	for _, call := range w.Called("herdr agent start")[before:] {
 		stages = append(stages, strings.Fields(call)[3])
 	}
 	if got := fmt.Sprint(stages); got != "[h-hx-1-review h-hx-1-debate h-hx-1-fix]" {
 		t.Errorf("sessions after resume = %s; Implement was done and Review starts again from its beginning", got)
 	}
-	if got := len(w.called("bd worktree create")); got != 1 {
+	if got := len(w.Called("bd worktree create")); got != 1 {
 		t.Errorf("worktree created %d times", got)
 	}
 }
@@ -173,18 +175,13 @@ func TestStopExitsWithStateSavedAndLeavesPanesAlone(t *testing.T) {
 	go func() { finished <- o.Run(context.Background(), "hx") }()
 	w.awaitLine("WAKE hx-1")
 
-	var out bytes.Buffer
-	release, _ := acquireLock(w.repo)
-	defer release()
-	if code := cli([]string{"stop"}, &out, w.repo, w.run, herdrEnv); code != 0 {
-		t.Fatalf("harness stop: %s", out.String())
-	}
+	w.control("stop")
 	if err := <-finished; err != nil {
 		t.Fatalf("Run after stop: %v", err)
 	}
-	o.sessions.Wait()
+	o.inFlight.Wait()
 
-	if len(w.called("herdr pane close"))+len(w.called("herdr tab close")) != 0 {
+	if len(w.Called("herdr pane close"))+len(w.Called("herdr tab close")) != 0 {
 		t.Errorf("stop must leave live panes alone")
 	}
 	saved, _ := loadState(w.repo)
@@ -208,7 +205,7 @@ func TestRetryUnparksAParkedTicket(t *testing.T) {
 	w.mu.Unlock()
 	w.control("retry-hx-1")
 	<-finished
-	o.sessions.Wait()
+	o.inFlight.Wait()
 	if got := o.ticket("hx-1").Status; got != statusMerged {
 		t.Errorf("status = %q, want the Ticket to run to a merge after the retry", got)
 	}
@@ -245,12 +242,12 @@ func TestAddressCommandStartsAFreshSessionInTheKeptWorktree(t *testing.T) {
 	w.awaitLine("hx-1 address done")
 	w.control("stop")
 	<-finished
-	o.sessions.Wait()
+	o.inFlight.Wait()
 
 	if !strings.Contains(addressPrompt.text, "rename this") || !strings.Contains(addressPrompt.text, "Conflicts with main: yes") {
 		t.Errorf("address prompt:\n%s", addressPrompt.text)
 	}
-	tabs := w.called("herdr tab create")
+	tabs := w.Called("herdr tab create")
 	if len(tabs) != 2 || !strings.Contains(tabs[1], "--cwd "+o.worktree("hx-1")) {
 		t.Errorf("address must reopen a Ticket tab in the kept worktree: %q", tabs)
 	}

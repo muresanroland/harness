@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 
 func TestNoArgsPrintsUsage(t *testing.T) {
 	var out bytes.Buffer
-	code := cli(nil, &out, t.TempDir(), nil, nil)
+	code := Run(nil, &out, t.TempDir(), nil, nil)
 	if code == 0 {
 		t.Errorf("exit code = 0, want non-zero")
 	}
@@ -21,7 +21,7 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 
 func TestUnknownCommandPrintsUsage(t *testing.T) {
 	var out bytes.Buffer
-	if code := cli([]string{"bogus"}, &out, t.TempDir(), nil, nil); code == 0 {
+	if code := Run([]string{"bogus"}, &out, t.TempDir(), nil, nil); code == 0 {
 		t.Errorf("exit code = 0, want non-zero")
 	}
 	if !strings.Contains(out.String(), "usage:") {

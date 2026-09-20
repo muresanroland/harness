@@ -9,11 +9,11 @@ You are the Fix Stage of the Harness Pipeline, in a fresh session inside the Tic
 
 ## 1. Apply the fix items
 
-Read the **Verdict file**. Only lines starting with `- [fix]` are yours; `- [skip]` items were argued and rejected, so leave that code alone. Do not go looking for other things to improve.
+**Fix items** under Inputs is everything you have to fix: the items the Debate's Verdict marked fix, one per line as `- [fix] (severity) location — problem | reason | settled`. Findings the Verdict marked skip were argued and rejected; you are not shown them, so do not go looking for other things to improve.
 
 For each fix item: read the code around the location, make the change, and add or adjust a test when the item is about behaviour. Then run the repo's tests (see `CLAUDE.md` / `AGENTS.md` for the commands) until they pass, and commit to the current branch.
 
-With **Fix items** 0 there is nothing to apply: go to step 2.
+With **Fix items** `none` there is nothing to apply: go to step 2.
 
 ## 2. Open the pull request, only if **Open PR** is yes
 

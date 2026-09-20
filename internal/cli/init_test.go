@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"harness/internal/runner/runnertest"
 )
 
 var skillNames = []string{"start-work", "stage-implement", "stage-review", "stage-moderate", "stage-fix", "stage-address"}
@@ -40,7 +42,7 @@ func herdrEnv(key string) string {
 func TestInitInstallsSkillsWithWorkingSymlinks(t *testing.T) {
 	repo := preparedRepo(t)
 	var out bytes.Buffer
-	if code := cli([]string{"init"}, &out, repo, (&fake{handle: okTools}).run, herdrEnv); code != 0 {
+	if code := Run([]string{"init"}, &out, repo, (&runnertest.Fake{Handle: okTools}).Run, herdrEnv); code != 0 {
 		t.Fatalf("init exit %d:\n%s", code, out.String())
 	}
 	for _, name := range skillNames {
@@ -65,14 +67,14 @@ func TestInitInstallsSkillsWithWorkingSymlinks(t *testing.T) {
 
 func TestInitKeepsEditedSkillUnlessForced(t *testing.T) {
 	repo := preparedRepo(t)
-	run := (&fake{handle: okTools}).run
-	cli([]string{"init"}, &bytes.Buffer{}, repo, run, herdrEnv)
+	run := (&runnertest.Fake{Handle: okTools}).Run
+	Run([]string{"init"}, &bytes.Buffer{}, repo, run, herdrEnv)
 	skill := filepath.Join(repo, ".agents/skills/stage-fix/SKILL.md")
 	shipped, _ := os.ReadFile(skill)
 	os.WriteFile(skill, []byte("edited in the Target repo"), 0o644)
 	ignoreBefore, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
 
-	if code := cli([]string{"init"}, &bytes.Buffer{}, repo, run, herdrEnv); code != 0 {
+	if code := Run([]string{"init"}, &bytes.Buffer{}, repo, run, herdrEnv); code != 0 {
 		t.Fatalf("second init exit %d", code)
 	}
 	if got, _ := os.ReadFile(skill); string(got) != "edited in the Target repo" {
@@ -82,7 +84,7 @@ func TestInitKeepsEditedSkillUnlessForced(t *testing.T) {
 		t.Errorf("rerun changed .gitignore")
 	}
 
-	cli([]string{"init", "--force"}, &bytes.Buffer{}, repo, run, herdrEnv)
+	Run([]string{"init", "--force"}, &bytes.Buffer{}, repo, run, herdrEnv)
 	if got, _ := os.ReadFile(skill); !bytes.Equal(got, shipped) {
 		t.Errorf("--force did not restore the shipped skill")
 	}
@@ -90,18 +92,18 @@ func TestInitKeepsEditedSkillUnlessForced(t *testing.T) {
 
 func TestPreflightNamesEachMissingPrerequisite(t *testing.T) {
 	repo := t.TempDir() // no bd workspace, no create-pr skill
-	run := (&fake{handle: func(dir, cmd string) (string, error) {
+	run := (&runnertest.Fake{Handle: func(dir, cmd string) (string, error) {
 		if cmd == "gh auth status" {
 			return "", errors.New("not logged in")
 		}
 		return "", nil // git remote prints nothing
-	}}).run
+	}}).Run
 	noEnv := func(string) string { return "" }
 
 	for _, args := range [][]string{{"init"}, {"start", "some-epic"}} {
 		command := args[0]
 		var out bytes.Buffer
-		if code := cli(args, &out, repo, run, noEnv); code == 0 {
+		if code := Run(args, &out, repo, run, noEnv); code == 0 {
 			t.Errorf("%s: exit 0 with nothing prepared", command)
 		}
 		for _, want := range []string{"bd workspace", "gh is not authenticated", "git remote", "create-pr", "HERDR_ENV"} {

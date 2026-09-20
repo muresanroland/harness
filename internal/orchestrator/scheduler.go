@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"context"
@@ -49,9 +49,9 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 	var active sync.Map // ticket -> running in this process
 	launch := func(ticket string, work func(context.Context, string)) {
 		active.Store(ticket, true)
-		o.sessions.Add(1)
+		o.inFlight.Add(1)
 		go func() {
-			defer o.sessions.Done()
+			defer o.inFlight.Done()
 			defer active.Delete(ticket)
 			work(ctx, ticket)
 		}()
@@ -80,6 +80,8 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 				launch(ticket, o.address)
 			case ts.Status == "" && o.consume(command):
 				o.report("%s %s refused: not a Ticket of this run", ticket, kind)
+			case o.consume(command):
+				o.report("%s %s ignored: the Ticket is %s and not waiting on a Wake", ticket, kind, ts.Status)
 			}
 		}
 		if time.Since(lastPoll) >= o.pollPRs {
@@ -118,9 +120,11 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 	}
 }
 
-// RunTicket runs a single Ticket's Pipeline, without scheduling or merge polling.
-func (o *Orchestrator) RunTicket(ctx context.Context, ticket string) {
+// RunTicket runs a single Ticket's Pipeline, without scheduling or merge
+// polling, and reports whether the Ticket ended Parked.
+func (o *Orchestrator) RunTicket(ctx context.Context, ticket string) (parked bool) {
 	o.runTicket(ctx, ticket)
+	return o.ticket(ticket).Status == statusParked
 }
 
 func allClosed(children []bdIssue) bool {
@@ -146,10 +150,9 @@ func (o *Orchestrator) resumable() []string {
 	return tickets
 }
 
-// commands lists the control files waiting in .harness/control.
-// ponytail: a polled directory; a socket if latency ever matters.
+// commands lists the control files waiting for the Orchestrator.
 func (o *Orchestrator) commands() []string {
-	entries, _ := os.ReadDir(filepath.Dir(o.controlPath("x")))
+	entries, _ := os.ReadDir(filepath.Dir(ControlFile(o.repo, "x")))
 	var names []string
 	for _, entry := range entries {
 		names = append(names, entry.Name())
@@ -186,17 +189,24 @@ func (o *Orchestrator) pollMerges() {
 		}
 		switch {
 		case pr.State == "MERGED":
-			for _, cleanup := range [][]string{
-				{"bd", "close", ticket, "--reason", "PR merged: " + ts.PR},
-				{"bd", "worktree", "remove", o.worktree(ticket)},
-				{"git", "branch", "-D", ticket},
-			} {
-				if _, err := o.run(o.repo, cleanup[0], cleanup[1:]...); err != nil {
-					o.log.Printf("%s: %v", ticket, err)
-				}
+			// Closing the Ticket is what unblocks its dependents: until bd has
+			// done it the Ticket stays pr-open and the next poll tries again.
+			if _, err := o.run(o.repo, "bd", "close", ticket, "--reason", "PR merged: "+ts.PR); err != nil {
+				o.log.Printf("%s: merged but not closed, will retry: %v", ticket, err)
+				continue
+			}
+			// The work is on main now, so bd's cleanliness and containment
+			// checks (which a squash merge fails) no longer protect anything.
+			cleanup := "worktree and branch removed"
+			if _, err := o.run(o.repo, "bd", "worktree", "remove", o.worktree(ticket), "--force"); err != nil {
+				o.log.Printf("%s: %v", ticket, err)
+				cleanup = "could not remove the worktree, remove it by hand"
+			} else if _, err := o.run(o.repo, "git", "branch", "-D", ticket); err != nil {
+				o.log.Printf("%s: %v", ticket, err)
+				cleanup = "worktree removed, could not delete the branch"
 			}
 			o.update(ticket, func(ts *TicketState) { ts.Status = statusMerged })
-			o.report("%s merged: Ticket closed, worktree and branch removed", ticket)
+			o.report("%s merged: Ticket closed, %s", ticket, cleanup)
 		case pr.State == "CLOSED":
 			o.update(ticket, func(ts *TicketState) { ts.Status, ts.Reason = statusParked, "PR closed without merging" })
 			o.report("%s parked: PR closed without merging: %s", ticket, ts.PR)
@@ -242,10 +252,12 @@ func (o *Orchestrator) address(ctx context.Context, ticket string) {
 // addressInputs are the address Stage's inputs, from gh's view of the PR.
 func addressInputs(pr, ghJSON string) [][2]string {
 	var view ghPR
-	json.Unmarshal([]byte(ghJSON), &view)
-	conflicts := "no"
-	if view.Mergeable == "CONFLICTING" {
-		conflicts = "yes"
+	conflicts := "unknown, check with gh"
+	if json.Unmarshal([]byte(ghJSON), &view) == nil && view.Mergeable != "" && view.Mergeable != "UNKNOWN" {
+		conflicts = "no"
+		if view.Mergeable == "CONFLICTING" {
+			conflicts = "yes"
+		}
 	}
 	return [][2]string{{"PR", pr}, {"Conflicts with main", conflicts}, {"Review comments (gh JSON)", strings.TrimSpace(ghJSON)}}
 }

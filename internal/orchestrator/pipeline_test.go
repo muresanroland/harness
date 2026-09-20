@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 
 func stagesRun(w *world) []string {
 	var stages []string
-	for _, call := range w.called("herdr agent start") {
+	for _, call := range w.Called("herdr agent start") {
 		name := strings.Fields(call)[3]
 		stages = append(stages, name[strings.LastIndex(name, "-")+1:])
 	}
@@ -23,17 +23,17 @@ func TestImplementStageRunsInATicketTabAndReportsToMain(t *testing.T) {
 
 	o.runTicket(context.Background(), "hx-12")
 
-	if got := w.called("bd worktree create"); len(got) != 1 || !strings.HasSuffix(got[0], ".harness/worktrees/hx-12 --branch hx-12") {
+	if got := w.Called("bd worktree create"); len(got) != 1 || !strings.HasSuffix(got[0], ".harness/worktrees/hx-12 --branch hx-12") {
 		t.Errorf("worktree calls = %q", got)
 	}
-	if got := w.called("bd update hx-12"); len(got) != 1 || !strings.Contains(got[0], "in_progress") {
+	if got := w.Called("bd update hx-12"); len(got) != 1 || !strings.Contains(got[0], "in_progress") {
 		t.Errorf("ticket not marked in_progress: %q", got)
 	}
-	tab := w.called("herdr tab create")
+	tab := w.Called("herdr tab create")
 	if len(tab) != 1 || !strings.Contains(tab[0], "--label hx-12") || !strings.Contains(tab[0], "--no-focus") {
 		t.Errorf("tab create = %q", tab)
 	}
-	start := w.called("herdr agent start")[0]
+	start := w.Called("herdr agent start")[0]
 	for _, want := range []string{"--kind claude", "--permission-mode auto", "--add-dir " + o.runDir("hx-12")} {
 		if !strings.Contains(start, want) {
 			t.Errorf("agent start lacks %q: %s", want, start)
@@ -58,7 +58,7 @@ func TestCleanFirstVerdictOpensPRAfterOneRound(t *testing.T) {
 		t.Errorf("state = %+v", ts)
 	}
 	w.awaitLine("hx-1 pr open after 1 round(s): https://example.test/pr/hx-1")
-	if len(w.called("herdr tab close")) != 1 {
+	if len(w.Called("herdr tab close")) != 1 {
 		t.Errorf("Ticket tab not closed once the PR opened")
 	}
 }
@@ -67,11 +67,11 @@ func TestReviewRunsCodexInTheRunDirectoryAndDebateGetsTheAPIKey(t *testing.T) {
 	w, o := newWorld(t, &bdTicket{ID: "hx-1"})
 	o.runTicket(context.Background(), "hx-1")
 
-	review := w.called("herdr agent start")[1]
+	review := w.Called("herdr agent start")[1]
 	if !strings.Contains(review, "--kind codex") || !strings.Contains(review, "--sandbox workspace-write") {
 		t.Errorf("review session = %s", review)
 	}
-	splits := w.called("herdr pane split")
+	splits := w.Called("herdr pane split")
 	if len(splits) != 3 {
 		t.Fatalf("pane splits = %q, want one per Stage after Implement", splits)
 	}

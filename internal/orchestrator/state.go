@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"encoding/json"
@@ -76,13 +76,14 @@ func (s *State) save(repo string) error {
 	return os.Rename(tmp, statePath(repo))
 }
 
-func printStatus(out io.Writer, repo string) int {
+// PrintStatus is 'harness status'.
+func PrintStatus(out io.Writer, repo string) int {
 	state, err := loadState(repo)
 	if err != nil {
 		fmt.Fprintln(out, "status:", err)
 		return 1
 	}
-	if pid := lockHolder(repo); pid != 0 {
+	if pid := LockHolder(repo); pid != 0 {
 		fmt.Fprintf(out, "Orchestrator running (pid %d)", pid)
 	} else {
 		fmt.Fprint(out, "Orchestrator not running")
@@ -114,9 +115,9 @@ func printStatus(out io.Writer, repo string) int {
 
 func lockPath(repo string) string { return filepath.Join(repo, ".harness", "lock") }
 
-// lockHolder returns the pid of the live Orchestrator holding this Target
+// LockHolder returns the pid of the live Orchestrator holding this Target
 // repo's lock, or 0.
-func lockHolder(repo string) int {
+func LockHolder(repo string) int {
 	raw, err := os.ReadFile(lockPath(repo))
 	if err != nil {
 		return 0
@@ -131,9 +132,9 @@ func lockHolder(repo string) int {
 	return pid
 }
 
-// acquireLock enforces one run per Target repo.
-func acquireLock(repo string) (release func(), err error) {
-	if pid := lockHolder(repo); pid != 0 {
+// AcquireLock enforces one run per Target repo.
+func AcquireLock(repo string) (release func(), err error) {
+	if pid := LockHolder(repo); pid != 0 {
 		return nil, fmt.Errorf("an Orchestrator is already running in this repo (pid %d); 'harness stop' ends it", pid)
 	}
 	if err := os.MkdirAll(filepath.Dir(lockPath(repo)), 0o755); err != nil {

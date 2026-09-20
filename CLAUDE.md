@@ -2,19 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Build and test
 
-Go, standard library only (no third-party modules). One flat `main` package.
+Go, standard library only (no third-party modules).
 
 ```bash
-go build -o harness .   # the binary; skills/ is embedded with go:embed
-go vet ./...            # typecheck
-go test -race ./...     # all tests; -run <Name> for one
+go build -o harness ./cmd/harness   # the binary; skills/ is embedded with go:embed
+go vet ./...                        # typecheck
+go test -race ./...                 # all tests; -run <Name> for one
 ```
 
-Every external tool (herdr, bd, gh, git) is called through the `Runner` seam in `runner.go`; tests substitute the fake herdr/bd/gh in `world_test.go` and never start real sessions. The Stage skills the Harness ships live in `skills/`; `harness init` copies them into a Target repo.
+- `cmd/harness`: entry point. `internal/cli`: commands and flags. `internal/setup`: `harness init` and preflight. `internal/orchestrator`: Stages, Pipeline, scheduler, state file, merge poller. `internal/runner`: the seam to every external tool (herdr, bd, gh, git). `skills/`: the skills the Harness ships.
+- Tests substitute `runnertest.Fake` for the runner; `internal/orchestrator/world_test.go` fakes a whole herdr/bd/gh world and never starts real sessions.
 
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
 
 This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.

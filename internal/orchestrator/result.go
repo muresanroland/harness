@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"fmt"
@@ -39,6 +39,17 @@ func verdictCounts(verdict string) (fix, skip int) {
 		}
 	}
 	return fix, skip
+}
+
+// fixItems are a Verdict's "- [fix]" lines, all the Fix Stage is given.
+func fixItems(verdict string) []string {
+	var items []string
+	for _, line := range strings.Split(verdict, "\n") {
+		if m := verdictItem.FindStringSubmatch(line); m != nil && strings.EqualFold(m[1], "fix") {
+			items = append(items, strings.TrimSpace(line))
+		}
+	}
+	return items
 }
 
 // findingCount counts a Review's "- (severity) location — problem" items.
