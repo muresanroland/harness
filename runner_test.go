@@ -14,6 +14,7 @@ type fake struct {
 	mu     sync.Mutex
 	calls  []string
 	handle func(dir, cmd string) (string, error)
+	argv   func(dir string, argv []string) (string, error) // for calls whose arguments contain spaces
 }
 
 func (f *fake) run(dir, name string, args ...string) (string, error) {
@@ -21,6 +22,9 @@ func (f *fake) run(dir, name string, args ...string) (string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, cmd)
 	f.mu.Unlock()
+	if f.argv != nil {
+		return f.argv(dir, append([]string{name}, args...))
+	}
 	if f.handle == nil {
 		return "", nil
 	}
