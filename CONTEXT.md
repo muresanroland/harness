@@ -1,0 +1,70 @@
+# Harness
+
+Drives a beads epic through a fixed multi-agent pipeline, from tickets to open pull requests, with every agent visible in herdr.
+
+## Language
+
+**Harness**:
+The globally installed tool as a whole: the Orchestrator plus the skill that launches it.
+
+**Target repo**:
+The repository whose epic is being worked on. The Harness is run from inside it; it scaffolds the repo's agent setup once, and the repo owns its conventions from then on.
+_Avoid_: Project, host repo
+
+**Stage skill**:
+A skill owned and shipped by the Harness that holds the instructions for one Stage. Once installed in a Target repo, the repo's copy is the one that runs and may be edited there.
+_Avoid_: Prompt, template
+
+**Skill manifest**:
+The Target repo's list of the skills it wants: the Stage skills, plus third-party skills named by their source.
+_Avoid_: Config, lockfile
+
+**Epic**:
+The beads epic handed to the Harness. Its child Tickets are the whole scope of one run.
+
+**Ticket**:
+A beads issue that is a child of the Epic, and the unit that moves through the Pipeline. It ends as one pull request and closes only when that pull request is merged.
+_Avoid_: Task, issue, story
+
+**Pipeline**:
+The fixed sequence of Stages every Ticket passes through: Implement, Review, Debate, Fix, then a pull request.
+_Avoid_: Workflow, flow
+
+**Round**:
+One pass of Review, Debate and Fix over a Ticket. Rounds repeat until a Verdict has no fix items or the cap is reached, after which the pull request opens with any leftover Findings listed.
+_Avoid_: Iteration, loop, cycle
+
+**Stage**:
+One step of the Pipeline, carried out by a fresh agent session in its own pane.
+_Avoid_: Step, phase
+
+**Finding**:
+One claimed problem with a Ticket's changes, raised by the Review or by the over-engineering audit, and the unit the Debate argues over.
+_Avoid_: Comment, issue, point
+
+**Moderator**:
+The neutral session that runs the Debate between a Claude side and a GPT side. It never argues a position of its own, and settles Findings the sides still dispute by an outside score.
+_Avoid_: Judge, Debby
+
+**Verdict**:
+The Debate's result: every Finding marked fix or skip, with a severity and the reason. Only fix items reach the Fix Stage.
+_Avoid_: Synthesis, summary, report
+
+**Wake**:
+The Orchestrator's request for the Main session's judgment about a Stage that cannot advance by rule.
+_Avoid_: Alert, escalation
+
+**Parked**:
+A Ticket taken out of the Pipeline to wait for the user, after a Wake the Main session could not resolve. Other Tickets keep running.
+_Avoid_: Stuck, paused, failed
+
+**Ticket tab**:
+The herdr tab belonging to one running Ticket, holding one pane per Stage.
+
+**Orchestrator**:
+The deterministic process that owns ticket state, pane placement, and stage transitions. It makes no judgment calls.
+_Avoid_: Script, runner, daemon
+
+**Main session**:
+The Claude session the user talks to, in the first herdr tab. It launches the Orchestrator, shows its progress, and is woken for judgment calls the Orchestrator cannot make.
+_Avoid_: Parent session, controller
