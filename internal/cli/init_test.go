@@ -102,14 +102,43 @@ func TestPreflightNamesEachMissingPrerequisite(t *testing.T) {
 
 	for _, args := range [][]string{{"init"}, {"start", "some-epic"}} {
 		command := args[0]
+		repo := repo
+		want := []string{"bd workspace", "gh is not authenticated", "git remote", "HERDR_ENV"}
+		if command == "start" {
+			repo = t.TempDir() // start installs nothing, so it still misses create-pr
+			want = append(want, "create-pr")
+		}
 		var out bytes.Buffer
 		if code := Run(args, &out, repo, run, noEnv); code == 0 {
 			t.Errorf("%s: exit 0 with nothing prepared", command)
 		}
-		for _, want := range []string{"bd workspace", "gh is not authenticated", "git remote", "create-pr", "HERDR_ENV"} {
+		for _, want := range want {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("%s: output lacks %q:\n%s", command, want, out.String())
 			}
 		}
+	}
+}
+
+func TestInitInstallsCreatePRAndKeepsTheReposOwn(t *testing.T) {
+	run := (&runnertest.Fake{Handle: okTools}).Run
+	fresh := preparedRepo(t)
+	os.RemoveAll(filepath.Join(fresh, ".agents/skills/create-pr"))
+	if code := Run([]string{"init"}, &bytes.Buffer{}, fresh, run, herdrEnv); code != 0 {
+		t.Fatalf("init exit %d", code)
+	}
+	if got, err := os.ReadFile(filepath.Join(fresh, ".claude/skills/create-pr/SKILL.md")); err != nil || !strings.Contains(string(got), "name: create-pr") {
+		t.Fatalf("shipped create-pr not installed: %v %q", err, got)
+	}
+
+	// Nothing on stdin to answer with, so the repo's own create-pr stands.
+	own := preparedRepo(t)
+	var out bytes.Buffer
+	Run([]string{"init"}, &out, own, run, herdrEnv)
+	if got, _ := os.ReadFile(filepath.Join(own, ".agents/skills/create-pr/SKILL.md")); string(got) != "pr" {
+		t.Errorf("init replaced the repo's own create-pr unasked: %q", got)
+	}
+	if !strings.Contains(out.String(), "already has a create-pr skill") {
+		t.Errorf("init did not ask:\n%s", out.String())
 	}
 }

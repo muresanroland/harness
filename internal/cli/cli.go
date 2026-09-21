@@ -23,7 +23,7 @@ import (
 
 const usage = `usage: harness <command>
 
-  init [--force]              install the Stage skills and preflight the Target repo
+  init [--force]              install the shipped skills and preflight the Target repo
   start <epic> [--max N]      run an Epic's Tickets through the Pipeline, here
   start --ticket <id>         run one Ticket through the Pipeline, here
     --detach                  run it in the background instead, logging to a file
@@ -42,7 +42,7 @@ func Run(args []string, out io.Writer, repo string, run runner.Runner, env func(
 	}
 	switch args[0] {
 	case "init":
-		if err := setup.InstallSkills(repo, len(args) > 1 && args[1] == "--force"); err != nil {
+		if err := setup.InstallSkills(repo, len(args) > 1 && args[1] == "--force", out, os.Stdin); err != nil {
 			fmt.Fprintln(out, "init:", err)
 			return 1
 		}

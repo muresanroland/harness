@@ -95,7 +95,7 @@ func succeed(p prompt) (string, string) {
 func newWorld(t *testing.T, tickets ...*bdTicket) (*world, *Orchestrator) {
 	t.Helper()
 	repo := t.TempDir()
-	if err := setup.InstallSkills(repo, false); err != nil {
+	if err := setup.InstallSkills(repo, false, io.Discard, strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 	w := &world{Fake: &runnertest.Fake{}, t: t, repo: repo, agents: map[string]string{}, prs: map[string]string{}, tickets: tickets, session: succeed}
