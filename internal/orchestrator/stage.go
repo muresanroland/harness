@@ -242,7 +242,7 @@ func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, fil
 		agentArgs = []string{"--sandbox", "workspace-write"}
 	}
 	start := append([]string{"agent", "start", agentName(ticket, st.Name), "--kind", st.Kind, "--pane", pane, "--"}, agentArgs...)
-	_, startErr := o.herdr(start...)
+	startErr := o.startAgent(ctx, start)
 	if startErr != nil && !strings.Contains(startErr.Error(), "agent_not_ready") {
 		return stageResult{}, "session did not start: " + startErr.Error()
 	}
@@ -262,6 +262,10 @@ func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, fil
 		return stageResult{}, "did not take the prompt: " + err.Error()
 	}
 	o.report("%s %s prompted, waiting for %s", ticket, st.Name, filepath.Base(file))
+	// A session that has just been prompted still reads idle until it takes
+	// the prompt up, which looks exactly like a Stage that finished without
+	// writing a result. Give it a few ticks before believing that.
+	settled := time.Now().Add(settleTicks * o.Tick)
 	for {
 		if ctx.Err() != nil {
 			return stageResult{}, "stopped"
@@ -275,7 +279,10 @@ func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, fil
 				return stageResult{}, reason
 			}
 		case status == "idle" || status == "done":
-			return readStageResult(file, want)
+			result, reason := readStageResult(file, want)
+			if reason == "" || time.Now().After(settled) {
+				return result, reason
+			}
 		case time.Now().After(deadline):
 			return stageResult{}, fmt.Sprintf("timed out after %s", st.Timeout)
 		}
@@ -317,6 +324,26 @@ func (o *Orchestrator) stageCwd(ticket string, st Stage) string {
 	}
 	return o.worktree(ticket)
 }
+
+// startAgent starts the Stage's session, giving a pane that has just been
+// created the moment it needs to get a shell: until it has one herdr refuses
+// with agent_pane_busy, which is not the pane being unusable.
+func (o *Orchestrator) startAgent(ctx context.Context, argv []string) error {
+	giveUp := time.Now().Add(6 * o.Tick)
+	for {
+		_, err := o.herdr(argv...)
+		if err == nil || !strings.Contains(err.Error(), "agent_pane_busy") || time.Now().After(giveUp) {
+			return err
+		}
+		if !o.sleep(ctx) {
+			return err
+		}
+	}
+}
+
+// settleTicks is how long a just-prompted session may still look idle before
+// an idle pane with no result counts as a Stage that did not write one.
+const settleTicks = 3
 
 // waitFor is how long to ask herdr to wait: one tick, never past the deadline.
 func waitFor(deadline time.Time, tick time.Duration) string {
@@ -417,11 +444,13 @@ func (o *Orchestrator) freshPane(ticket string, st Stage) (string, error) {
 		}
 		tab, pane = reply.Result.Tab.TabID, reply.Result.RootPane.PaneID
 	} else {
-		direction := "right"
-		if len(inTab)%2 == 0 {
-			direction = "down"
+		target, direction := inTab[len(inTab)-1], "right"
+		if layout, err := o.herdr("pane", "layout", "--pane", inTab[0]); err == nil {
+			if p, d := splitTarget(layout.Result.Layout.Panes); p != "" {
+				target, direction = p, d
+			}
 		}
-		reply, err := o.herdr(append([]string{"pane", "split", inTab[len(inTab)-1], "--direction", direction}, placement...)...)
+		reply, err := o.herdr(append([]string{"pane", "split", target, "--direction", direction}, placement...)...)
 		if err != nil {
 			return "", err
 		}

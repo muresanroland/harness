@@ -16,6 +16,15 @@ type paneInfo struct {
 	TabID  string `json:"tab_id"`
 }
 
+// paneRect is one pane's place in its tab, in terminal cells.
+type paneRect struct {
+	PaneID string `json:"pane_id"`
+	Rect   struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"rect"`
+}
+
 // herdrReply covers every herdr response shape the Orchestrator reads.
 type herdrReply struct {
 	Result struct {
@@ -24,7 +33,10 @@ type herdrReply struct {
 		Pane     paneInfo   `json:"pane"`
 		Tabs     []tabInfo  `json:"tabs"`
 		Panes    []paneInfo `json:"panes"`
-		Agent    struct {
+		Layout   struct {
+			Panes []paneRect `json:"panes"`
+		} `json:"layout"`
+		Agent struct {
 			Status string `json:"agent_status"`
 		} `json:"agent"`
 	} `json:"result"`
@@ -40,6 +52,29 @@ func (o *Orchestrator) herdr(args ...string) (herdrReply, error) {
 		return reply, fmt.Errorf("herdr %s: unreadable reply: %w", args[0], err)
 	}
 	return reply, nil
+}
+
+// A terminal cell is about twice as tall as it is wide, so a pane of equal
+// rows and columns is a tall sliver on screen, not a square.
+const cellAspect = 2
+
+// splitTarget picks which pane a new Stage pane is split out of, and which way
+// to cut it: the roomiest pane, along its longer side. Splitting the same pane
+// every time halves it again and again, and four Stage panes in a tab that was
+// only ever cut one way are four slivers too narrow for an agent to draw in.
+func splitTarget(panes []paneRect) (pane, direction string) {
+	best := 0
+	for _, p := range panes {
+		area := p.Rect.Width * p.Rect.Height
+		if area <= best {
+			continue
+		}
+		best, pane, direction = area, p.PaneID, "down"
+		if p.Rect.Width > cellAspect*p.Rect.Height {
+			direction = "right"
+		}
+	}
+	return pane, direction
 }
 
 // location names a pane as <tab>-<pane> by its position in herdr's tab and

@@ -32,6 +32,7 @@ type world struct {
 	tabs        []string
 	panes       []paneInfo
 	agents      map[string]string // pane id -> herdr agent status
+	rect        [2]int            // width, height in cells of every pane; zero means roomy and square
 	main        []string          // lines the Main session received
 	tickets     []*bdTicket
 	prs         map[string]string // PR url -> gh JSON
@@ -149,6 +150,8 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 		return reply(map[string]any{"tabs": tabs})
 	case strings.HasPrefix(cmd, "herdr pane list"):
 		return reply(map[string]any{"panes": w.panes})
+	case strings.HasPrefix(cmd, "herdr pane layout"):
+		return reply(map[string]any{"layout": map[string]any{"panes": w.layout(flagValue(argv, "--pane"))}})
 	case strings.HasPrefix(cmd, "herdr tab create"):
 		tab, pane := w.id("t"), w.id("p")
 		w.tabs = append(w.tabs, tab)
@@ -247,6 +250,29 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 		return "origin\n", nil
 	}
 	return "", nil
+}
+
+// layout answers 'herdr pane layout' for the tab holding pane: every pane's
+// rect, a roomy default for the tests that do not care about geometry.
+func (w *world) layout(pane string) []map[string]any {
+	tab := ""
+	for _, p := range w.panes {
+		if p.PaneID == pane {
+			tab = p.TabID
+		}
+	}
+	var out []map[string]any
+	for _, p := range w.panes {
+		if p.TabID != tab {
+			continue
+		}
+		size := w.rect
+		if size == [2]int{} {
+			size = [2]int{200, 100}
+		}
+		out = append(out, map[string]any{"pane_id": p.PaneID, "rect": map[string]int{"width": size[0], "height": size[1]}})
+	}
+	return out
 }
 
 func (w *world) closePane(id string) {
