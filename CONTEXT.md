@@ -41,6 +41,10 @@ _Avoid_: Step, phase
 **Stage result**:
 The recorded outcome of a Stage, carrying its completion status and, as appropriate, Findings, a Verdict, or an opened pull request. The Orchestrator uses it together with the session's state to decide whether the Stage can advance.
 
+**Run directory**:
+The Ticket's directory under `.harness/runs/`, holding its Stages' evidence: the result files, diffs and Debate transcripts, all flat text. It doubles as the Review's sandbox, so build scratch lands there too and is pruned when the pull request opens.
+_Avoid_: Logs, workdir, artifacts
+
 **Finding**:
 One claimed problem with a Ticket's changes, raised by the Review or by the over-engineering audit, and the unit the Debate argues over.
 _Avoid_: Comment, issue, point
