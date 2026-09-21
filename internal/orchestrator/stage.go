@@ -38,15 +38,7 @@ var (
 // Orchestrator owns Ticket state, pane placement and Stage transitions. It
 // makes no judgment calls: what it cannot advance by rule becomes a Wake.
 type Orchestrator struct {
-	run       runner.Runner
-	repo      string
-	mainPane  string // the Main session's pane, from HERDR_PANE_ID at launch
-	workspace string
-	apiKey    string        // TYPESAFE_API_KEY, handed to the Debate pane
-	tick      time.Duration // how often holds, control files and bd are polled
-	pollPRs   time.Duration // how often gh is asked about open PRs
-	max       int           // Tickets in the Pipeline at once
-	log       *log.Logger
+	Config
 
 	mu       sync.Mutex // guards state
 	state    *State
@@ -57,14 +49,14 @@ type Orchestrator struct {
 
 // Config is what 'harness start' knows at launch.
 type Config struct {
-	Run       runner.Runner
-	Repo      string // the Target repo's root
-	MainPane  string // HERDR_PANE_ID of the Main session
-	Workspace string // HERDR_WORKSPACE_ID
-	APIKey    string // TYPESAFE_API_KEY
-	Tick      time.Duration
-	PollPRs   time.Duration
-	Max       int
+	Exec      runner.Runner // the seam to every external tool
+	Repo      string        // the Target repo's root
+	MainPane  string        // HERDR_PANE_ID of the Main session
+	Workspace string        // HERDR_WORKSPACE_ID
+	APIKey    string        // TYPESAFE_API_KEY, handed to the Debate pane
+	Tick      time.Duration // how often holds, control files and bd are polled
+	PollPRs   time.Duration // how often gh is asked about open PRs
+	Max       int           // Tickets in the Pipeline at once
 	Log       *log.Logger
 }
 
@@ -74,20 +66,17 @@ func New(cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{
-		run: cfg.Run, repo: cfg.Repo, mainPane: cfg.MainPane, workspace: cfg.Workspace, apiKey: cfg.APIKey,
-		tick: cfg.Tick, pollPRs: cfg.PollPRs, max: cfg.Max, log: cfg.Log, state: state,
-	}, nil
+	return &Orchestrator{Config: cfg, state: state}, nil
 }
 
 var errParked = errors.New("parked")
 
 func (o *Orchestrator) runDir(ticket string) string {
-	return filepath.Join(o.repo, ".harness", "runs", ticket)
+	return filepath.Join(o.Repo, ".harness", "runs", ticket)
 }
 
 func (o *Orchestrator) worktree(ticket string) string {
-	return filepath.Join(o.repo, ".harness", "worktrees", ticket)
+	return filepath.Join(o.Repo, ".harness", "worktrees", ticket)
 }
 
 func resultName(st Stage, round int) string {
@@ -105,7 +94,7 @@ func resultName(st Stage, round int) string {
 // that cannot be delivered is kept and sent, in order, once it can be.
 func (o *Orchestrator) report(format string, args ...any) {
 	line := "[harness] " + fmt.Sprintf(format, args...)
-	o.log.Print(line)
+	o.Log.Print(line)
 	o.reportMu.Lock()
 	o.unsent = append(o.unsent, line)
 	o.reportMu.Unlock()
@@ -116,8 +105,8 @@ func (o *Orchestrator) flush() {
 	o.reportMu.Lock()
 	defer o.reportMu.Unlock()
 	for len(o.unsent) > 0 {
-		if _, err := o.run(o.repo, "herdr", "agent", "prompt", o.mainPane, o.unsent[0]); err != nil {
-			o.log.Printf("the Main session did not take %q, will retry: %v", o.unsent[0], err)
+		if _, err := o.Exec(o.Repo, "herdr", "agent", "prompt", o.MainPane, o.unsent[0]); err != nil {
+			o.Log.Printf("the Main session did not take %q, will retry: %v", o.unsent[0], err)
 			return
 		}
 		o.unsent = o.unsent[1:]
@@ -134,8 +123,8 @@ func (o *Orchestrator) update(ticket string, change func(*TicketState)) {
 		o.state.Tickets[ticket] = ts
 	}
 	change(ts)
-	if err := o.state.save(o.repo); err != nil {
-		o.log.Printf("state not saved: %v", err)
+	if err := o.state.save(o.Repo); err != nil {
+		o.Log.Printf("state not saved: %v", err)
 	}
 }
 
@@ -151,19 +140,14 @@ func (o *Orchestrator) ticket(ticket string) TicketState {
 	return snapshot
 }
 
-// runStage runs one Stage to its completion rule and returns the result file's
-// body. A Stage whose result file already says done is not rerun. valid may
-// demand more of a done result than its STATUS line. When the Stage cannot
+// runStage runs one Stage to its completion rule and returns its accepted
+// result. A Stage with an already accepted result is not rerun. When it cannot
 // advance by rule the Main session is woken and the Ticket holds for a retry,
 // a park, or a late done result; errParked means the Ticket left the Pipeline.
-func (o *Orchestrator) runStage(ctx context.Context, ticket string, st Stage, round int, inputs [][2]string, valid func(body string) string) (string, error) {
+func (o *Orchestrator) runStage(ctx context.Context, ticket string, st Stage, round int, inputs [][2]string, want resultRequirements) (stageResult, error) {
 	file := filepath.Join(o.runDir(ticket), resultName(st, round))
-	done := func() (string, bool) {
-		status, body := resultStatus(file)
-		return body, status == "done" && (valid == nil || valid(body) == "")
-	}
-	if body, ok := done(); ok {
-		return body, nil
+	if result, reason := readStageResult(file, want); reason == "" {
+		return result, nil
 	}
 	o.update(ticket, func(ts *TicketState) {
 		if ts.Stage != st.Name || ts.Round != round { // a resumed Stage keeps its spent retry
@@ -173,51 +157,50 @@ func (o *Orchestrator) runStage(ctx context.Context, ticket string, st Stage, ro
 	inputs = append([][2]string{{"Ticket", ticket}, {"Round", strconv.Itoa(round)}, {"Worktree", o.worktree(ticket)}, {"Run directory", o.runDir(ticket)}, {"Result file", file}}, inputs...)
 
 	for {
-		reason := o.attempt(ctx, ticket, st, file, inputs, valid)
+		result, reason := o.attempt(ctx, ticket, st, file, inputs, want)
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return stageResult{}, ctx.Err()
 		}
 		if reason == "" {
-			body, _ := done()
-			return body, nil
+			return result, nil
 		}
 		ts := o.ticket(ticket)
 		if ts.Retried {
-			return "", fmt.Errorf("%w: %s %s again after a retry", errParked, st.Name, reason)
+			return stageResult{}, fmt.Errorf("%w: %s %s again after a retry", errParked, st.Name, reason)
 		}
 		pane := ts.Panes[st.Name]
 		o.consume("retry-" + ticket) // a command sent before this Wake is not an answer to it
 		o.consume("park-" + ticket)
 		o.report("WAKE %s %s %s at %s", ticket, st.Name, reason, o.locate(pane))
-		switch o.hold(ctx, ticket, pane, done) {
+		result, command := o.hold(ctx, ticket, pane, file, want)
+		switch command {
 		case "retry":
 			o.update(ticket, func(ts *TicketState) { ts.Retried = true })
 			o.report("%s %s retrying with a fresh session", ticket, st.Name)
 		case "park":
-			return "", fmt.Errorf("%w: %s %s", errParked, st.Name, reason)
+			return stageResult{}, fmt.Errorf("%w: %s %s", errParked, st.Name, reason)
 		case "done":
-			body, _ := done()
-			return body, nil
+			return result, nil
 		default:
-			return "", ctx.Err()
+			return stageResult{}, ctx.Err()
 		}
 	}
 }
 
-// attempt runs the Stage once in a fresh session and returns "" when the
-// completion rule holds, otherwise the reason it does not.
-func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, file string, inputs [][2]string, valid func(string) string) string {
-	skill, err := os.ReadFile(filepath.Join(o.repo, ".agents", "skills", st.Skill, "SKILL.md"))
+// attempt runs the Stage once in a fresh session and returns its accepted
+// result, or the reason it cannot complete.
+func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, file string, inputs [][2]string, want resultRequirements) (stageResult, string) {
+	skill, err := os.ReadFile(filepath.Join(o.Repo, ".agents", "skills", st.Skill, "SKILL.md"))
 	if err != nil {
-		return "has no Stage skill (run 'harness init'): " + err.Error()
+		return stageResult{}, "has no Stage skill (run 'harness init'): " + err.Error()
 	}
 	os.Remove(file)
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-		return err.Error()
+		return stageResult{}, err.Error()
 	}
 	pane, err := o.freshPane(ticket, st)
 	if err != nil {
-		return "got no pane: " + err.Error()
+		return stageResult{}, "got no pane: " + err.Error()
 	}
 	deadline := time.Now().Add(st.Timeout)
 
@@ -230,43 +213,35 @@ func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, fil
 	start := append([]string{"agent", "start", agentName(ticket, st.Name), "--kind", st.Kind, "--pane", pane, "--"}, agentArgs...)
 	_, startErr := o.herdr(start...)
 	if startErr != nil && !strings.Contains(startErr.Error(), "agent_not_ready") {
-		return "session did not start: " + startErr.Error()
+		return stageResult{}, "session did not start: " + startErr.Error()
 	}
 	o.report("%s %s started -> %s", ticket, st.Name, o.locate(pane))
 	if startErr != nil { // blocked at startup: nothing can be prompted yet
 		if reason := o.waitUnblocked(ctx, ticket, st, pane, deadline); reason != "" {
-			return reason
+			return stageResult{}, reason
 		}
 	}
 
 	_, waitErr := o.herdr("agent", "prompt", pane, stagePrompt(string(skill), inputs), "--wait", "--timeout", remaining(deadline))
 	for {
 		if ctx.Err() != nil {
-			return "stopped"
+			return stageResult{}, "stopped"
 		}
 		status, alive := o.agentStatus(pane)
 		switch {
 		case !alive:
-			return "pane died"
+			return stageResult{}, "pane died"
 		case status == "blocked":
 			if reason := o.waitUnblocked(ctx, ticket, st, pane, deadline); reason != "" {
-				return reason
+				return stageResult{}, reason
 			}
 		case status == "idle" || status == "done":
-			switch result, body := resultStatus(file); {
-			case result == "failed":
-				return "reported STATUS: failed"
-			case result != "done":
-				return "went idle without a done result"
-			case valid != nil && valid(body) != "":
-				return valid(body)
-			}
-			return ""
+			return readStageResult(file, want)
 		case time.Now().After(deadline) || (waitErr != nil && strings.Contains(waitErr.Error(), "timeout")):
-			return fmt.Sprintf("timed out after %s", st.Timeout)
+			return stageResult{}, fmt.Sprintf("timed out after %s", st.Timeout)
 		}
 		if waitErr != nil && !o.sleep(ctx) { // herdr refused to wait: do not spin
-			return "stopped"
+			return stageResult{}, "stopped"
 		}
 		_, waitErr = o.herdr("agent", "wait", pane, "--timeout", remaining(deadline))
 	}
@@ -298,21 +273,21 @@ func (o *Orchestrator) waitUnblocked(ctx context.Context, ticket string, st Stag
 
 // hold keeps a woken Ticket waiting, leaving every other Ticket running, until
 // a control command arrives or the Main session's nudge produces a done result.
-func (o *Orchestrator) hold(ctx context.Context, ticket, pane string, done func() (string, bool)) string {
+func (o *Orchestrator) hold(ctx context.Context, ticket, pane, file string, want resultRequirements) (stageResult, string) {
 	for {
 		if o.consume("retry-" + ticket) {
-			return "retry"
+			return stageResult{}, "retry"
 		}
 		if o.consume("park-" + ticket) {
-			return "park"
+			return stageResult{}, "park"
 		}
-		if _, ok := done(); ok {
+		if result, reason := readStageResult(file, want); reason == "" {
 			if status, alive := o.agentStatus(pane); !alive || status == "idle" || status == "done" {
-				return "done"
+				return result, "done"
 			}
 		}
 		if !o.sleep(ctx) {
-			return "stopped"
+			return stageResult{}, "stopped"
 		}
 	}
 }
@@ -324,7 +299,7 @@ func (o *Orchestrator) sleep(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-time.After(o.tick):
+	case <-time.After(o.Tick):
 		return true
 	}
 }
@@ -342,13 +317,13 @@ func (o *Orchestrator) freshPane(ticket string, st Stage) (string, error) {
 		cwd = o.runDir(ticket)
 	}
 	placement := []string{"--cwd", cwd, "--no-focus"}
-	if st.Name == "debate" && o.apiKey != "" {
-		placement = append(placement, "--env", "TYPESAFE_API_KEY="+o.apiKey)
+	if st.Name == "debate" && o.APIKey != "" {
+		placement = append(placement, "--env", "TYPESAFE_API_KEY="+o.APIKey)
 	}
 
 	var inTab []string
 	if ts.Tab != "" {
-		if panes, err := o.herdr("pane", "list", "--workspace", o.workspace); err == nil {
+		if panes, err := o.herdr("pane", "list", "--workspace", o.Workspace); err == nil {
 			for _, p := range panes.Result.Panes {
 				if p.TabID == ts.Tab {
 					inTab = append(inTab, p.PaneID)
@@ -358,7 +333,7 @@ func (o *Orchestrator) freshPane(ticket string, st Stage) (string, error) {
 	}
 	tab, pane := ts.Tab, ""
 	if len(inTab) == 0 {
-		reply, err := o.herdr(append([]string{"tab", "create", "--workspace", o.workspace, "--label", ticket}, placement...)...)
+		reply, err := o.herdr(append([]string{"tab", "create", "--workspace", o.Workspace, "--label", ticket}, placement...)...)
 		if err != nil {
 			return "", err
 		}
@@ -392,5 +367,5 @@ func ControlFile(repo, name string) string {
 
 // consume reports whether a control command was waiting, and removes it.
 func (o *Orchestrator) consume(name string) bool {
-	return os.Remove(ControlFile(o.repo, name)) == nil
+	return os.Remove(ControlFile(o.Repo, name)) == nil
 }

@@ -7,62 +7,70 @@ import (
 	"strings"
 )
 
-// resultStatus returns the STATUS on the first line of a Stage's result file
-// ("done", "failed", or "" when the file or the line is missing) and the body.
-func resultStatus(path string) (status, body string) {
+// stageResult is the accepted content of a Stage result, interpreted once for
+// the Pipeline. Session liveness is a separate part of Stage completion.
+type stageResult struct {
+	Findings int
+	Fixes    []string
+	Skips    int
+	PR       string
+}
+
+// resultRequirements supplies the Pipeline context needed to accept a result.
+// The zero value requires only STATUS: done.
+type resultRequirements struct {
+	ReviewFindings int  // a Verdict must settle at least this many Findings
+	RequirePR      bool // the final Fix must identify its opened PR
+}
+
+// readStageResult interprets and accepts result contents for live completion,
+// resume, and late completion alike. A nonempty reason means the result is not
+// accepted; the caller decides whether to start a session, Wake, or keep waiting.
+func readStageResult(path string, want resultRequirements) (stageResult, string) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", ""
+		return stageResult{}, "went idle without a done result"
 	}
-	body = string(raw)
+	body := string(raw)
 	first, _, _ := strings.Cut(body, "\n")
 	value, ok := strings.CutPrefix(strings.TrimSpace(first), "STATUS:")
 	if !ok {
-		return "", body
+		return stageResult{}, "went idle without a done result"
 	}
-	return strings.ToLower(strings.TrimSpace(value)), body
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "failed":
+		return stageResult{}, "reported STATUS: failed"
+	case "done":
+	default:
+		return stageResult{}, "went idle without a done result"
+	}
+
+	result := stageResult{Findings: len(findingItem.FindAllString(body, -1))}
+	for _, m := range verdictItem.FindAllStringSubmatch(body, -1) {
+		if strings.EqualFold(m[1], "fix") {
+			result.Fixes = append(result.Fixes, strings.TrimSpace(m[0]))
+		} else {
+			result.Skips++
+		}
+	}
+	if m := prLine.FindStringSubmatch(body); m != nil {
+		result.PR = m[1]
+	}
+	// The Moderator can add audit Findings, so more settled items are valid.
+	if settled := len(result.Fixes) + result.Skips; settled < want.ReviewFindings {
+		return stageResult{}, fmt.Sprintf("Verdict settles %d of the Review's %d Findings", settled, want.ReviewFindings)
+	}
+	if want.RequirePR && result.PR == "" {
+		return stageResult{}, "wrote a done result without a 'PR:' line"
+	}
+	return result, ""
 }
 
 var (
-	verdictItem = regexp.MustCompile(`(?mi)^- \[(fix|skip)\]`)
+	verdictItem = regexp.MustCompile(`(?mi)^- \[(fix|skip)\].*`)
 	findingItem = regexp.MustCompile(`(?m)^- \(`)
 	prLine      = regexp.MustCompile(`(?m)^PR:\s*(\S+)`)
 )
-
-// verdictCounts counts a Verdict's "- [fix]" and "- [skip]" items.
-func verdictCounts(verdict string) (fix, skip int) {
-	for _, m := range verdictItem.FindAllStringSubmatch(verdict, -1) {
-		if strings.EqualFold(m[1], "fix") {
-			fix++
-		} else {
-			skip++
-		}
-	}
-	return fix, skip
-}
-
-// fixItems are a Verdict's "- [fix]" lines, all the Fix Stage is given.
-func fixItems(verdict string) []string {
-	var items []string
-	for _, line := range strings.Split(verdict, "\n") {
-		if m := verdictItem.FindStringSubmatch(line); m != nil && strings.EqualFold(m[1], "fix") {
-			items = append(items, strings.TrimSpace(line))
-		}
-	}
-	return items
-}
-
-// findingCount counts a Review's "- (severity) location — problem" items.
-func findingCount(review string) int {
-	return len(findingItem.FindAllString(review, -1))
-}
-
-func prURL(fixResult string) string {
-	if m := prLine.FindStringSubmatch(fixResult); m != nil {
-		return m[1]
-	}
-	return ""
-}
 
 // stagePrompt is the text a Stage's session is prompted with: the Stage skill's
 // body followed by this run's inputs. The text is passed whole because Codex

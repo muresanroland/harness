@@ -152,7 +152,7 @@ func TestKilledRunResumesAtTheRightStageWithoutRedoingFinishedOnes(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := &Orchestrator{run: o.run, repo: o.repo, mainPane: o.mainPane, workspace: o.workspace, tick: o.tick, max: o.max, log: o.log, state: state}
+	resumed := &Orchestrator{Config: o.Config, state: state}
 	before := len(w.Called("herdr agent start"))
 	runEpic(t, resumed)
 

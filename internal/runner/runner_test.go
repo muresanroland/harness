@@ -11,8 +11,8 @@ import (
 )
 
 func TestRunnerSeamThroughFake(t *testing.T) {
-	f := &runnertest.Fake{Handle: func(dir, cmd string) (string, error) {
-		if cmd == "git remote" {
+	f := &runnertest.Fake{Handle: func(dir string, argv []string) (string, error) {
+		if strings.Join(argv, " ") == "git remote" {
 			return "origin\n", nil
 		}
 		return "", errors.New("boom")

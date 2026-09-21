@@ -28,8 +28,8 @@ func preparedRepo(t *testing.T) string {
 	return repo
 }
 
-func okTools(dir, cmd string) (string, error) {
-	if cmd == "git remote" {
+func okTools(dir string, argv []string) (string, error) {
+	if strings.Join(argv, " ") == "git remote" {
 		return "origin\n", nil
 	}
 	return "", nil
@@ -92,8 +92,8 @@ func TestInitKeepsEditedSkillUnlessForced(t *testing.T) {
 
 func TestPreflightNamesEachMissingPrerequisite(t *testing.T) {
 	repo := t.TempDir() // no bd workspace, no create-pr skill
-	run := (&runnertest.Fake{Handle: func(dir, cmd string) (string, error) {
-		if cmd == "gh auth status" {
+	run := (&runnertest.Fake{Handle: func(dir string, argv []string) (string, error) {
+		if strings.Join(argv, " ") == "gh auth status" {
 			return "", errors.New("not logged in")
 		}
 		return "", nil // git remote prints nothing

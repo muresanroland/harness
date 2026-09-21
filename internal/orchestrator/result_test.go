@@ -1,32 +1,47 @@
 package orchestrator
 
 import (
-	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestCompletionRuleReadsFirstLineOfResultFile(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string) string {
-		path := filepath.Join(dir, name)
-		os.WriteFile(path, []byte(body), 0o644)
-		return path
-	}
+func TestStageResultAcceptance(t *testing.T) {
 	cases := []struct {
-		name, path, want string
+		name, body string
+		want       resultRequirements
+		reason     string
 	}{
-		{"done", write("done.md", "STATUS: done\nall good\n"), "done"},
-		{"failed", write("failed.md", "STATUS: failed\ntests red\n"), "failed"},
-		{"missing file", filepath.Join(dir, "nope.md"), ""},
-		{"status not on first line", write("late.md", "notes\nSTATUS: done\n"), ""},
-		{"crlf and spacing", write("crlf.md", "STATUS:  done \r\n"), "done"},
+		{"done", "STATUS: done\nall good\n", resultRequirements{}, ""},
+		{"failed", "STATUS: failed\ntests red\n", resultRequirements{}, "reported STATUS: failed"},
+		{"missing file", "", resultRequirements{}, "went idle without a done result"},
+		{"status not on first line", "notes\nSTATUS: done\n", resultRequirements{}, "went idle without a done result"},
+		{"missing prefix", "done\n", resultRequirements{}, "went idle without a done result"},
+		{"unknown status", "STATUS: working\n", resultRequirements{}, "went idle without a done result"},
+		{"crlf spacing and case", " STATUS:  DONE \r\n", resultRequirements{}, ""},
+		{"incomplete Verdict", "STATUS: done\n- [fix] a.go:1\n", resultRequirements{ReviewFindings: 2}, "Verdict settles 1 of the Review's 2 Findings"},
+		{"audit adds Findings", "STATUS: done\n- [fix] a.go:1\n- [skip] b.go:2\n", resultRequirements{ReviewFindings: 1}, ""},
+		{"empty clean Verdict", "STATUS: done\n", resultRequirements{ReviewFindings: 0}, ""},
+		{"intermediate Fix needs no PR", "STATUS: done\n", resultRequirements{}, ""},
+		{"final Fix needs PR", "STATUS: done\n", resultRequirements{RequirePR: true}, "wrote a done result without a 'PR:' line"},
+		{"final Fix with PR", "STATUS: done\nPR: https://example.test/pr/7\n", resultRequirements{RequirePR: true}, ""},
+		{"failed even with PR", "STATUS: failed\nPR: https://example.test/pr/7\n", resultRequirements{RequirePR: true}, "reported STATUS: failed"},
 	}
 	for _, c := range cases {
-		if got, _ := resultStatus(c.path); got != c.want {
-			t.Errorf("%s: status = %q, want %q", c.name, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "result.md")
+			if c.body != "" {
+				writeFile(t, path, c.body)
+			}
+			result, reason := readStageResult(path, c.want)
+			if reason != c.reason {
+				t.Errorf("reason = %q, want %q", reason, c.reason)
+			}
+			if reason != "" && !reflect.DeepEqual(result, stageResult{}) {
+				t.Errorf("rejected result exposes content: %+v", result)
+			}
+		})
 	}
 }
 
@@ -46,7 +61,7 @@ func TestLocationIsTabAndPaneOrderNotIDs(t *testing.T) {
 	}
 }
 
-func TestVerdictCountsFixAndSkipItems(t *testing.T) {
+func TestStageResultInterpretsAcceptedContents(t *testing.T) {
 	verdict := `STATUS: done
 
 ## Findings
@@ -58,15 +73,26 @@ func TestVerdictCountsFixAndSkipItems(t *testing.T) {
 
 Not a finding: - [fix] inside prose is ignored only when it does not start the line.
 `
-	fix, skip := verdictCounts(verdict)
-	if fix != 2 || skip != 2 {
-		t.Errorf("verdictCounts = %d fix, %d skip; want 2, 2", fix, skip)
+	cases := []struct {
+		name, body string
+		want       stageResult
+	}{
+		{"Verdict", verdict, stageResult{Fixes: []string{
+			"- [fix] (high) orders.go:41 — nil map write | reason: both sides agree | settled: consensus",
+			"- [FIX] (medium) api.go:7 — missing validation | reason: score 0.81 | settled: typesafe",
+		}, Skips: 2}},
+		{"Review", "STATUS: done\n- (high) a.go:1 — x\n- (low) b.go:2 — y\nprose\n", stageResult{Findings: 2}},
+		{"Fix", "STATUS: done\nPR: https://github.com/o/r/pull/7\n", stageResult{PR: "https://github.com/o/r/pull/7"}},
 	}
-	if n := findingCount("STATUS: done\n- (high) a.go:1 — x\n- (low) b.go:2 — y\nprose\n"); n != 2 {
-		t.Errorf("findingCount = %d, want 2", n)
-	}
-	if got := prURL("STATUS: done\nPR: https://github.com/o/r/pull/7\n"); got != "https://github.com/o/r/pull/7" {
-		t.Errorf("prURL = %q", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "result.md")
+			writeFile(t, path, c.body)
+			got, reason := readStageResult(path, resultRequirements{})
+			if reason != "" || !reflect.DeepEqual(got, c.want) {
+				t.Errorf("readStageResult = %+v, %q; want %+v, accepted", got, reason, c.want)
+			}
+		})
 	}
 }
 
