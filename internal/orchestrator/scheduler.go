@@ -44,6 +44,11 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 
 	var active sync.Map // ticket -> running in this process
 	launch := func(ticket string, work func(context.Context, string)) {
+		// A Ticket can consume stop while the scheduler is in a bd call.
+		// Its saved state stays running for resume, but this run is over.
+		if ctx.Err() != nil {
+			return
+		}
 		active.Store(ticket, true)
 		o.inFlight.Add(1)
 		go func() {

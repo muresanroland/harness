@@ -222,7 +222,6 @@ func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, fil
 	if err != nil {
 		return stageResult{}, "has no Stage skill (run 'harness init'): " + err.Error()
 	}
-	os.Remove(file)
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return stageResult{}, err.Error()
 	}
@@ -233,6 +232,9 @@ func (o *Orchestrator) attempt(ctx context.Context, ticket string, st Stage, fil
 	if err != nil {
 		return stageResult{}, "got no pane: " + err.Error()
 	}
+	// The previous session can still write while its pane is closing. Clear
+	// its result only after freshPane has replaced it, before the new writer.
+	os.Remove(file)
 	deadline := time.Now().Add(st.Timeout)
 
 	agentArgs := []string{"--permission-mode", "auto", "--add-dir", o.runDir(ticket)}

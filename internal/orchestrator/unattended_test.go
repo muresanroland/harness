@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,18 +16,83 @@ import (
 // working is a session that starts and never finishes.
 func working(prompt) (string, string) { return "", "working" }
 
-func TestStopEndsASingleTicketRunToo(t *testing.T) {
-	w, o := newWorld(t, &bdTicket{ID: "hx-1"})
-	w.session = working
-	ended := make(chan bool, 1)
-	go func() { ended <- o.RunTicket(context.Background(), "hx-1") }()
-
-	w.awaitLine("hx-1 implement prompted")
-	w.control("stop")
-	select {
-	case <-ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("'harness stop' left a --ticket run going; only 'harness start <epic>' could be stopped")
+// Each wait must observe stop, including waits before an agent is prompted.
+func TestStopEndsASingleTicketRunInEveryWaitState(t *testing.T) {
+	for _, phase := range []string{"trust", "shell startup", "working", "blocked", "wake"} {
+		t.Run(phase, func(t *testing.T) {
+			w, o := newWorld(t, &bdTicket{ID: "hx-1"})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			w.session = working
+			entered := make(chan struct{}, 1)
+			releaseStart := make(chan struct{})
+			waitLine := "hx-1 implement prompted"
+			switch phase {
+			case "trust":
+				o.Home = t.TempDir()
+				waitLine = "does not trust"
+			case "shell startup":
+				// Keep the startup deadline beyond the test's context, and do
+				// not return busy until stop exists: it must reach startup's
+				// sleep, not a later Wake hold after startup times out.
+				o.Tick = time.Second
+				handle := w.Fake.Handle
+				w.Fake.Handle = func(dir string, argv []string) (string, error) {
+					if strings.HasPrefix(strings.Join(argv, " "), "herdr agent start") {
+						select {
+						case entered <- struct{}{}:
+						default:
+						}
+						select {
+						case <-releaseStart:
+						case <-ctx.Done():
+						}
+						return "", errors.New(`{"error":{"code":"agent_pane_busy"}}`)
+					}
+					return handle(dir, argv)
+				}
+			case "blocked":
+				w.session = func(prompt) (string, string) { return "", "blocked" }
+				waitLine = "WAKE hx-1 implement blocked"
+			case "wake":
+				w.session = func(prompt) (string, string) { return "", "idle" }
+				waitLine = "WAKE hx-1 implement went idle"
+			}
+			finished := make(chan struct{})
+			go func() { o.RunTicket(ctx, "hx-1"); close(finished) }()
+			t.Cleanup(func() { cancel(); <-finished })
+			if phase == "shell startup" {
+				select {
+				case <-entered:
+				case <-ctx.Done():
+					t.Fatal("never attempted to start an agent")
+				}
+			} else {
+				w.awaitLine(waitLine)
+			}
+			w.control("stop")
+			close(releaseStart)
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+				t.Fatal("stop did not end the run while waiting")
+			}
+			if !o.stopping() {
+				t.Fatal("run ended without consuming stop")
+			}
+			saved, err := loadState(w.repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ts := saved.Tickets["hx-1"]; ts == nil || ts.Status != statusRunning || ts.Stage != "implement" {
+				t.Errorf("stop did not preserve resumable state: %+v", ts)
+			}
+			if len(w.Called("herdr pane close"))+len(w.Called("herdr tab close")) != 0 {
+				t.Error("stop closed a live pane")
+			}
+			if len(w.Called("herdr agent start h-hx-1-review")) != 0 {
+				t.Error("a stopped stage advanced to Review")
+			}
+		})
 	}
 }
 
