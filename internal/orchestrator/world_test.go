@@ -36,6 +36,7 @@ type world struct {
 	tickets     []*bdTicket
 	prs         map[string]string // PR url -> gh JSON
 	mainBlocked bool              // the Main session refuses prompts: agent_blocked
+	mainNoAgent bool              // the launching pane is a shell: agent_not_found
 	failing     map[string]error  // command prefix -> the error its next call fails with
 	merged      bool              // every PR is merged as soon as gh is asked about it
 	live        int               // Tickets between worktree creation and tab close
@@ -97,13 +98,14 @@ func newWorld(t *testing.T, tickets ...*bdTicket) (*world, *Orchestrator) {
 		t.Fatal(err)
 	}
 	w := &world{Fake: &runnertest.Fake{}, t: t, repo: repo, agents: map[string]string{}, prs: map[string]string{}, tickets: tickets, session: succeed}
+	home := trustHome(t, repo) // both agents already trust this repo
 	for _, ticket := range tickets {
 		ticket.Status, ticket.IssueType = "open", "task"
 	}
 	w.Fake.Handle = w.handle
 	state, _ := loadState(repo)
 	o := &Orchestrator{Config: Config{
-		Exec: w.Run, Repo: repo, MainPane: "main", Workspace: "w1", APIKey: "sk-test",
+		Exec: w.Run, Repo: repo, MainPane: "main", Workspace: "w1", APIKey: "sk-test", Home: home,
 		Tick: time.Millisecond, Max: 3, Log: log.New(io.Discard, "", 0),
 	}, state: state}
 	return w, o
@@ -178,6 +180,9 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 	case strings.HasPrefix(cmd, "herdr agent prompt"):
 		if argv[3] == "main" && w.mainBlocked {
 			return "", errors.New(`{"error":{"code":"agent_blocked"}}`)
+		}
+		if argv[3] == "main" && w.mainNoAgent {
+			return "", errors.New(`{"error":{"code":"agent_not_found","message":"agent target main not found"}}`)
 		}
 		if argv[3] == "main" {
 			w.main = append(w.main, argv[4])

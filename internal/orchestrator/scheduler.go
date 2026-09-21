@@ -36,6 +36,8 @@ func (o *Orchestrator) bdIssues(args ...string) ([]bdIssue, error) {
 func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	o.cancel = cancel
+	o.drainCommands()
 	o.mu.Lock()
 	o.state.Epic = epic
 	o.mu.Unlock()
@@ -57,10 +59,6 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 
 	var lastPoll time.Time
 	for {
-		if o.consume("stop") {
-			o.report("stopped; live panes left alone, 'harness start %s' resumes", epic)
-			return nil
-		}
 		for _, command := range o.commands() {
 			kind, ticket, _ := strings.Cut(command, "-")
 			_, busy := active.Load(ticket)
@@ -70,6 +68,7 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 				// a Ticket's own hold consumes its retry and park
 			case kind == "retry" && ts.Status == statusParked && o.consume(command):
 				o.update(ticket, func(ts *TicketState) { ts.Status = statusRunning })
+			case command == "stop": // sleep owns it, in every mode
 			case kind == "address" && o.consume(command):
 				launch(ticket, o.address)
 			case ts.Status == "" && o.consume(command):
@@ -109,6 +108,9 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 			}
 		}
 		if !o.sleep(ctx) {
+			if o.stopping() {
+				return nil // 'harness stop' is a clean end, not a failure
+			}
 			return ctx.Err()
 		}
 	}
@@ -117,6 +119,10 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 // RunTicket runs a single Ticket's Pipeline, without scheduling or merge
 // polling, and reports whether the Ticket ended Parked.
 func (o *Orchestrator) RunTicket(ctx context.Context, ticket string) (parked bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	o.cancel = cancel
+	o.drainCommands()
 	o.runTicket(ctx, ticket)
 	return o.ticket(ticket).Status == statusParked
 }

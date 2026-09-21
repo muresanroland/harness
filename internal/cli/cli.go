@@ -3,13 +3,16 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -21,8 +24,9 @@ import (
 const usage = `usage: harness <command>
 
   init [--force]              install the Stage skills and preflight the Target repo
-  start <epic> [--max N]      run an Epic's Tickets through the Pipeline
-  start --ticket <id>         run one Ticket through the Pipeline
+  start <epic> [--max N]      run an Epic's Tickets through the Pipeline, here
+  start --ticket <id>         run one Ticket through the Pipeline, here
+    --detach                  run it in the background instead, logging to a file
   status                      print the state of the run
   retry <ticket>              restart a Ticket's current Stage with a fresh session
   park <ticket>               park a Ticket
@@ -85,7 +89,7 @@ func command(args []string, out io.Writer, repo string) int {
 type startArgs struct {
 	epic, ticket string
 	max          int
-	foreground   bool
+	detach       bool
 }
 
 // parseStart accepts the Epic and the flags in any order.
@@ -95,7 +99,7 @@ func parseStart(args []string, out io.Writer) (startArgs, error) {
 	flags.SetOutput(out)
 	flags.StringVar(&parsed.ticket, "ticket", "", "run this one Ticket instead of an Epic")
 	flags.IntVar(&parsed.max, "max", 3, "Tickets in the Pipeline at once")
-	flags.BoolVar(&parsed.foreground, "foreground", false, "run the Orchestrator in this process")
+	flags.BoolVar(&parsed.detach, "detach", false, "run the Orchestrator in the background, logging to .harness/orchestrator.log")
 	var positional []string
 	for { // flag stops at the first positional argument: take it and carry on
 		if err := flags.Parse(args); err != nil {
@@ -115,8 +119,9 @@ func parseStart(args []string, out io.Writer) (startArgs, error) {
 	return parsed, nil
 }
 
-// start preflights, then runs the Orchestrator detached from the launching
-// shell so it survives the Main session; --foreground is that detached process.
+// start preflights, then runs the Orchestrator in this process, where its log
+// is the pane's output and Ctrl-C ends it. --detach puts it in the background
+// instead, for a Main session that wants its prompt back.
 func start(args []string, out io.Writer, repo string, run runner.Runner, env func(string) string) int {
 	parsed, err := parseStart(args, out)
 	if err != nil {
@@ -135,14 +140,14 @@ func start(args []string, out io.Writer, repo string, run runner.Runner, env fun
 		return 1
 	}
 	logPath := filepath.Join(repo, ".harness", "orchestrator.log")
-	if !parsed.foreground {
-		// --foreground goes first, where no positional argument can hide it.
-		pid, err := detach(repo, logPath, append([]string{"start", "--foreground"}, args...))
+	if parsed.detach {
+		child := append([]string{"start"}, slices.DeleteFunc(slices.Clone(args), func(a string) bool { return a == "--detach" })...)
+		pid, err := detach(repo, logPath, child)
 		if err != nil {
 			fmt.Fprintln(out, "start:", err)
 			return 1
 		}
-		fmt.Fprintf(out, "Orchestrator started (pid %d), log: %s\n", pid, logPath)
+		fmt.Fprintf(out, "Orchestrator started in the background (pid %d), log: %s\n", pid, logPath)
 		return 0
 	}
 
@@ -152,23 +157,34 @@ func start(args []string, out io.Writer, repo string, run runner.Runner, env fun
 		return 1
 	}
 	defer release()
+
+	// Everything the run says is shown here; the same lines go to the log file
+	// so a finished run can still be read back.
+	events := out
+	if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		defer logFile.Close()
+		events = io.MultiWriter(out, logFile)
+	}
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	o, err := orchestrator.New(orchestrator.Config{
 		Exec: run, Repo: repo, Max: parsed.max,
 		MainPane: env("HERDR_PANE_ID"), Workspace: env("HERDR_WORKSPACE_ID"), APIKey: env("TYPESAFE_API_KEY"),
 		Tick: 5 * time.Second, PollPRs: 30 * time.Second,
-		Log: log.New(out, "", log.LstdFlags),
+		Log: log.New(events, "", log.LstdFlags),
 	})
 	if err != nil {
 		fmt.Fprintln(out, "start:", err)
 		return 1
 	}
+	fmt.Fprintf(out, "Orchestrator running here (pid %d). Ctrl-C, or 'harness stop' from another pane, ends it.\n", os.Getpid())
 	if parsed.ticket != "" {
-		if o.RunTicket(context.Background(), parsed.ticket) {
+		if o.RunTicket(ctx, parsed.ticket) {
 			return 1
 		}
 		return 0
 	}
-	if err := o.Run(context.Background(), parsed.epic); err != nil {
+	if err := o.Run(ctx, parsed.epic); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(out, "start:", err)
 		return 1
 	}

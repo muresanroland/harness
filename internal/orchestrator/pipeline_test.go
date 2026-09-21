@@ -39,10 +39,15 @@ func TestImplementStageRunsInATicketTabAndReportsToMain(t *testing.T) {
 			t.Errorf("agent start lacks %q: %s", want, start)
 		}
 	}
-	lines := w.mainLines()
-	if lines[0] != "[harness] hx-12 implement started -> 2-1" || lines[1] != "[harness] hx-12 implement done" {
-		t.Errorf("Main session lines = %q", lines[:2])
+	// The Main session is told where the session is and that it finished.
+	started := w.awaitLine("hx-12 implement started")
+	if !strings.HasSuffix(started, "-> 2-1") {
+		t.Errorf("started line does not locate the pane: %q", started)
 	}
+	if !strings.Contains(started, "claude in "+o.worktree("hx-12")) {
+		t.Errorf("started line does not say what runs where: %q", started)
+	}
+	w.awaitLine("hx-12 implement done")
 }
 
 func TestCleanFirstVerdictOpensPRAfterOneRound(t *testing.T) {

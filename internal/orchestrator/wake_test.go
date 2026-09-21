@@ -33,12 +33,15 @@ func TestEachWakeTriggerSendsAWakeLineAndRetryRestartsTheStage(t *testing.T) {
 			failImplementOnce(w, func(prompt) (string, string) { return "", "idle" })
 		}},
 		{"timeout", "timed out", func(w *world) {
-			failImplementOnce(w, func(prompt) (string, string) {
-				w.mu.Lock()
-				w.waitErr = errors.New(`{"error":{"code":"timeout"}}`)
-				w.mu.Unlock()
-				return "", "working"
-			})
+			was := stageImplement.Timeout
+			stageImplement.Timeout = 5 * time.Millisecond
+			w.t.Cleanup(func() { stageImplement.Timeout = was })
+			failImplementOnce(w, func(prompt) (string, string) { return "", "working" })
+		}},
+		{"prompt not taken", "did not take the prompt", func(w *world) {
+			// A session still at a trust dialog takes no prompt, and then sits
+			// there looking idle: without this the Stage reads as finished.
+			w.failOnce("herdr agent prompt w1:p", errors.New(`{"error":{"code":"agent_blocked"}}`))
 		}},
 		{"pane died", "pane died", func(w *world) {
 			failImplementOnce(w, func(p prompt) (string, string) {

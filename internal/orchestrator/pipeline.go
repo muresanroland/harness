@@ -110,5 +110,6 @@ func (o *Orchestrator) prepareWorktree(ticket string) error {
 	if _, err := o.Exec(o.Repo, "bd", "update", ticket, "--status", "in_progress"); err != nil {
 		o.Log.Printf("%s: not marked in_progress: %v", ticket, err)
 	}
+	o.report("%s worktree ready on branch %s, Ticket in_progress", ticket, ticket)
 	return nil
 }

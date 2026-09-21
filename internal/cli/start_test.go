@@ -12,15 +12,19 @@ import (
 
 func TestStartArgumentsParseInAnyOrder(t *testing.T) {
 	for _, args := range [][]string{
-		{"hx", "--max", "2", "--foreground"},
-		{"--max", "2", "hx", "--foreground"},
-		{"--foreground", "--max", "2", "hx"},
-		{"--foreground", "hx", "--max=2"},
+		{"hx", "--max", "2", "--detach"},
+		{"--max", "2", "hx", "--detach"},
+		{"--detach", "--max", "2", "hx"},
+		{"--detach", "hx", "--max=2"},
 	} {
 		got, err := parseStart(args, &strings.Builder{})
-		if err != nil || got.epic != "hx" || got.max != 2 || !got.foreground {
+		if err != nil || got.epic != "hx" || got.max != 2 || !got.detach {
 			t.Errorf("parseStart(%q) = %+v, %v", args, got, err)
 		}
+	}
+	// A run stays in the pane it was started from unless asked otherwise.
+	if got, err := parseStart([]string{"hx"}, &strings.Builder{}); err != nil || got.detach {
+		t.Errorf("start without --detach detached: %+v, %v", got, err)
 	}
 	if got, err := parseStart([]string{"--ticket", "hx-1"}, &strings.Builder{}); err != nil || got.ticket != "hx-1" || got.max != 3 {
 		t.Errorf("--ticket: %+v, %v", got, err)
@@ -40,7 +44,7 @@ func TestSecondStartInTheSameRepoRefuses(t *testing.T) {
 	}
 	defer release()
 	var out bytes.Buffer
-	code := Run([]string{"start", "hx", "--foreground"}, &out, repo, (&runnertest.Fake{Handle: okTools}).Run, herdrEnv)
+	code := Run([]string{"start", "hx"}, &out, repo, (&runnertest.Fake{Handle: okTools}).Run, herdrEnv)
 	if code == 0 || !strings.Contains(out.String(), "already running") {
 		t.Errorf("second start: exit %d, output %q", code, out.String())
 	}
