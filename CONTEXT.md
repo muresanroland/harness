@@ -15,6 +15,9 @@ _Avoid_: Project, host repo
 A skill owned and shipped by the Harness that holds the instructions for one Stage. Once installed in a Target repo, the repo's copy is the one that runs and may be edited there.
 _Avoid_: Prompt, template
 
+**Shipped skill**:
+Any skill the Harness installs into a Target repo: the Stage skills, plus create-pr, which the Fix Stage runs. A repo that already has a create-pr of its own is asked whether to keep it, replace it, or take the shipped one beside it as harness-create-pr.
+
 **Skill manifest**:
 The Target repo's list of the skills it wants: the Stage skills, plus third-party skills named by their source.
 _Avoid_: Config, lockfile
