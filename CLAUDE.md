@@ -2,6 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Build and test
+
+Go, standard library only (no third-party modules).
+
+```bash
+go build -o harness ./cmd/harness   # the binary; skills/ is embedded with go:embed
+go vet ./...                        # typecheck
+go test -race ./...                 # all tests; -run <Name> for one
+```
+
+- `cmd/harness`: entry point. `internal/cli`: commands and flags. `internal/setup`: `harness init` and preflight. `internal/orchestrator`: Stages, Pipeline, scheduler, state file, merge poller. `internal/runner`: the seam to every external tool (herdr, bd, gh, git). `skills/`: the skills the Harness ships.
+- Tests substitute `runnertest.Fake` for the runner; `internal/orchestrator/world_test.go` fakes a whole herdr/bd/gh world and never starts real sessions.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
 
