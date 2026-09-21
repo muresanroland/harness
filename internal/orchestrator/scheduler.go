@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +19,7 @@ type bdIssue struct {
 }
 
 func (o *Orchestrator) bdIssues(args ...string) ([]bdIssue, error) {
-	out, err := o.run(o.repo, "bd", args...)
+	out, err := o.Exec(o.Repo, "bd", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -27,16 +27,10 @@ func (o *Orchestrator) bdIssues(args ...string) ([]bdIssue, error) {
 	if err := json.Unmarshal([]byte(out), &issues); err != nil {
 		return nil, fmt.Errorf("bd %s: unreadable reply: %w", args[0], err)
 	}
-	tickets := issues[:0]
-	for _, issue := range issues {
-		if issue.IssueType != "epic" {
-			tickets = append(tickets, issue)
-		}
-	}
-	return tickets, nil
+	return slices.DeleteFunc(issues, func(issue bdIssue) bool { return issue.IssueType == "epic" }), nil
 }
 
-// Run drives an Epic: it starts ready Tickets, at most o.max at once, resumes
+// Run drives an Epic: it starts ready Tickets, at most o.Max at once, resumes
 // the ones a killed run left behind, polls PRs for merges, obeys control
 // commands, and returns when every child Ticket is closed or on 'stop'.
 func (o *Orchestrator) Run(ctx context.Context, epic string) error {
@@ -84,14 +78,14 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 				o.report("%s %s ignored: the Ticket is %s and not waiting on a Wake", ticket, kind, ts.Status)
 			}
 		}
-		if time.Since(lastPoll) >= o.pollPRs {
+		if time.Since(lastPoll) >= o.PollPRs {
 			o.pollMerges()
 			lastPoll = time.Now()
 		}
 
 		children, err := o.bdIssues("list", "--parent", epic, "--all", "--json")
 		if err != nil {
-			o.log.Printf("bd list: %v", err)
+			o.Log.Printf("bd list: %v", err)
 		} else if len(children) == 0 {
 			return fmt.Errorf("%s has no Tickets: is it the id of a beads Epic in this repo?", epic)
 		} else if allClosed(children) {
@@ -100,16 +94,16 @@ func (o *Orchestrator) Run(ctx context.Context, epic string) error {
 		}
 
 		for _, ticket := range o.resumable() {
-			if _, busy := active.Load(ticket); !busy && inPipeline() < o.max {
+			if _, busy := active.Load(ticket); !busy && inPipeline() < o.Max {
 				launch(ticket, o.runTicket)
 			}
 		}
 		ready, err := o.bdIssues("ready", "--parent", epic, "--json")
 		if err != nil {
-			o.log.Printf("bd ready: %v", err)
+			o.Log.Printf("bd ready: %v", err)
 		}
 		for _, issue := range ready {
-			if o.ticket(issue.ID).Status == "" && inPipeline() < o.max {
+			if o.ticket(issue.ID).Status == "" && inPipeline() < o.Max {
 				o.update(issue.ID, func(*TicketState) {})
 				launch(issue.ID, o.runTicket)
 			}
@@ -128,12 +122,7 @@ func (o *Orchestrator) RunTicket(ctx context.Context, ticket string) (parked boo
 }
 
 func allClosed(children []bdIssue) bool {
-	for _, child := range children {
-		if child.Status != "closed" {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(children, func(child bdIssue) bool { return child.Status != "closed" })
 }
 
 // resumable lists Tickets the state file says are in the Pipeline.
@@ -146,13 +135,13 @@ func (o *Orchestrator) resumable() []string {
 			tickets = append(tickets, id)
 		}
 	}
-	sort.Strings(tickets)
+	slices.Sort(tickets)
 	return tickets
 }
 
 // commands lists the control files waiting for the Orchestrator.
 func (o *Orchestrator) commands() []string {
-	entries, _ := os.ReadDir(filepath.Dir(ControlFile(o.repo, "x")))
+	entries, _ := os.ReadDir(filepath.Dir(ControlFile(o.Repo, "x")))
 	var names []string
 	for _, entry := range entries {
 		names = append(names, entry.Name())
@@ -178,31 +167,31 @@ func (o *Orchestrator) pollMerges() {
 	o.mu.Unlock()
 
 	for ticket, ts := range open {
-		out, err := o.run(o.repo, "gh", "pr", "view", ts.PR, "--json", "state,mergeable")
+		out, err := o.Exec(o.Repo, "gh", "pr", "view", ts.PR, "--json", "state,mergeable")
 		var pr ghPR
 		if err == nil {
 			err = json.Unmarshal([]byte(out), &pr)
 		}
 		if err != nil {
-			o.log.Printf("%s: gh pr view: %v", ticket, err)
+			o.Log.Printf("%s: gh pr view: %v", ticket, err)
 			continue
 		}
 		switch {
 		case pr.State == "MERGED":
 			// Closing the Ticket is what unblocks its dependents: until bd has
 			// done it the Ticket stays pr-open and the next poll tries again.
-			if _, err := o.run(o.repo, "bd", "close", ticket, "--reason", "PR merged: "+ts.PR); err != nil {
-				o.log.Printf("%s: merged but not closed, will retry: %v", ticket, err)
+			if _, err := o.Exec(o.Repo, "bd", "close", ticket, "--reason", "PR merged: "+ts.PR); err != nil {
+				o.Log.Printf("%s: merged but not closed, will retry: %v", ticket, err)
 				continue
 			}
 			// The work is on main now, so bd's cleanliness and containment
 			// checks (which a squash merge fails) no longer protect anything.
 			cleanup := "worktree and branch removed"
-			if _, err := o.run(o.repo, "bd", "worktree", "remove", o.worktree(ticket), "--force"); err != nil {
-				o.log.Printf("%s: %v", ticket, err)
+			if _, err := o.Exec(o.Repo, "bd", "worktree", "remove", o.worktree(ticket), "--force"); err != nil {
+				o.Log.Printf("%s: %v", ticket, err)
 				cleanup = "could not remove the worktree, remove it by hand"
-			} else if _, err := o.run(o.repo, "git", "branch", "-D", ticket); err != nil {
-				o.log.Printf("%s: %v", ticket, err)
+			} else if _, err := o.Exec(o.Repo, "git", "branch", "-D", ticket); err != nil {
+				o.Log.Printf("%s: %v", ticket, err)
 				cleanup = "worktree removed, could not delete the branch"
 			}
 			o.update(ticket, func(ts *TicketState) { ts.Status = statusMerged })
@@ -228,13 +217,13 @@ func (o *Orchestrator) address(ctx context.Context, ticket string) {
 		o.report("%s address refused: the Ticket has no open PR", ticket)
 		return
 	}
-	feedback, err := o.run(o.repo, "gh", "pr", "view", ts.PR, "--json", "mergeable,reviews,comments")
+	feedback, err := o.Exec(o.Repo, "gh", "pr", "view", ts.PR, "--json", "mergeable,reviews,comments")
 	if err != nil {
 		o.report("%s address failed: %v", ticket, err)
 		return
 	}
 	os.Remove(filepath.Join(o.runDir(ticket), resultName(stageAddress, 0))) // every address run is a new one
-	_, err = o.runStage(ctx, ticket, stageAddress, 0, addressInputs(ts.PR, feedback), nil)
+	_, err = o.runStage(ctx, ticket, stageAddress, 0, addressInputs(ts.PR, feedback), resultRequirements{})
 	if ctx.Err() != nil {
 		return
 	}

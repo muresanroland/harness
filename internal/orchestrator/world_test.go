@@ -100,12 +100,12 @@ func newWorld(t *testing.T, tickets ...*bdTicket) (*world, *Orchestrator) {
 	for _, ticket := range tickets {
 		ticket.Status, ticket.IssueType = "open", "task"
 	}
-	w.Fake.Argv = w.handle
+	w.Fake.Handle = w.handle
 	state, _ := loadState(repo)
-	o := &Orchestrator{
-		run: w.Run, repo: repo, mainPane: "main", workspace: "w1", apiKey: "sk-test",
-		tick: time.Millisecond, max: 3, log: log.New(io.Discard, "", 0), state: state,
-	}
+	o := &Orchestrator{Config: Config{
+		Exec: w.Run, Repo: repo, MainPane: "main", Workspace: "w1", APIKey: "sk-test",
+		Tick: time.Millisecond, Max: 3, Log: log.New(io.Discard, "", 0),
+	}, state: state}
 	return w, o
 }
 

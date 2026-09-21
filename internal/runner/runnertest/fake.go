@@ -6,29 +6,24 @@ import (
 	"sync"
 )
 
-// Fake records every call and answers from Argv, else Handle; a call neither
-// handles returns "" with no error.
+// Fake records every call and answers it from Handle; a nil Handle returns ""
+// with no error.
 type Fake struct {
 	mu     sync.Mutex
 	calls  []string
-	Handle func(dir, cmd string) (string, error)
-	Argv   func(dir string, argv []string) (string, error) // for calls whose arguments contain spaces
+	Handle func(dir string, argv []string) (string, error)
 }
 
 // Run is the runner.Runner to hand to the code under test.
 func (f *Fake) Run(dir, name string, args ...string) (string, error) {
 	argv := append([]string{name}, args...)
-	cmd := strings.Join(argv, " ")
 	f.mu.Lock()
-	f.calls = append(f.calls, cmd)
+	f.calls = append(f.calls, strings.Join(argv, " "))
 	f.mu.Unlock()
-	switch {
-	case f.Argv != nil:
-		return f.Argv(dir, argv)
-	case f.Handle != nil:
-		return f.Handle(dir, cmd)
+	if f.Handle == nil {
+		return "", nil
 	}
-	return "", nil
+	return f.Handle(dir, argv)
 }
 
 // Calls returns every call so far, in order, as space-joined command lines.

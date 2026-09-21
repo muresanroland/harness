@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -30,10 +29,6 @@ func TestStartArgumentsParseInAnyOrder(t *testing.T) {
 		if _, err := parseStart(bad, &strings.Builder{}); err == nil {
 			t.Errorf("parseStart(%q) accepted", bad)
 		}
-	}
-	// The detached child must see --foreground whatever the user's argument order.
-	if got := fmt.Sprint(foregroundArgs([]string{"start", "--max", "2", "hx"})); got != "[start --foreground --max 2 hx]" {
-		t.Errorf("foregroundArgs = %s", got)
 	}
 }
 

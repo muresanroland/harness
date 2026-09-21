@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -92,12 +93,7 @@ func PrintStatus(out io.Writer, repo string) int {
 		fmt.Fprintf(out, ", Epic %s", state.Epic)
 	}
 	fmt.Fprintln(out)
-	ids := make([]string, 0, len(state.Tickets))
-	for id := range state.Tickets {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(state.Tickets)) {
 		ts := state.Tickets[id]
 		line := fmt.Sprintf("%-20s %-8s %s", id, ts.Status, ts.Stage)
 		if ts.Round > 0 {

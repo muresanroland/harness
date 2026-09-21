@@ -115,12 +115,6 @@ func parseStart(args []string, out io.Writer) (startArgs, error) {
 	return parsed, nil
 }
 
-// foregroundArgs is the detached child's command line: --foreground goes
-// first so no positional argument can hide it from flag parsing.
-func foregroundArgs(args []string) []string {
-	return append([]string{args[0], "--foreground"}, args[1:]...)
-}
-
 // start preflights, then runs the Orchestrator detached from the launching
 // shell so it survives the Main session; --foreground is that detached process.
 func start(args []string, out io.Writer, repo string, run runner.Runner, env func(string) string) int {
@@ -142,7 +136,8 @@ func start(args []string, out io.Writer, repo string, run runner.Runner, env fun
 	}
 	logPath := filepath.Join(repo, ".harness", "orchestrator.log")
 	if !parsed.foreground {
-		pid, err := detach(repo, logPath, foregroundArgs(append([]string{"start"}, args...)))
+		// --foreground goes first, where no positional argument can hide it.
+		pid, err := detach(repo, logPath, append([]string{"start", "--foreground"}, args...))
 		if err != nil {
 			fmt.Fprintln(out, "start:", err)
 			return 1
@@ -158,7 +153,7 @@ func start(args []string, out io.Writer, repo string, run runner.Runner, env fun
 	}
 	defer release()
 	o, err := orchestrator.New(orchestrator.Config{
-		Run: run, Repo: repo, Max: parsed.max,
+		Exec: run, Repo: repo, Max: parsed.max,
 		MainPane: env("HERDR_PANE_ID"), Workspace: env("HERDR_WORKSPACE_ID"), APIKey: env("TYPESAFE_API_KEY"),
 		Tick: 5 * time.Second, PollPRs: 30 * time.Second,
 		Log: log.New(out, "", log.LstdFlags),

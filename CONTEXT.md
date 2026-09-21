@@ -38,6 +38,9 @@ _Avoid_: Iteration, loop, cycle
 One step of the Pipeline, carried out by a fresh agent session in its own pane.
 _Avoid_: Step, phase
 
+**Stage result**:
+The recorded outcome of a Stage, carrying its completion status and, as appropriate, Findings, a Verdict, or an opened pull request. The Orchestrator uses it together with the session's state to decide whether the Stage can advance.
+
 **Finding**:
 One claimed problem with a Ticket's changes, raised by the Review or by the over-engineering audit, and the unit the Debate argues over.
 _Avoid_: Comment, issue, point

@@ -32,7 +32,7 @@ type herdrReply struct {
 
 func (o *Orchestrator) herdr(args ...string) (herdrReply, error) {
 	var reply herdrReply
-	out, err := o.run(o.repo, "herdr", args...)
+	out, err := o.Exec(o.Repo, "herdr", args...)
 	if err != nil {
 		return reply, err
 	}
@@ -69,11 +69,11 @@ func location(tabs []tabInfo, panes []paneInfo, paneID string) string {
 }
 
 func (o *Orchestrator) locate(paneID string) string {
-	tabs, err := o.herdr("tab", "list", "--workspace", o.workspace)
+	tabs, err := o.herdr("tab", "list", "--workspace", o.Workspace)
 	if err != nil {
 		return "?"
 	}
-	panes, err := o.herdr("pane", "list", "--workspace", o.workspace)
+	panes, err := o.herdr("pane", "list", "--workspace", o.Workspace)
 	if err != nil {
 		return "?"
 	}
