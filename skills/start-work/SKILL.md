@@ -9,9 +9,9 @@ You are the Main session. A deterministic Orchestrator does the work; you launch
 
 ## Launch
 
-1. Run `harness start <epic-id>` from the Target repo's root, in this pane. Add `--max N` only if the user asked for a different number of Tickets at once (default 3).
+1. Run `harness start <epic-id> --detach` from the Target repo's root, in this pane. Add `--max N` only if the user asked for a different number of Tickets at once (default 3). `--detach` is what gives you your prompt back; without it the run holds the pane and prints its progress there, which is what a person watching it wants.
 2. If it prints `preflight:` lines, show them to the user and stop; each line names one missing prerequisite. `harness init` installs the Stage skills.
-3. Otherwise it detaches and prints its pid. It logs to `.harness/orchestrator.log`. Tell the user it is running, then wait. Do not poll: every event arrives here as a line.
+3. Otherwise it prints its pid and logs to `.harness/orchestrator.log`. Tell the user it is running, then wait. Do not poll: every event arrives here as a line.
 
 Starting again after a kill, a `/clear`, or `harness stop` resumes the run from `.harness/state.json`. `harness status` prints that state.
 
@@ -21,7 +21,10 @@ Lines beginning with `[harness]` are typed into this pane by the Orchestrator, n
 
 | Line | Meaning | You |
 |---|---|---|
-| `<ticket> <stage> started -> 2-1` | A Stage session started in that pane | nothing |
+| `<ticket> worktree ready on branch <b>, Ticket in_progress` | The Ticket's branch exists and bd knows it started | nothing |
+| `<ticket> <stage> started: <kind> in <dir> -> 2-1` | A Stage session started in that pane | nothing |
+| `<ticket> <stage> prompted, waiting for <file>` | The Stage skill reached the session | nothing |
+| `<ticket> <stage> waiting: <kind> does not trust <dir> yet` | The agent would open a trust dialog | tell the user to open that agent in that directory once and accept; it carries on by itself |
 | `<ticket> implement done`, `review N done: ...`, `debate N done: ...`, `fix N done` | A Stage finished | nothing |
 | `<ticket> pr open after N round(s): <url>` | The Ticket's Pipeline ended | tell the user the PR is ready to merge |
 | `<ticket> merged: ...` | The user merged it; the Ticket is closed and dependents unblock | nothing |
@@ -38,6 +41,7 @@ Answer progress lines with at most one short sentence. Never start, prompt, or c
 A Wake holds only that Ticket; the others keep running. For each Wake:
 
 1. **`blocked`**: the session is waiting on a permission prompt or a question. Never answer a permission prompt. Tell the user which pane needs them (`<tab>-<pane>`) and do nothing else; the Stage continues by itself once they answer.
+   **`did not take the prompt`**: the session never received the Stage skill, usually because it is sitting at a dialog. Same answer: name the pane, let the user deal with it, then `harness retry <ticket>`.
 2. **Any other reason** (`reported STATUS: failed`, `went idle without a done result`, `timed out ...`, `pane died`, `wrote a done result without a 'PR:' line`): read the evidence first: `herdr agent read <pane-id> --source recent-unwrapped --lines 120` (find the pane id with `herdr pane list`; if the pane died there is nothing to read) and the Stage's result file in `.harness/runs/<ticket>/`.
 3. Then do exactly one of:
    - **One follow-up prompt** when the session is alive and plainly close: it finished but forgot the result file, or stopped to ask something you can answer from the Ticket. Send it with `herdr agent prompt <pane-id> "<text>"`. If it then writes `STATUS: done`, the Orchestrator advances by itself.
@@ -52,4 +56,4 @@ A Wake holds only that Ticket; the others keep running. For each Wake:
 - `harness status`: state of every Ticket.
 - `harness retry <ticket>` / `harness park <ticket>`: as above.
 - `harness address <ticket>`: only when the user asks; a session acts on the PR's review comments and conflicts.
-- `harness stop`: only when the user asks; stops scheduling and leaves live panes alone.
+- `harness stop`: only when the user asks; stops scheduling and leaves live panes alone. It reaches a run started either way, detached or in a pane; a run held in a pane also stops on Ctrl-C.

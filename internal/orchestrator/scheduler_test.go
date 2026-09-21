@@ -147,7 +147,24 @@ func TestKilledRunResumesAtTheRightStageWithoutRedoingFinishedOnes(t *testing.T)
 	}
 
 	// A new process: fresh Orchestrator, state loaded from the file.
-	w.session = succeed
+	oldPane := o.ticket("hx-1").Panes["review"]
+	w.mu.Lock()
+	oldStatus, oldAlive := w.agents[oldPane]
+	w.mu.Unlock()
+	if !oldAlive || oldStatus != "working" {
+		t.Fatalf("restart fixture must leave Review alive, got %q, %v", oldStatus, oldAlive)
+	}
+	w.session = func(p prompt) (string, string) {
+		if p.stage == "review" {
+			w.mu.Lock()
+			_, alive := w.agents[oldPane]
+			w.mu.Unlock()
+			if alive {
+				t.Error("resumed Review was prompted while its old session was still alive")
+			}
+		}
+		return succeed(p)
+	}
 	state, err := loadState(w.repo)
 	if err != nil {
 		t.Fatal(err)
@@ -171,18 +188,41 @@ func TestKilledRunResumesAtTheRightStageWithoutRedoingFinishedOnes(t *testing.T)
 func TestStopExitsWithStateSavedAndLeavesPanesAlone(t *testing.T) {
 	w, o := newWorld(t, &bdTicket{ID: "hx-1"})
 	w.session = func(prompt) (string, string) { return "", "idle" } // hx-1 holds on a Wake
+	// Hold the scheduler in an external call while the Ticket consumes stop
+	// and exits. It must not resume that now-inactive Ticket when the call
+	// returns, even though its persisted state is deliberately still running.
+	armed := make(chan struct{})
+	stopped := false
+	handle := w.Fake.Handle
+	w.Fake.Handle = func(dir string, argv []string) (string, error) {
+		if strings.HasPrefix(strings.Join(argv, " "), "bd list") && !stopped {
+			select {
+			case <-armed:
+				stopped = true
+				w.control("stop")
+				o.inFlight.Wait()
+			default:
+			}
+		}
+		return handle(dir, argv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	finished := make(chan error, 1)
-	go func() { finished <- o.Run(context.Background(), "hx") }()
+	go func() { finished <- o.Run(ctx, "hx") }()
+	t.Cleanup(cancel)
 	w.awaitLine("WAKE hx-1")
 
-	w.control("stop")
+	close(armed)
 	if err := <-finished; err != nil {
 		t.Fatalf("Run after stop: %v", err)
 	}
 	o.inFlight.Wait()
 
 	if len(w.Called("herdr pane close"))+len(w.Called("herdr tab close")) != 0 {
-		t.Errorf("stop must leave live panes alone")
+		t.Errorf("stop must leave live panes alone; calls:\n%s", strings.Join(w.Calls(), "\n"))
+	}
+	if len(w.Called("herdr agent start h-hx-1-implement")) != 1 {
+		t.Error("scheduler restarted a stopped Ticket")
 	}
 	saved, _ := loadState(w.repo)
 	if ts := saved.Tickets["hx-1"]; ts == nil || ts.Status != statusRunning || ts.Stage != "implement" {

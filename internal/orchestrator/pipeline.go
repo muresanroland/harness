@@ -85,9 +85,35 @@ func (o *Orchestrator) pipeline(ctx context.Context, ticket string) error {
 			o.herdr("tab", "close", tab)
 		}
 		o.report("%s pr open after %d round(s): %s", ticket, round, fix.PR)
+		o.pruneRunDir(ticket)
 		return nil
 	}
 	return nil
+}
+
+// evidence is what a run keeps for whoever reads it later: the Stages' result
+// files, diffs and debate transcripts, all flat text.
+var evidence = map[string]bool{".md": true, ".txt": true, ".patch": true, ".json": true, ".sh": true}
+
+// pruneRunDir drops a Ticket's build scratch once its pull request is open and
+// its Pipeline is over. The run directory is the Codex sandbox's only writable
+// root, so a Stage that has to compile puts its build cache there: a Go cache
+// runs to some 100MB per Ticket, and nothing reads it again. Keeping only the
+// evidence survives the next Stage inventing a fifth name for its cache. Best
+// effort: scratch that cannot be removed is only disk.
+func (o *Orchestrator) pruneRunDir(ticket string) {
+	dir := o.runDir(ticket)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !evidence[filepath.Ext(e.Name())] {
+			if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+				o.Log.Printf("%s: scratch left in the run directory: %v", ticket, err)
+			}
+		}
+	}
 }
 
 // prepareWorktree creates the Ticket's worktree and branch once, brings the
@@ -110,5 +136,6 @@ func (o *Orchestrator) prepareWorktree(ticket string) error {
 	if _, err := o.Exec(o.Repo, "bd", "update", ticket, "--status", "in_progress"); err != nil {
 		o.Log.Printf("%s: not marked in_progress: %v", ticket, err)
 	}
+	o.report("%s worktree ready on branch %s, Ticket in_progress", ticket, ticket)
 	return nil
 }

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -55,9 +56,9 @@ func TestLinesMainCouldNotReceiveAreDeliveredLaterInOrder(t *testing.T) {
 	finished := make(chan struct{})
 	go func() { o.runTicket(context.Background(), "hx-1"); close(finished) }()
 
-	// Lines stay in order, so the refused "started" line is what gets retried;
-	// a third attempt means the Ticket is already holding on its queued WAKE.
-	for len(w.Called("herdr agent prompt main [harness] hx-1 implement started")) < 3 {
+	// Lines stay in order, so the first line is what gets retried; a third
+	// attempt means the Ticket is already holding on its queued WAKE.
+	for len(w.Called("herdr agent prompt main")) < 3 {
 		time.Sleep(time.Millisecond)
 	}
 	if got := w.mainLines(); len(got) != 0 {
@@ -71,7 +72,8 @@ func TestLinesMainCouldNotReceiveAreDeliveredLaterInOrder(t *testing.T) {
 	<-finished
 
 	lines := w.mainLines()
-	if len(lines) < 3 || !strings.Contains(lines[0], "started") || !strings.Contains(lines[1], "WAKE") {
+	started, wake := slices.IndexFunc(lines, contains("implement started")), slices.IndexFunc(lines, contains("WAKE"))
+	if started < 0 || wake < 0 || started > wake || !strings.Contains(lines[0], "worktree ready") {
 		t.Errorf("lines arrived out of order or were lost: %q", lines)
 	}
 }
@@ -118,4 +120,8 @@ func TestFixSessionIsGivenOnlyTheFixItems(t *testing.T) {
 	if strings.Contains(fixText, "b.go:2") || strings.Contains(fixText, "verdict-1.md") {
 		t.Errorf("a Fix session that does not open the PR must see only fix items:\n%s", fixText)
 	}
+}
+
+func contains(want string) func(string) bool {
+	return func(line string) bool { return strings.Contains(line, want) }
 }

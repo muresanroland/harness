@@ -13,7 +13,8 @@ You are the Review Stage of the Harness Pipeline. Your working directory is the 
 2. Read the Worktree's `AGENTS.md` or `CLAUDE.md`, and `CONTEXT.md` if present, so Findings respect the repo's conventions. `bd show <Ticket>` (run inside the Worktree) tells you what the change was meant to do; if the sandbox stops bd, `implement.md` in your working directory has the implementer's summary.
 3. Look for real problems only: incorrect behaviour, missed acceptance criteria, broken edge cases, security problems, data loss, tests that cannot fail. Read the surrounding code before claiming a bug. Style preferences are not Findings.
 4. In Round 2 or later, earlier `review-*.md` and `verdict-*.md` files are in your working directory. Do not raise again a Finding a Verdict already marked skip unless the code changed under it.
-5. Write the result file.
+5. If you have to compile or run tests, keep the build cache out of your working directory: `export GOCACHE="$TMPDIR/go-build" GOTMPDIR="$TMPDIR"` (or the equivalent for the repo's toolchain). The sandbox allows `$TMPDIR`, and a cache left in the run directory is ~100MB of junk per Ticket that nobody cleans.
+6. Write the result file.
 
 ## Result file
 

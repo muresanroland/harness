@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,10 +41,15 @@ func TestImplementStageRunsInATicketTabAndReportsToMain(t *testing.T) {
 			t.Errorf("agent start lacks %q: %s", want, start)
 		}
 	}
-	lines := w.mainLines()
-	if lines[0] != "[harness] hx-12 implement started -> 2-1" || lines[1] != "[harness] hx-12 implement done" {
-		t.Errorf("Main session lines = %q", lines[:2])
+	// The Main session is told where the session is and that it finished.
+	started := w.awaitLine("hx-12 implement started")
+	if !strings.HasSuffix(started, "-> 2-1") {
+		t.Errorf("started line does not locate the pane: %q", started)
 	}
+	if !strings.Contains(started, "claude in "+o.worktree("hx-12")) {
+		t.Errorf("started line does not say what runs where: %q", started)
+	}
+	w.awaitLine("hx-12 implement done")
 }
 
 func TestCleanFirstVerdictOpensPRAfterOneRound(t *testing.T) {
@@ -111,4 +118,33 @@ func TestTicketThatKeepsProducingFixItemsGetsPRAfterExactlyThreeRounds(t *testin
 		}
 	}
 	w.awaitLine("hx-1 pr open after 3 round(s)")
+}
+
+func TestOpenPRPrunesBuildScratchAndKeepsEvidence(t *testing.T) {
+	w, o := newWorld(t, &bdTicket{ID: "hx-1"})
+	// The Review Stage compiles the branch, and the run directory is the only
+	// place its sandbox may write, so its build cache lands there.
+	w.session = func(p prompt) (string, string) {
+		if p.stage == "review" {
+			dir := o.runDir(p.ticket)
+			writeFile(t, filepath.Join(dir, ".review-cache", "ab", "obj-a"), "go object data")
+			writeFile(t, filepath.Join(dir, "check-testharness"), "a compiled test binary")
+			writeFile(t, filepath.Join(dir, "diff-1.patch"), "the diff it reviewed")
+		}
+		return succeed(p)
+	}
+
+	o.runTicket(context.Background(), "hx-1")
+
+	w.awaitLine("hx-1 pr open after 1 round(s)")
+	for _, gone := range []string{".review-cache", "check-testharness"} {
+		if _, err := os.Stat(filepath.Join(o.runDir("hx-1"), gone)); !os.IsNotExist(err) {
+			t.Errorf("%s still in the run directory after the PR opened: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{"implement.md", "review-1.md", "verdict-1.md", "fix-1.md", "diff-1.patch"} {
+		if _, err := os.Stat(filepath.Join(o.runDir("hx-1"), kept)); err != nil {
+			t.Errorf("evidence pruned: %v", err)
+		}
+	}
 }

@@ -32,10 +32,12 @@ type world struct {
 	tabs        []string
 	panes       []paneInfo
 	agents      map[string]string // pane id -> herdr agent status
+	rect        [2]int            // width, height in cells of every pane; zero means roomy and square
 	main        []string          // lines the Main session received
 	tickets     []*bdTicket
 	prs         map[string]string // PR url -> gh JSON
 	mainBlocked bool              // the Main session refuses prompts: agent_blocked
+	mainNoAgent bool              // the launching pane is a shell: agent_not_found
 	failing     map[string]error  // command prefix -> the error its next call fails with
 	merged      bool              // every PR is merged as soon as gh is asked about it
 	live        int               // Tickets between worktree creation and tab close
@@ -97,13 +99,14 @@ func newWorld(t *testing.T, tickets ...*bdTicket) (*world, *Orchestrator) {
 		t.Fatal(err)
 	}
 	w := &world{Fake: &runnertest.Fake{}, t: t, repo: repo, agents: map[string]string{}, prs: map[string]string{}, tickets: tickets, session: succeed}
+	home := trustHome(t, repo) // both agents already trust this repo
 	for _, ticket := range tickets {
 		ticket.Status, ticket.IssueType = "open", "task"
 	}
 	w.Fake.Handle = w.handle
 	state, _ := loadState(repo)
 	o := &Orchestrator{Config: Config{
-		Exec: w.Run, Repo: repo, MainPane: "main", Workspace: "w1", APIKey: "sk-test",
+		Exec: w.Run, Repo: repo, MainPane: "main", Workspace: "w1", APIKey: "sk-test", Home: home,
 		Tick: time.Millisecond, Max: 3, Log: log.New(io.Discard, "", 0),
 	}, state: state}
 	return w, o
@@ -147,6 +150,8 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 		return reply(map[string]any{"tabs": tabs})
 	case strings.HasPrefix(cmd, "herdr pane list"):
 		return reply(map[string]any{"panes": w.panes})
+	case strings.HasPrefix(cmd, "herdr pane layout"):
+		return reply(map[string]any{"layout": map[string]any{"panes": w.layout(flagValue(argv, "--pane"))}})
 	case strings.HasPrefix(cmd, "herdr tab create"):
 		tab, pane := w.id("t"), w.id("p")
 		w.tabs = append(w.tabs, tab)
@@ -178,6 +183,9 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 	case strings.HasPrefix(cmd, "herdr agent prompt"):
 		if argv[3] == "main" && w.mainBlocked {
 			return "", errors.New(`{"error":{"code":"agent_blocked"}}`)
+		}
+		if argv[3] == "main" && w.mainNoAgent {
+			return "", errors.New(`{"error":{"code":"agent_not_found","message":"agent target main not found"}}`)
 		}
 		if argv[3] == "main" {
 			w.main = append(w.main, argv[4])
@@ -242,6 +250,29 @@ func (w *world) handle(dir string, argv []string) (string, error) {
 		return "origin\n", nil
 	}
 	return "", nil
+}
+
+// layout answers 'herdr pane layout' for the tab holding pane: every pane's
+// rect, a roomy default for the tests that do not care about geometry.
+func (w *world) layout(pane string) []map[string]any {
+	tab := ""
+	for _, p := range w.panes {
+		if p.PaneID == pane {
+			tab = p.TabID
+		}
+	}
+	var out []map[string]any
+	for _, p := range w.panes {
+		if p.TabID != tab {
+			continue
+		}
+		size := w.rect
+		if size == [2]int{} {
+			size = [2]int{200, 100}
+		}
+		out = append(out, map[string]any{"pane_id": p.PaneID, "rect": map[string]int{"width": size[0], "height": size[1]}})
+	}
+	return out
 }
 
 func (w *world) closePane(id string) {
