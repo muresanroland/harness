@@ -6,6 +6,7 @@ pub mod cli;
 pub(crate) mod orchestrator;
 pub(crate) mod setup;
 pub(crate) mod sha256;
+pub(crate) mod shell;
 pub(crate) mod skills;
 pub mod tools;
 pub mod version;

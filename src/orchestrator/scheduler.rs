@@ -12,18 +12,21 @@ use super::result::ResultRequirements;
 use super::stage::{pr_ref, result_name, Orchestrator, StageError, ADDRESS};
 use super::state::{TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
+/// One row of a bd JSON reply, the fields the scheduler and the Shell read.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct BdIssue {
-    id: String,
-    status: String,
-    issue_type: String,
-    dependencies: Vec<BdDependency>,
+pub(crate) struct BdIssue {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) status: String,
+    pub(crate) issue_type: String,
+    pub(crate) parent: String,
+    pub(crate) dependencies: Vec<BdDependency>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct BdDependency {
+pub(crate) struct BdDependency {
     depends_on_id: String,
     #[serde(rename = "type")]
     kind: String,

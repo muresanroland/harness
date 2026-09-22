@@ -58,7 +58,6 @@ const SETTLE_TICKS: u32 = 3;
 /// One moment of the run, said once in plain language: the same words on the
 /// Shell's RECENT panel and in the log (docs/design/events.md).
 #[derive(Clone, Debug)]
-#[cfg_attr(not(test), allow(dead_code))] // read by the Shell (harness-kqe.9)
 pub(crate) struct Event {
     pub(crate) time: chrono::DateTime<chrono::Local>,
     /// None for a run-level line.

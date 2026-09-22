@@ -11,7 +11,9 @@ use crate::orchestrator::state::{acquire_lock, lock_holder, print_status};
 use crate::setup;
 use crate::tools::Tools;
 
-const USAGE: &str = "usage: harness <command>
+const USAGE: &str = "usage: harness [command]
+
+  (no command)                open the Shell
 
   init [--force]              install the shipped skills, keep the TypeSafe key and preflight the Target repo
   start <epic> [--max N]      run an Epic's Tickets through the Pipeline, here
@@ -34,9 +36,15 @@ pub fn run(
     tools: Arc<dyn Tools>,
     env: &dyn Fn(&str) -> String,
 ) -> i32 {
+    // harness alone opens the Shell (ADR 0004).
     let Some(name) = args.first() else {
-        let _ = out.write_all(USAGE.as_bytes());
-        return 2;
+        return match crate::shell::open(repo, tools, env) {
+            Ok(()) => 0,
+            Err(err) => {
+                let _ = writeln!(out, "harness: {err}");
+                1
+            }
+        };
     };
     match name.as_str() {
         "init" => {
