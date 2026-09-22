@@ -1,8 +1,10 @@
-//! PROTOTYPE (harness-7bj.8): the Shell screen, three layouts of the same fake run
-//! to react to. Header (logo, status line, banner, version, folder), the Ticket
-//! table, the Overall bar, the RECENT panel and the input line.
-//! Keys: left/right switch layout, s clamps the view to 80x24, space pauses the
-//! animation and the fake events, q quits.
+//! PROTOTYPE (harness-7bj.8): the Shell screen over a fake run. Top bar (spinner,
+//! RUNNING, counts), the Overall bar shifting purple to green with progress, the
+//! header (logo, banner, version, folder), the boxed Ticket table, the boxed
+//! RECENT panel newest first, and the input line. Layout A of three; B and C
+//! (side by side, log first) are in this branch's history.
+//! Keys: s clamps the view to 80x24, space pauses the animation and the fake
+//! events, q quits.
 //! Throwaway. Logo and banner code copied from docs/design/logo-prototype.
 use std::time::{Duration, Instant};
 
@@ -52,7 +54,6 @@ struct App {
     script: Vec<(Option<usize>, &'static str, Option<(usize, &'static str, Status)>)>,
     ticks: u64,
     running: bool,
-    variant: usize,
     small: bool,
 }
 
@@ -109,9 +110,21 @@ impl App {
             (Some(3), "PR #14 opened after 2 rounds", Some((3, "PR #14 open", Status::Done))),
             (Some(7), "waiting for PR #14 to merge (Ticket 3)", Some((7, "waiting for PR #14", Status::Blocked))),
             (None, "state not saved: permission denied", None),
+            (Some(4), "debate 1 settled: 1 to fix, 1 skipped", None),
+            (Some(4), "fix 1 done", None),
+            (Some(4), "PR #15 opened after 1 round", Some((4, "PR #15 open", Status::Done))),
+            (Some(6), "retrying review 1 with a fresh session (pane 6-3)", Some((6, "review 1", Status::Active))),
+            (Some(5), "implemented", Some((5, "review 1", Status::Active))),
+            (Some(3), "merged, Ticket closed", Some((3, "merged", Status::Done))),
+            (Some(7), "implement started: claude (pane 7-1)", Some((7, "implement", Status::Active))),
+            (Some(6), "review 1 found 0 findings", None),
+            (Some(6), "PR #16 opened after 1 round", Some((6, "PR #16 open", Status::Done))),
+            (Some(5), "PR #17 opened after 1 round", Some((5, "PR #17 open", Status::Done))),
+            (Some(7), "PR #18 opened after 1 round", Some((7, "PR #18 open", Status::Done))),
+            (None, "Epic done, every Ticket closed", None),
         ];
         script.reverse();
-        App { logo: Logo::parse(SOURCE, truecolor), truecolor, folder, tickets, events, script, ticks: 0, running: true, variant: 0, small: false }
+        App { logo: Logo::parse(SOURCE, truecolor), truecolor, folder, tickets, events, script, ticks: 0, running: true, small: false }
     }
 
     fn now(&self) -> u32 { T0 + (self.ticks / 20) as u32 }
@@ -136,7 +149,7 @@ impl App {
     fn color(&self, n: usize) -> Color { TICKET_COLORS[(n - 1) % TICKET_COLORS.len()] }
 }
 
-// ---------- pieces shared by every variant ----------
+// ---------- pieces ----------
 
 fn hms(t: u32) -> String { format!("{:02}:{:02}:{:02}", t / 3600 % 24, t / 60 % 60, t % 60) }
 
@@ -163,23 +176,21 @@ fn status_line(app: &App) -> Line<'static> {
 /// Logo left, hopping while running; beside it the status line, the banner, the version and the folder.
 /// Only a tiny terminal (under 64 columns or 18 rows) drops the logo and banner for two plain lines.
 fn compact(area: Rect) -> bool { area.width < 64 || area.height < 18 }
-fn header_height(area: Rect) -> u16 { if compact(area) { 3 } else { 8 } }
+fn header_height(area: Rect) -> u16 { if compact(area) { 2 } else { 8 } }
 
 fn header(f: &mut Frame, area: Rect, app: &App) {
     if area.height < 8 || area.width < 64 { // given the compact slot by header_height
-        f.render_widget(status_line(app), Rect::new(area.x, area.y, area.width, 1));
         let l = Line::from(vec!["HARNESS ".fg(TEXT).bold(), VERSION.fg(Color::Rgb(160, 160, 160)), "  ".into(), app.folder.as_str().fg(MUTED)]);
-        f.render_widget(l, Rect::new(area.x, area.y + 1, area.width, 1));
+        f.render_widget(l, Rect::new(area.x, area.y, area.width, 1));
         return;
     }
     let dy = if app.running { HOP[app.ticks as usize % HOP.len()] } else { 2 };
     app.logo.render_at(Rect::new(area.x + 1, area.y, app.logo.width(), app.logo.height() + 1), dy, f.buffer_mut());
     let x = area.x + app.logo.width() + 4;
     let w = area.right().saturating_sub(x);
-    f.render_widget(status_line(app), Rect::new(x, area.y, w, 1));
-    banner("THE HARNESS", Rect::new(x, area.y + 2, w, 3), app.ticks as usize, app.truecolor, f.buffer_mut());
-    f.render_widget(Line::from(VERSION.fg(Color::Rgb(160, 160, 160))), Rect::new(x, area.y + 5, w, 1));
-    f.render_widget(Line::from(app.folder.as_str().fg(MUTED)), Rect::new(x, area.y + 6, w, 1));
+    banner("THE HARNESS", Rect::new(x, area.y + 1, w, 3), app.ticks as usize, app.truecolor, f.buffer_mut());
+    f.render_widget(Line::from(VERSION.fg(Color::Rgb(160, 160, 160))), Rect::new(x, area.y + 4, w, 1));
+    f.render_widget(Line::from(app.folder.as_str().fg(MUTED)), Rect::new(x, area.y + 5, w, 1));
 }
 
 fn indicator(t: &Ticket, ticks: u64) -> (&'static str, Color, &'static str, Color) {
@@ -218,13 +229,21 @@ fn ticket_table(app: &App, with_header: bool, width: u16) -> Table<'static> {
     }
 }
 
+/// Straight-line blend between two colours, `t` in 0..=1.
+fn lerp((a, b): (Color, Color), t: f32) -> Color {
+    let (Color::Rgb(r0, g0, b0), Color::Rgb(r1, g1, b1)) = (a, b) else { return a };
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color::Rgb(mix(r0, r1), mix(g0, g1), mix(b0, b1))
+}
+
 fn overall(app: &App, width: u16) -> Line<'static> {
     let (prs, total) = (app.prs(), app.tickets.len());
     let bar = width.saturating_sub(22).min(40) as usize;
     let filled = bar * prs / total;
+    let fill = paint_color(lerp((PURPLE, GREEN), prs as f32 / total as f32), app.truecolor);
     Line::from(vec![
         Span::styled("Overall  ", Style::default().fg(MUTED)),
-        Span::styled("█".repeat(filled), Style::default().fg(PURPLE)),
+        Span::styled("█".repeat(filled), Style::default().fg(fill)),
         Span::styled("░".repeat(bar - filled), Style::default().fg(BORDER)),
         Span::styled(format!("  {prs}/{total} PRs"), Style::default().fg(TEXT)),
     ])
@@ -259,91 +278,27 @@ fn boxed(title: &'static str) -> Block<'static> {
     Block::bordered().title(Span::styled(format!(" {title} "), Style::default().fg(MUTED))).border_style(Style::default().fg(BORDER)).padding(Padding::horizontal(1))
 }
 
-// ---------- variants ----------
+// ---------- the layout ----------
 
-const VARIANTS: [&str; 3] = ["stacked, boxed", "side by side", "log first, no boxes"];
-
-/// A: header, boxed Ticket table, Overall, boxed RECENT (newest first), input.
-fn variant_a(f: &mut Frame, area: Rect, app: &App) {
+/// Top bar, Overall, header, boxed Ticket table, boxed RECENT (newest first), input.
+fn layout_a(f: &mut Frame, area: Rect, app: &App) {
     let n = app.tickets.len() as u16;
-    let [head, tickets, over, recent, _, input] = Layout::vertical([
-        Constraint::Length(header_height(area)), Constraint::Length(n + 3), Constraint::Length(1), Constraint::Min(4), Constraint::Length(1), Constraint::Length(1),
+    let [top, over, _, head, tickets, recent, _, input] = Layout::vertical([
+        Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(header_height(area)),
+        Constraint::Length(n + 3), Constraint::Min(4), Constraint::Length(1), Constraint::Length(1),
     ]).areas(area);
+    f.render_widget(status_line(app), Rect::new(top.x + 1, top.y, top.width - 1, 1));
+    f.render_widget(overall(app, over.width - 1), Rect::new(over.x + 1, over.y, over.width - 1, 1));
     header(f, head, app);
     f.render_widget(ticket_table(app, true, tickets.width - 4).block(boxed("TICKETS")), tickets);
-    f.render_widget(overall(app, over.width - 2), Rect::new(over.x + 2, over.y, over.width - 2, 1));
     let inner = boxed("RECENT").inner(recent);
     f.render_widget(Paragraph::new(recent_lines(app, inner.height as usize, inner.width, true)).block(boxed("RECENT")), recent);
     input_line(f, input);
 }
 
-/// B: header, then Tickets (with Overall inside) left and RECENT right, input.
-fn variant_b(f: &mut Frame, area: Rect, app: &App) {
-    let [head, main, _, input] = Layout::vertical([Constraint::Length(header_height(area)), Constraint::Min(6), Constraint::Length(1), Constraint::Length(1)]).areas(area);
-    header(f, head, app);
-    let [left, right] = Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(main);
-    let block = boxed("TICKETS");
-    let inner = block.inner(left);
-    f.render_widget(block, left);
-    let [table, _, over] = Layout::vertical([Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
-    f.render_widget(ticket_table(app, false, table.width), table);
-    f.render_widget(overall(app, over.width), over);
-    let inner = boxed("RECENT").inner(right);
-    f.render_widget(Paragraph::new(recent_lines(app, inner.height as usize, inner.width, true)).block(boxed("RECENT")), right);
-    input_line(f, input);
-}
-
-/// C: no boxes. Tickets as a strip of chips, Overall under it, then the log oldest
-/// to newest running into the input line, like a terminal.
-fn variant_c(f: &mut Frame, area: Rect, app: &App) {
-    let [head, strip, over, _, title, log, input] = Layout::vertical([
-        Constraint::Length(header_height(area)), Constraint::Length(chip_rows(app, area.width)), Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Min(3), Constraint::Length(1),
-    ]).areas(area);
-    header(f, head, app);
-    f.render_widget(Paragraph::new(chips(app, strip.width)), strip);
-    f.render_widget(overall(app, over.width), over);
-    f.render_widget(Line::from("RECENT".fg(BORDER)), title);
-    // Bottom-anchored, so the newest line always sits just above the input.
-    let lines = recent_lines(app, log.height as usize, log.width, false);
-    let top = log.y + log.height - lines.len() as u16;
-    f.render_widget(Paragraph::new(lines), Rect::new(log.x, top, log.width, log.height - (top - log.y)));
-    input_line(f, input);
-}
-
-fn chip_text(t: &Ticket) -> String {
-    if t.stage.is_empty() { format!("{} {}", t.n, t.title) } else { format!("{} {} · {}", t.n, t.title, t.stage) }
-}
-
-fn chip_rows(app: &App, width: u16) -> u16 {
-    chips(app, width).len() as u16
-}
-
-fn chips(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line> = vec![];
-    let mut cur: Vec<Span> = vec![];
-    let mut used = 0usize;
-    for t in &app.tickets {
-        let (ind, ic, _, _) = indicator(t, app.ticks);
-        let text = chip_text(t);
-        let w = text.chars().count() + 5;
-        if used + w > width as usize && !cur.is_empty() {
-            lines.push(Line::from(std::mem::take(&mut cur)));
-            used = 0;
-        }
-        cur.push(Span::styled(format!("{ind} "), Style::default().fg(ic).add_modifier(Modifier::BOLD)));
-        cur.push(Span::styled(text, Style::default().fg(if t.status == Status::Queued { BORDER } else { TEXT })));
-        cur.push(Span::raw("   "));
-        used += w;
-    }
-    if !cur.is_empty() { lines.push(Line::from(cur)); }
-    lines
-}
-
 fn switcher(f: &mut Frame, area: Rect, app: &App) {
     let text = format!(
-        "  ◀ ▶  {}  {}    s: {}    space: {}    q: quit  ",
-        (b'A' + app.variant as u8) as char,
-        VARIANTS[app.variant],
+        "  prototype    s: {}    space: {}    q: quit  ",
         if app.small { "full size" } else { "80x24" },
         if app.running { "pause" } else { "resume" },
     );
@@ -362,7 +317,7 @@ fn draw(f: &mut Frame, app: &App) {
     } else {
         screen
     };
-    match app.variant { 0 => variant_a(f, screen, app), 1 => variant_b(f, screen, app), _ => variant_c(f, screen, app) }
+    layout_a(f, screen, app);
     switcher(f, bar, app);
 }
 
@@ -384,8 +339,6 @@ fn main() -> std::io::Result<()> {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Char(' ') => app.running = !app.running,
                 KeyCode::Char('s') => app.small = !app.small,
-                KeyCode::Right => app.variant = (app.variant + 1) % VARIANTS.len(),
-                KeyCode::Left => app.variant = (app.variant + VARIANTS.len() - 1) % VARIANTS.len(),
                 _ => {}
             }
         }
@@ -449,6 +402,10 @@ impl Widget for &Logo {
     fn render(self, area: Rect, buf: &mut Buffer) { self.render_at(area, 0, buf) }
 }
 
+fn paint_color(c: Color, truecolor: bool) -> Color {
+    match c { Color::Rgb(r, g, b) => paint((r, g, b), truecolor), other => other }
+}
+
 fn paint((r, g, b): (u8, u8, u8), truecolor: bool) -> Color {
     if truecolor {
         Color::Rgb(r, g, b)
@@ -503,18 +460,18 @@ fn banner(text: &str, area: Rect, ticks: usize, truecolor: bool, buf: &mut Buffe
 }
 
 #[test]
-fn every_variant_draws_at_every_size() {
+fn draws_at_every_size_and_the_bar_ends_green() {
     use ratatui::{backend::TestBackend, Terminal};
     let mut app = App::new(true);
-    for _ in 0..80 * 15 { app.tick(); }
     for (w, h) in [(200, 60), (120, 40), (80, 24), (60, 18), (40, 10)] {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        for v in 0..VARIANTS.len() {
-            app.variant = v;
-            t.draw(|f| draw(f, &app)).unwrap();
-        }
+        t.draw(|f| draw(f, &app)).unwrap();
     }
+    for _ in 0..80 * 30 { app.tick(); }
     assert!(app.script.is_empty());
+    assert_eq!(app.prs(), app.tickets.len());
+    assert_eq!(lerp((PURPLE, GREEN), 1.0), GREEN);
+    assert_eq!(lerp((PURPLE, GREEN), 0.0), PURPLE);
 }
 
 #[test]
@@ -524,13 +481,10 @@ fn dump() {
     let mut app = App::new(true);
     for _ in 0..80 * 4 { app.tick(); }
     for (w, h) in [(120, 36), (80, 24)] {
-        for v in 0..VARIANTS.len() {
-            app.variant = v;
-            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-            t.draw(|f| draw(f, &app)).unwrap();
-            let b = t.backend().buffer();
-            println!("==== {}x{} variant {}", w, h, VARIANTS[v]);
-            for y in 0..h { println!("{}", (0..w).map(|x| b[(x, y)].symbol()).collect::<String>()); }
-        }
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| draw(f, &app)).unwrap();
+        let b = t.backend().buffer();
+        println!("==== {}x{}", w, h);
+        for y in 0..h { println!("{}", (0..w).map(|x| b[(x, y)].symbol()).collect::<String>()); }
     }
 }
