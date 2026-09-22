@@ -1,3 +1,7 @@
+---
+status: superseded in part by ADR-0004 (the Main session; the deterministic Orchestrator and the Wake stand)
+---
+
 # Deterministic Orchestrator, with the Main session woken only for judgment
 
 The Pipeline's transitions ("this Stage's result file says done, start the next Stage") involve no judgment, so a compiled, deterministic Orchestrator owns Ticket state, pane placement and Stage transitions, and LLMs work only inside the Stages. An LLM-driven loop (a skill telling the Main session to poll herdr and spawn sessions) was rejected: it spends tokens while waiting, drifts over runs that last days, and dies on `/clear` or compaction. The Orchestrator sends a Wake to the Main session only when a Stage cannot advance by rule (blocked, idle without a `done` result, failed, timed out, pane died); the Main session may nudge or retry once, then parks the Ticket, and never answers a permission prompt.
