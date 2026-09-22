@@ -1,6 +1,7 @@
 //! The Orchestrator and its Config, the Stage table and the Stage loop: one
 //! Stage run to its completion rule, with the Wake hold when it cannot advance.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -75,17 +76,28 @@ pub(crate) struct Config {
     pub(crate) max: usize,
     /// Where every event line goes.
     pub(crate) log: Mutex<Box<dyn Write + Send>>,
+    /// Every Stage's deadline in the tests, where Go's set
+    /// stageImplement.Timeout; None is the Stage table's.
+    #[cfg(test)]
+    pub(crate) timeout: Option<Duration>,
 }
 
 /// Owns Ticket state, pane placement and Stage transitions. It makes no
 /// judgment calls: what it cannot advance by rule becomes a Wake.
 pub(crate) struct Orchestrator {
     pub(crate) cfg: Config,
-    state: Mutex<State>,
+    /// Never held across a sleep or a Tools call.
+    pub(crate) state: Mutex<State>,
     /// 'harness stop' arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
     /// One line at a time into the launching pane.
     pub(crate) unsent: Mutex<Unsent>,
+    /// The Tickets running on a thread of this process.
+    pub(crate) active: Mutex<BTreeSet<String>>,
+    /// The Ticket threads, which the binary never joins; the tests do, so a
+    /// failure on one fails the test as Go's t.Errorf did.
+    #[cfg(test)]
+    pub(crate) threads: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 #[derive(Default)]
@@ -115,7 +127,23 @@ impl Orchestrator {
             state: Mutex::new(state),
             stop: AtomicBool::new(false),
             unsent: Mutex::new(Unsent::default()),
+            active: Mutex::new(BTreeSet::new()),
+            #[cfg(test)]
+            threads: Mutex::new(Vec::new()),
         }
+    }
+
+    /// How long a Stage's session may run.
+    fn timeout(&self, st: &Stage) -> Duration {
+        #[cfg(test)]
+        if let Some(timeout) = self.cfg.timeout {
+            return timeout;
+        }
+        st.timeout
+    }
+
+    fn timed_out(&self, st: &Stage) -> String {
+        format!("timed out after {}", go_duration(self.timeout(st)))
     }
 
     pub(crate) fn run_dir(&self, ticket: &str) -> PathBuf {
@@ -355,7 +383,7 @@ impl Orchestrator {
         // Clear its result only after fresh_pane has replaced it, before the
         // new writer.
         let _ = fs::remove_file(file);
-        let deadline = Instant::now() + st.timeout;
+        let deadline = Instant::now() + self.timeout(st);
 
         let run_dir = self.run_dir(ticket).display().to_string();
         let agent_args: &[&str] = if st.kind == "codex" {
@@ -428,7 +456,7 @@ impl Orchestrator {
                     }
                 }
                 Some(_) if Instant::now() > deadline => {
-                    return (none, timed_out(st));
+                    return (none, self.timed_out(st));
                 }
                 Some(_) => {}
             }
@@ -514,7 +542,7 @@ impl Orchestrator {
             match self.agent_status(pane).as_deref() {
                 None => return "pane died".to_string(),
                 Some(status) if status != "blocked" => return String::new(),
-                Some(_) if Instant::now() > deadline => return timed_out(st),
+                Some(_) if Instant::now() > deadline => return self.timed_out(st),
                 Some(_) => {}
             }
             if !self.sleep() {
@@ -661,10 +689,6 @@ impl Orchestrator {
     }
 }
 
-fn timed_out(st: &Stage) -> String {
-    format!("timed out after {}", go_duration(st.timeout))
-}
-
 /// Go's Duration string, for the deadlines the Stage table and the tests use:
 /// "1h0m0s", "30m0s", "5ms".
 // ponytail: whole units only; Go also prints "1.5s" and "2m30.5s".
@@ -700,6 +724,7 @@ impl Config {
             poll_prs: Duration::from_millis(1),
             max: 3,
             log: Mutex::new(Box::new(io::sink())),
+            timeout: None,
         }
     }
 }

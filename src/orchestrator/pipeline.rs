@@ -14,14 +14,6 @@ const MAX_ROUNDS: usize = 3;
 const EVIDENCE: [&str; 5] = ["md", "txt", "patch", "json", "sh"];
 
 impl Orchestrator {
-    /// Runs a single Ticket's Pipeline, without scheduling or merge polling,
-    /// and reports whether the Ticket ended Parked.
-    pub(crate) fn run_single(&self, ticket: &str) -> bool {
-        self.drain_commands();
-        self.run_ticket(ticket);
-        self.ticket(ticket).status == STATUS_PARKED
-    }
-
     /// Moves one Ticket through the Pipeline: Implement, then Rounds of
     /// Review, Debate and Fix until a Verdict has no fix items or the cap is
     /// reached, ending with an open pull request. Finished Stages are skipped

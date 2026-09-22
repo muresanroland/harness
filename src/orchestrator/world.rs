@@ -3,10 +3,6 @@
 //! 'agent prompt': the session hook decides what result file a Stage's
 //! session leaves behind.
 
-// ponytail: the bd dependencies, gh's PR answers and the peak count are read
-// by the scheduler tests (harness-kqe.4); drop this line when they land.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -147,9 +143,10 @@ pub(crate) struct Inner {
 }
 
 pub(crate) struct World {
-    repo_dir: TempDir,
-    home_dir: TempDir,
+    _repo_dir: TempDir,
+    _home_dir: TempDir,
     pub(crate) repo: PathBuf,
+    pub(crate) home: PathBuf,
     calls: Mutex<Vec<String>>,
     inner: Mutex<Inner>,
     hook: Mutex<Option<Hook>>,
@@ -178,9 +175,10 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
         })
         .collect();
     let w = Arc::new(World {
-        repo_dir,
-        home_dir,
+        _repo_dir: repo_dir,
+        _home_dir: home_dir,
         repo: repo.clone(),
+        home: home.clone(),
         calls: Mutex::new(Vec::new()),
         inner: Mutex::new(Inner {
             tickets,
@@ -506,6 +504,20 @@ pub(crate) fn spawn_ticket(o: Arc<Orchestrator>, ticket: &str) -> Running {
     }
 }
 
+/// Run in the background, as 'harness start <epic>' does; an error fails
+/// the test.
+pub(crate) fn spawn_epic(o: Arc<Orchestrator>, epic: &str) -> Running {
+    let (run, epic) = (o.clone(), epic.to_string());
+    Running {
+        o,
+        handle: Some(thread::spawn(move || {
+            if let Err(err) = run.run(&epic) {
+                panic!("Run: {err}");
+            }
+        })),
+    }
+}
+
 /// RunTicket in the background: stale control files drained first.
 pub(crate) fn spawn_single(o: Arc<Orchestrator>, ticket: &str) -> Running {
     let (run, ticket) = (o.clone(), ticket.to_string());
@@ -549,6 +561,21 @@ impl Running {
         if let Some(Err(panic)) = self.handle.take().map(JoinHandle::join) {
             if !thread::panicking() {
                 std::panic::resume_unwind(panic);
+            }
+        }
+    }
+}
+
+impl Orchestrator {
+    /// The port of o.inFlight.Wait(): waits for every Ticket thread this run
+    /// started, and a panic on one (a fake-world failure) fails the test.
+    pub(crate) fn wait_in_flight(&self) {
+        let threads: Vec<_> = self.threads.lock().unwrap().drain(..).collect();
+        for handle in threads {
+            if let Err(panic) = handle.join() {
+                if !thread::panicking() {
+                    std::panic::resume_unwind(panic);
+                }
             }
         }
     }

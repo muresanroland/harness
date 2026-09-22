@@ -1,13 +1,10 @@
 //! The Orchestrator: the deterministic process that owns Ticket state, pane
 //! placement and Stage transitions (ADR 0001). Ported by harness-kqe.2 to .4.
 
-// ponytail: nothing outside the tests calls into here until the scheduler
-// (harness-kqe.4) wires the Pipeline to the CLI; drop this line then.
-#![allow(dead_code)]
-
 pub(crate) mod herdr;
 pub(crate) mod pipeline;
 pub(crate) mod result;
+pub(crate) mod scheduler;
 pub(crate) mod stage;
 pub(crate) mod state;
 pub(crate) mod trust;
@@ -36,6 +33,8 @@ mod result_test;
 #[cfg(test)]
 mod retry_result_test;
 #[cfg(test)]
+mod scheduler_test;
+#[cfg(test)]
 mod stage_test;
 #[cfg(test)]
 mod state_test;
@@ -43,5 +42,7 @@ mod state_test;
 mod trust_test;
 #[cfg(test)]
 mod unattended_test;
+#[cfg(test)]
+mod wake_test;
 #[cfg(test)]
 mod world;

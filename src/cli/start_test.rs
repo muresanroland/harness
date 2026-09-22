@@ -1,6 +1,7 @@
 use super::init_test::{herdr_env, ok_tools, prepared_repo, run_with};
 use super::{parse_start, StartArgs};
-use crate::orchestrator::state::{acquire_lock, lock_holder};
+use crate::orchestrator::stage::control_file;
+use crate::orchestrator::state::acquire_lock;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
 
@@ -74,35 +75,19 @@ fn control_commands_reach_only_a_running_orchestrator() {
     );
 
     let _lock = acquire_lock(repo.path()).unwrap();
-    // ponytail: with an Orchestrator running, Go left a control file (stop,
-    // retry-hx-1, ...) for it to drain; that wiring is harness-kqe.4's, so for
-    // now the commands get past the lock check and stop at "not ported yet".
-    for args in [
-        &["stop"][..],
-        &["retry", "hx-1"],
-        &["park", "hx-1"],
-        &["address", "hx-1"],
+    for (args, file) in [
+        (&["stop"][..], "stop"),
+        (&["retry", "hx-1"], "retry-hx-1"),
+        (&["park", "hx-1"], "park-hx-1"),
+        (&["address", "hx-1"], "address-hx-1"),
     ] {
         let (code, out) = run_with(args, repo.path(), Fake::quiet(), &herdr_env);
+        assert_eq!(code, 0, "{args:?}: exit {code}, output {out:?}");
         assert!(
-            !out.contains("no Orchestrator is running")
-                && out.ends_with(&format!("harness {}: not ported yet\n", args[0])),
-            "{args:?}: exit {code}, output {out:?}"
+            control_file(repo.path(), file).exists(),
+            "{args:?} left no control file {file}"
         );
     }
     let (code, _) = run_with(&["retry"], repo.path(), Fake::quiet(), &herdr_env);
     assert_ne!(code, 0, "retry without a Ticket accepted");
-}
-
-// ponytail: 'start' holds the lock and then stops, until harness-kqe.3 and .4
-// bring the Pipeline and the scheduler it would run.
-#[test]
-fn start_is_not_ported_yet() {
-    let repo = prepared_repo();
-    let (code, out) = run_with(&["start", "hx"], repo.path(), ok_tools(), &herdr_env);
-    assert!(
-        code == 2 && out.ends_with("harness start: not ported yet\n"),
-        "start: exit {code}, output {out:?}"
-    );
-    assert_eq!(lock_holder(repo.path()), 0, "start left the lock behind");
 }

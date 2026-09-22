@@ -124,7 +124,9 @@ fn lock_path(repo: &Path) -> PathBuf {
 /// releases the lock; the file stays, since unlinking it would let two later
 /// starts lock two different inodes. An unflocked file reads as stale.
 #[derive(Debug)]
-pub(crate) struct Lock(File);
+pub(crate) struct Lock {
+    _flock: File,
+}
 
 /// The pid of the live Orchestrator holding this Target repo's lock, or 0.
 pub(crate) fn lock_holder(repo: &Path) -> u32 {
@@ -159,5 +161,5 @@ pub(crate) fn acquire_lock(repo: &Path) -> io::Result<Lock> {
     }
     file.set_len(0)?;
     write!(file, "{}", std::process::id())?;
-    Ok(Lock(file))
+    Ok(Lock { _flock: file })
 }

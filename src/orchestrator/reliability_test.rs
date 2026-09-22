@@ -1,7 +1,55 @@
+use super::scheduler_test::{run_epic, with_deps};
 use super::world::{new_world, spawn_ticket, succeed, BdTicket};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+#[test]
+fn merged_ticket_is_retried_until_bd_closes_it() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1"), with_deps("hx-2", &["hx-1"])]);
+    w.lock().merged = true;
+    w.fail_once("bd close hx-1", "dolt: database is locked");
+    let o = Arc::new(o);
+
+    run_epic(&o); // finishes only if hx-1 does get closed and hx-2 unblocks
+
+    assert_eq!(
+        w.called("bd close hx-1").len(),
+        2,
+        "bd close hx-1, want a retry after the failure"
+    );
+    let merged = w
+        .main_lines()
+        .iter()
+        .filter(|l| l.contains("hx-1 merged"))
+        .count();
+    assert_eq!(
+        merged, 1,
+        "hx-1 reported merged {merged} times, want once, after it was really closed"
+    );
+}
+
+#[test]
+fn merge_cleanup_forces_past_bd_safety_checks_and_says_what_it_could_not_remove() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.fail_once("bd worktree remove", "HEAD not contained in upstream"); // a squash merge
+    w.fail_once("git branch -D hx-1", "branch is checked out");
+    let o = Arc::new(o);
+
+    run_epic(&o);
+
+    let got = w.called("bd worktree remove");
+    assert!(
+        got.len() == 1 && got[0].contains("--force"),
+        "worktree removal = {got:?}, want --force: the PR is merged"
+    );
+    let line = w.await_line("hx-1 merged");
+    assert!(
+        line.contains("could not"),
+        "merge line claims a clean-up that failed: {line:?}"
+    );
+}
 
 #[test]
 fn lines_main_could_not_receive_are_delivered_later_in_order() {

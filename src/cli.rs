@@ -1,9 +1,12 @@
 //! The harness command line.
 
-use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::Arc;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use crate::orchestrator::stage::{control_file, Config, Orchestrator};
 use crate::orchestrator::state::{acquire_lock, lock_holder, print_status};
 use crate::setup;
 use crate::tools::Tools;
@@ -43,7 +46,7 @@ pub fn run(
             }
             setup::report_missing(out, &setup::preflight(repo, &*tools, env))
         }
-        "start" => start(&args[1..], out, repo, &*tools, env),
+        "start" => start(&args[1..], out, repo, tools, env),
         "status" => print_status(out, repo),
         "stop" | "retry" | "park" | "address" => command(args, out, repo),
         _ => {
@@ -53,20 +56,16 @@ pub fn run(
     }
 }
 
-// ponytail: the Orchestrator lands with harness-kqe.2 to .4; until then every
-// command that needs it stops here.
-fn not_ported(name: &str, out: &mut dyn Write) -> i32 {
-    let _ = writeln!(out, "harness {name}: not ported yet");
-    2
-}
-
-/// The control commands for a running Orchestrator, which owns the state
-/// file and is the only process that acts on them.
+/// Leaves a control file for the running Orchestrator, which owns the state
+/// file and is the only process that acts on it.
 fn command(args: &[String], out: &mut dyn Write, repo: &Path) -> i32 {
-    let name = &args[0];
-    if name != "stop" && args.len() != 2 {
-        let _ = writeln!(out, "usage: harness {name} <ticket>");
-        return 2;
+    let mut name = args[0].clone();
+    if name != "stop" {
+        if args.len() != 2 {
+            let _ = writeln!(out, "usage: harness {name} <ticket>");
+            return 2;
+        }
+        name = format!("{name}-{}", args[1]);
     }
     if lock_holder(repo) == 0 {
         let _ = writeln!(
@@ -75,9 +74,14 @@ fn command(args: &[String], out: &mut dyn Write, repo: &Path) -> i32 {
         );
         return 1;
     }
-    // ponytail: the control file (stop, retry-<ticket>, ...) that the running
-    // Orchestrator drains is harness-kqe.4's; until then the command stops here.
-    not_ported(name, out)
+    let path = control_file(repo, &name);
+    if let Err(err) = fs::create_dir_all(path.parent().unwrap()).and_then(|()| fs::write(&path, ""))
+    {
+        let _ = writeln!(out, "{err}");
+        return 1;
+    }
+    let _ = writeln!(out, "sent: {name}");
+    0
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -129,20 +133,44 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
     Ok(parsed)
 }
 
-/// Preflights, then runs the Orchestrator in this process.
+/// Every event line the run says is shown on the terminal and kept in the
+/// log file, so a finished run can still be read back.
+// ponytail: stdout rather than `out`, which a Ticket thread cannot borrow;
+// the Shell (harness-kqe.10) replaces both with its RECENT panel.
+struct Events(Option<File>);
+
+impl Write for Events {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let _ = io::stdout().write_all(buf);
+        if let Some(file) = &mut self.0 {
+            let _ = file.write_all(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Preflights, then runs the Orchestrator in this process, where its log is
+/// the pane's output and Ctrl-C ends it.
 fn start(
     args: &[String],
     out: &mut dyn Write,
     repo: &Path,
-    tools: &dyn Tools,
+    tools: Arc<dyn Tools>,
     env: &dyn Fn(&str) -> String,
 ) -> i32 {
-    if let Err(err) = parse_start(args) {
-        let _ = writeln!(out, "{err}");
-        let _ = out.write_all(USAGE.as_bytes());
-        return 2;
-    }
-    let code = setup::report_missing(out, &setup::preflight(repo, tools, env));
+    let parsed = match parse_start(args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            let _ = writeln!(out, "{err}");
+            let _ = out.write_all(USAGE.as_bytes());
+            return 2;
+        }
+    };
+    let code = setup::report_missing(out, &setup::preflight(repo, &*tools, env));
     if code != 0 {
         return code;
     }
@@ -157,7 +185,47 @@ fn start(
             return 1;
         }
     };
-    not_ported("start", out)
+    let log_path = repo.join(".harness").join("orchestrator.log");
+    let log_file = File::options()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .ok();
+    let o = match Orchestrator::new(Config {
+        tools,
+        repo: repo.to_path_buf(),
+        main_pane: env("HERDR_PANE_ID"),
+        workspace: env("HERDR_WORKSPACE_ID"),
+        api_key: env("TYPESAFE_API_KEY"),
+        home: PathBuf::new(),
+        tick: Duration::from_secs(5),
+        poll_prs: Duration::from_secs(30),
+        max: parsed.max,
+        log: Mutex::new(Box::new(Events(log_file))),
+        #[cfg(test)]
+        timeout: None,
+    }) {
+        Ok(o) => o,
+        Err(err) => {
+            let _ = writeln!(out, "start: {err}");
+            return 1;
+        }
+    };
+    let _ = writeln!(
+        out,
+        "Orchestrator running here (pid {}). Ctrl-C, or 'harness stop' from another pane, ends it.",
+        std::process::id()
+    );
+    if !parsed.ticket.is_empty() {
+        return i32::from(o.run_single(&parsed.ticket));
+    }
+    match o.run(&parsed.epic) {
+        Ok(()) => 0,
+        Err(err) => {
+            let _ = writeln!(out, "start: {err}");
+            1
+        }
+    }
 }
 
 #[cfg(test)]
