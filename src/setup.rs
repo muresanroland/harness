@@ -1,51 +1,105 @@
-//! The thin 'harness init': installs the shipped skills into a Target repo
-//! and preflights it.
+//! The thin 'harness init': installs the shipped skills into a Target repo,
+//! keeps the TypeSafe key, and preflights it.
 
-use std::fs;
+use std::collections::BTreeMap;
+use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, OpenOptionsExt};
 use std::path::Path;
 
+use crate::sha256::sha256;
 use crate::skills::SKILLS;
 use crate::tools::Tools;
 
+/// The record of every skill file init wrote, path to sha256 of its content:
+/// under refresh, a file that still matches is unedited and is rewritten.
+const RECORD: &str = ".harness/installed-skills.json";
+const KEY_FILE: &str = ".harness/typesafe-key";
+
+enum Mode {
+    Fresh,
+    Refresh,
+    Overwrite,
+}
+
 /// Writes the Harness's skills to <repo>/.agents/skills and links them from
-/// <repo>/.claude/skills. An existing skill file is the Target repo's own and
-/// is left alone unless force. A Target repo that already has a create-pr
-/// skill of its own is asked what to do with the shipped one, since the Fix
-/// Stage runs whichever /create-pr the repo ends up with. `input` answers
-/// that question; None is the terminal's stdin, put in raw mode for the menu.
+/// <repo>/.claude/skills. When the shipped skills are already installed the
+/// gate asks first: cancel, refresh only the files unedited since install (by
+/// the record), or overwrite everything; force is overwrite unasked. A Target
+/// repo that already has a create-pr skill of its own is asked what to do
+/// with the shipped one, since the Fix Stage runs whichever /create-pr the
+/// repo ends up with. `input` answers the questions; None is the terminal's
+/// stdin, put in raw mode for the menu.
 pub(crate) fn install_skills(
     repo: &Path,
     force: bool,
     out: &mut dyn Write,
-    input: Option<&mut dyn Read>,
+    mut input: Option<&mut dyn Read>,
 ) -> io::Result<()> {
-    // The name the shipped create-pr is installed under; "" keeps the repo's own.
-    let mut pr = "create-pr";
-    if !force && has_skill(repo, "create-pr") {
-        pr = ask_about_create_pr(out, input)?;
-    }
-    for &(skill, body) in SKILLS {
-        let (mut name, mut overwrite, mut renamed) = (skill, force, false);
-        if skill == "create-pr" {
-            if pr.is_empty() {
-                continue;
-            }
-            (name, overwrite, renamed) = (pr, true, pr != skill);
+    let mut record: BTreeMap<String, String> = fs::read_to_string(repo.join(RECORD))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let mode = if force {
+        Mode::Overwrite
+    } else if installed(repo) {
+        write!(
+            out,
+            "init: the shipped skills are already installed here.\r\n"
+        )?;
+        match menu(
+            out,
+            reborrow(&mut input),
+            &[
+                "cancel, leave them as they are",
+                "refresh only the skills not edited since install",
+                "overwrite everything with the shipped skills",
+            ],
+        )? {
+            0 => return Ok(()),
+            1 => Mode::Refresh,
+            _ => Mode::Overwrite,
         }
-        let dest = repo.join(".agents/skills").join(name).join("SKILL.md");
-        if fs::symlink_metadata(&dest).is_ok() && !overwrite {
+    } else {
+        Mode::Fresh
+    };
+    // The name the shipped create-pr is installed under; "" keeps the repo's own.
+    let pr = match mode {
+        Mode::Fresh if has_skill(repo, "create-pr") => ask_about_create_pr(out, input)?,
+        Mode::Fresh | Mode::Overwrite => "create-pr",
+        // Whichever name the first init chose; none recorded means the repo's own.
+        Mode::Refresh => ["create-pr", "harness-create-pr"]
+            .into_iter()
+            .find(|name| record.contains_key(&skill_path(name)))
+            .unwrap_or(""),
+    };
+    for &(skill, body) in SKILLS {
+        let name = match skill {
+            "create-pr" if pr.is_empty() => continue,
+            "create-pr" => pr,
+            _ => skill,
+        };
+        let rel = skill_path(name);
+        let dest = repo.join(&rel);
+        let write = match mode {
+            Mode::Overwrite => true,
+            Mode::Refresh => record
+                .get(&rel)
+                .is_some_and(|hash| fs::read(&dest).is_ok_and(|now| sha256(&now) == *hash)),
+            Mode::Fresh => skill == "create-pr" || fs::symlink_metadata(&dest).is_err(),
+        };
+        if !write {
             continue;
         }
-        let body = if renamed {
+        let body = if name != skill {
             // Installed beside the repo's own, so it needs its own name in the text.
             body.replace("create-pr", name)
         } else {
             body.to_string()
         };
         fs::create_dir_all(dest.parent().unwrap())?;
-        fs::write(&dest, body)?;
+        fs::write(&dest, &body)?;
+        record.insert(rel, sha256(body.as_bytes()));
     }
     fs::create_dir_all(repo.join(".claude/skills"))?;
     for &(skill, _) in SKILLS {
@@ -65,7 +119,125 @@ pub(crate) fn install_skills(
         }
         symlink(Path::new("../../.agents/skills").join(name), link)?;
     }
+    fs::create_dir_all(repo.join(".harness"))?;
+    fs::write(
+        repo.join(RECORD),
+        serde_json::to_string_pretty(&record)? + "\n",
+    )?;
     ignore_run_dir(repo)
+}
+
+/// Lends the answering stdin to one question, so the next can have it too.
+// `as_deref_mut` cannot do this: it keeps the trait object's own lifetime,
+// which pins the borrow to the whole function.
+#[allow(clippy::option_as_ref_deref)]
+pub(crate) fn reborrow<'a>(input: &'a mut Option<&mut dyn Read>) -> Option<&'a mut dyn Read> {
+    input.as_mut().map(|r| -> &mut dyn Read { &mut **r })
+}
+
+fn skill_path(name: &str) -> String {
+    format!(".agents/skills/{name}/SKILL.md")
+}
+
+/// Whether a shipped skill is already installed. create-pr does not count: a
+/// repo's own is not an install, and it has its own question.
+// ponytail: a repo that deleted every Stage skill but kept a shipped create-pr
+// reads as fresh; the record would tell, but nobody has done that.
+fn installed(repo: &Path) -> bool {
+    SKILLS
+        .iter()
+        .any(|&(name, _)| name != "create-pr" && repo.join(skill_path(name)).exists())
+}
+
+/// Asks for the TypeSafe API key with echo off and keeps it, readable only by
+/// the user, when TYPESAFE_API_KEY (`env_key`) is unset and no key is stored.
+/// A stdin that is not the terminal skips the question; so does an empty answer.
+pub(crate) fn ask_typesafe_key(
+    repo: &Path,
+    env_key: &str,
+    out: &mut dyn Write,
+    input: Option<&mut dyn Read>,
+) -> io::Result<()> {
+    if !env_key.trim().is_empty() || repo.join(KEY_FILE).exists() {
+        return Ok(());
+    }
+    if input.is_none() && !io::stdin().is_terminal() {
+        return Ok(());
+    }
+    write!(
+        out,
+        "init: TypeSafe API key, kept in {KEY_FILE} (enter to skip): "
+    )?;
+    out.flush()?;
+    let key = with_stdin(input, |input| {
+        let mut key = Vec::new();
+        let mut byte = [0u8; 1];
+        while let Ok(1) = input.read(&mut byte) {
+            match byte[0] {
+                b'\r' | b'\n' => break,
+                3 => key.clear(), // Ctrl-C in raw mode: skip
+                0x7f | 0x08 => {
+                    key.pop();
+                }
+                b => key.push(b),
+            }
+        }
+        Ok(String::from_utf8_lossy(&key).trim().to_string())
+    })?;
+    if key.is_empty() {
+        write!(
+            out,
+            "\r\ninit: no TypeSafe key: every Wake will be a Question\r\n"
+        )?;
+        return Ok(());
+    }
+    fs::create_dir_all(repo.join(".harness"))?;
+    File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(repo.join(KEY_FILE))?
+        .write_all(format!("{key}\n").as_bytes())?;
+    write!(out, "\r\ninit: TypeSafe key kept in {KEY_FILE}\r\n")?;
+    Ok(())
+}
+
+/// The TypeSafe key for a Judgment: TYPESAFE_API_KEY when set, else the key
+/// init kept in the Target repo, else None.
+pub(crate) fn typesafe_key(repo: &Path, env: &dyn Fn(&str) -> String) -> Option<String> {
+    let from_env = env("TYPESAFE_API_KEY");
+    let key = if from_env.trim().is_empty() {
+        fs::read_to_string(repo.join(KEY_FILE)).unwrap_or_default()
+    } else {
+        from_env
+    };
+    let key = key.trim();
+    (!key.is_empty()).then(|| key.to_string())
+}
+
+/// Runs `f` over the answering stdin: the scripted one, or the terminal's in
+/// raw mode, so keys arrive one at a time and nothing typed is echoed.
+fn with_stdin<T>(
+    input: Option<&mut dyn Read>,
+    f: impl FnOnce(&mut dyn Read) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut stdin = io::stdin();
+    let (input, tty): (&mut dyn Read, bool) = match input {
+        Some(scripted) => (scripted, false),
+        None => (&mut stdin, io::stdin().is_terminal()),
+    };
+    let raw = tty && crossterm::terminal::enable_raw_mode().is_ok();
+    let result = f(input);
+    if raw {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+    result
+}
+
+/// Puts a `choose` menu to the answering stdin.
+fn menu(out: &mut dyn Write, input: Option<&mut dyn Read>, options: &[&str]) -> io::Result<usize> {
+    with_stdin(input, |input| choose(out, input, options))
 }
 
 /// Asks what to do with the shipped create-pr when the Target repo already has
@@ -80,13 +252,7 @@ fn ask_about_create_pr(
         out,
         "init: this repo already has a create-pr skill, and the Harness ships its own.\r\n"
     )?;
-    let mut stdin = io::stdin();
-    let (input, tty): (&mut dyn Read, bool) = match input {
-        Some(scripted) => (scripted, false),
-        None => (&mut stdin, io::stdin().is_terminal()),
-    };
-    let raw = tty && crossterm::terminal::enable_raw_mode().is_ok();
-    let choice = choose(
+    let choice = menu(
         out,
         input,
         &[
@@ -94,11 +260,8 @@ fn ask_about_create_pr(
             "replace it with the shipped one",
             "install the shipped one beside it, as harness-create-pr",
         ],
-    );
-    if raw {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-    Ok(["", "create-pr", "harness-create-pr"][choice?])
+    )?;
+    Ok(["", "create-pr", "harness-create-pr"][choice])
 }
 
 /// Draws a menu, moves the selection on the arrow keys (or j/k), and returns

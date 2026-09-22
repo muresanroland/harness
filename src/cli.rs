@@ -13,7 +13,7 @@ use crate::tools::Tools;
 
 const USAGE: &str = "usage: harness <command>
 
-  init [--force]              install the shipped skills and preflight the Target repo
+  init [--force]              install the shipped skills, keep the TypeSafe key and preflight the Target repo
   start <epic> [--max N]      run an Epic's Tickets through the Pipeline, here
   start --ticket <id>         run one Ticket through the Pipeline, here
   status                      print the state of the run
@@ -24,7 +24,7 @@ const USAGE: &str = "usage: harness <command>
 ";
 
 /// Runs one harness command inside the Target repo and returns the exit code.
-/// `input` answers init's question; None is the terminal's stdin.
+/// `input` answers init's questions; None is the terminal's stdin.
 pub fn run(
     args: &[String],
     out: &mut dyn Write,
@@ -40,11 +40,15 @@ pub fn run(
     match name.as_str() {
         "init" => {
             let force = args.get(1).is_some_and(|a| a == "--force");
-            if let Err(err) = setup::install_skills(repo, force, out, input) {
+            let mut input = input;
+            let installed = setup::install_skills(repo, force, out, setup::reborrow(&mut input));
+            if let Err(err) = installed
+                .and_then(|()| setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input))
+            {
                 let _ = writeln!(out, "init: {err}");
                 return 1;
             }
-            setup::report_missing(out, &setup::preflight(repo, &*tools, env))
+            preflight(out, repo, &*tools, env)
         }
         "start" => start(&args[1..], out, repo, tools, env),
         "status" => print_status(out, repo),
@@ -54,6 +58,23 @@ pub fn run(
             2
         }
     }
+}
+
+/// Prints what is missing and returns the exit code. A missing TypeSafe key is
+/// a warning, not a failure: the run works with the user as the judge.
+fn preflight(
+    out: &mut dyn Write,
+    repo: &Path,
+    tools: &dyn Tools,
+    env: &dyn Fn(&str) -> String,
+) -> i32 {
+    if setup::typesafe_key(repo, env).is_none() {
+        let _ = writeln!(
+            out,
+            "preflight: no TypeSafe key: every Wake will be a Question"
+        );
+    }
+    setup::report_missing(out, &setup::preflight(repo, tools, env))
 }
 
 /// Leaves a control file for the running Orchestrator, which owns the state
@@ -170,7 +191,7 @@ fn start(
             return 2;
         }
     };
-    let code = setup::report_missing(out, &setup::preflight(repo, &*tools, env));
+    let code = preflight(out, repo, &*tools, env);
     if code != 0 {
         return code;
     }
@@ -196,7 +217,7 @@ fn start(
         repo: repo.to_path_buf(),
         main_pane: env("HERDR_PANE_ID"),
         workspace: env("HERDR_WORKSPACE_ID"),
-        api_key: env("TYPESAFE_API_KEY"),
+        api_key: setup::typesafe_key(repo, env).unwrap_or_default(),
         home: PathBuf::new(),
         tick: Duration::from_secs(5),
         poll_prs: Duration::from_secs(30),

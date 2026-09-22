@@ -3,6 +3,7 @@ use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
 use crate::tools::Tools;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -174,5 +175,66 @@ fn init_installs_create_pr_and_keeps_the_repos_own() {
     assert!(
         out.contains("already has a create-pr skill"),
         "init did not ask:\n{out}"
+    );
+}
+
+#[test]
+fn init_asks_for_the_typesafe_key_and_preflight_warns_without_one() {
+    let repo = prepared_repo();
+    let (code, out) = run_with(&["init"], repo.path(), ok_tools(), &herdr_env);
+    assert_eq!(code, 0, "a missing key failed preflight:\n{out}");
+    assert!(
+        out.contains("preflight: no TypeSafe key: every Wake will be a Question"),
+        "no warning without a key:\n{out}"
+    );
+    assert!(
+        out.contains("TypeSafe API key"),
+        "init did not ask for the key:\n{out}"
+    );
+
+    let with_key = |key: &str| {
+        let key = key.to_string();
+        move |name: &str| {
+            if name == "TYPESAFE_API_KEY" {
+                key.clone()
+            } else {
+                herdr_env(name)
+            }
+        }
+    };
+    let (_, out) = run_with(&["init"], repo.path(), ok_tools(), &with_key("sk-env"));
+    assert!(
+        !out.contains("TypeSafe API key"),
+        "asked with the variable set:\n{out}"
+    );
+    assert!(
+        !out.contains("no TypeSafe key"),
+        "warned with the variable set:\n{out}"
+    );
+
+    // Typed on init's stdin after the gate's answer (its own keystroke, as a
+    // terminal delivers it), the key is kept in the repo.
+    let args = ["init".to_string()];
+    let mut out = Vec::new();
+    let mut keys = b"1".chain(&b"sk-typed\n"[..]);
+    let code = run(
+        &args,
+        &mut out,
+        Some(&mut keys),
+        repo.path(),
+        ok_tools(),
+        &herdr_env,
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".harness/typesafe-key"))
+            .unwrap()
+            .trim(),
+        "sk-typed"
+    );
+    assert!(
+        !out.contains("no TypeSafe key"),
+        "warned with the key kept:\n{out}"
     );
 }
