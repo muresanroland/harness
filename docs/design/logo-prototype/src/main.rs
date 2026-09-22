@@ -47,6 +47,7 @@ fn paint(c: Color, truecolor: bool) -> Color {
 
 impl Widget for &Logo {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let area = area.intersection(*buf.area()); // clip to the screen, never index past it
         for (row, pair) in self.rows.chunks(2).enumerate() {
             let y = area.y + row as u16;
             if y >= area.bottom() { break; }
