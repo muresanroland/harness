@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -101,6 +102,23 @@ fn parse_prompt(pane: &str, text: &str) -> Prompt {
     p
 }
 
+/// A log the test can read back, the Orchestrator's Config.log.
+pub(crate) struct LogBuf(pub(crate) Arc<Mutex<String>>);
+
+impl Write for LogBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap()
+            .push_str(std::str::from_utf8(buf).unwrap());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Plays one Stage session: returns the result file's content ("" writes
 /// nothing) and the agent status the session settles in.
 pub(crate) type Session = Arc<dyn Fn(&Prompt) -> (String, String) + Send + Sync>;
@@ -166,6 +184,8 @@ pub(crate) struct World {
     hook: Mutex<Option<Hook>>,
     /// The Orchestrator's Events, as the Shell will receive them.
     events: Mutex<(Receiver<Event>, Vec<Event>)>,
+    /// What the Orchestrator wrote to orchestrator.log.
+    log: Arc<Mutex<String>>,
 }
 
 /// The fake world and an Orchestrator over it; both agents already trust the
@@ -204,10 +224,12 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
         }),
         hook: Mutex::new(None),
         events: Mutex::new((receiver, Vec::new())),
+        log: Arc::new(Mutex::new(String::new())),
     });
     let state = load_state(&repo).unwrap_or_default();
     let mut o = Orchestrator::with_state(Config::for_tests(w.clone(), &repo, &home), state);
     o.cfg.events = events;
+    o.cfg.log = Mutex::new(Box::new(LogBuf(w.log.clone())));
     (w, o)
 }
 
@@ -432,6 +454,11 @@ impl World {
             "the launching pane never received {want:?}; it got:\n{}",
             self.main_lines().join("\n")
         );
+    }
+
+    /// The log so far.
+    pub(crate) fn log(&self) -> String {
+        self.log.lock().unwrap().clone()
     }
 
     /// Every Event the Orchestrator has sent so far, panel and log-only alike.

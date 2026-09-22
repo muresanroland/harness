@@ -12,8 +12,8 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 ## What shows
 
 - Every Ticket event shows on the panel, except `prompted` (log only).
-- Run-level errors show: state not saved, bd list failed, Epic done, stopped.
-- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file.
+- Run-level errors show: state not saved, bd list failed, bd ready failed, Epic done, stopped.
+- Housekeeping stays in the log only: dropped a leftover pane, dropped a leftover command from an earlier run, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file.
 
 ## Vocabulary
 
@@ -45,7 +45,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
 | Epic done | *(harness)* Epic done, every Ticket closed |
 | stopped | *(harness)* stopped, panes left running, /continue resumes |
-| errors | *(harness)* state not saved: `err` · bd list failed: `err` |
+| errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
 
 ## Wake reasons
 

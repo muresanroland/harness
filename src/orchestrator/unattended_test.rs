@@ -6,6 +6,7 @@ use super::state::{load_state, STATUS_PR_OPEN, STATUS_RUNNING};
 use super::world::{new_world, spawn_single, spawn_ticket, working, BdTicket};
 use super::write_file;
 use crate::tempdir::TempDir;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -152,6 +153,48 @@ fn stage_waits_until_its_agent_trusts_the_directory() {
         o.worktree("hx-1").display()
     ));
     w.await_line("hx-1 implement started: claude (pane 1-1)");
+}
+
+/// The user accepts trust in the Stage's own pane, and trust is granted while
+/// their session still holds it: the Stage waits for the pane past the usual
+/// startup patience instead of waking on a session that did not start.
+#[test]
+fn trust_accepted_in_a_busy_pane_waits_for_the_pane_to_free() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    let home = TempDir::new();
+    o.cfg.home = home.path().to_path_buf();
+    let busy = AtomicUsize::new(0);
+    w.hook(move |_, argv| {
+        // the user's own claude holds the pane for well over six ticks
+        if argv.join(" ").starts_with("herdr agent start")
+            && busy.fetch_add(1, Ordering::SeqCst) < 20
+        {
+            return Some(Err(r#"{"error":{"code":"agent_pane_busy"}}"#.to_string()));
+        }
+        None
+    });
+    let o = Arc::new(o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("does not trust");
+    write_file(
+        &home.path().join(".claude.json"),
+        &format!(
+            r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#,
+            o.worktree("hx-1").display()
+        ),
+    );
+    // A session that did not start is a Wake, which comes instead of this line.
+    w.await_line("hx-1 implement started: claude (pane 1-1)");
+    assert!(
+        w.called("herdr agent start h-hx-1-implement").len() > 20,
+        "the busy pane was not waited for: {:?}",
+        w.called("herdr agent start")
+    );
+    assert!(
+        !w.main_lines().iter().any(|l| l.contains("stuck in")),
+        "a busy pane after a trust wait raised a Wake: {:?}",
+        w.main_lines()
+    );
 }
 
 /// A stop that arrives while a held Ticket sleeps ends the hold: a retry

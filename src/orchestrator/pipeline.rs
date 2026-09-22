@@ -123,15 +123,15 @@ impl Orchestrator {
             if !tab.is_empty() {
                 let _ = self.herdr(&["tab", "close", &tab]);
             }
-            // The url rides on the line; the Shell's panel may trim it.
-            self.report(
+            self.emit(
                 ticket,
                 &format!(
-                    "{} opened after {} ({})",
+                    "{} opened after {}",
                     pr_ref(&fix.pr),
-                    plural(round, "round"),
-                    fix.pr
+                    plural(round, "round")
                 ),
+                true,
+                &fix.pr, // the log line adds the url
             );
             self.wait_dependents(ticket, &fix.pr);
             self.prune_run_dir(ticket);

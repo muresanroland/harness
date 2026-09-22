@@ -434,6 +434,7 @@ fn epic_without_tickets_is_an_error_not_a_done_epic() {
 fn command_lines_say_what_was_refused_ignored_or_failed() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
     w.fail_once("bd list", "dolt: database is locked");
+    w.fail_once("bd ready", "dolt: database is locked");
     let gh_down = AtomicBool::new(true);
     w.hook(move |_, argv| {
         // the address Stage's own gh view, not the merge poll's
@@ -452,6 +453,7 @@ fn command_lines_say_what_was_refused_ignored_or_failed() {
     let mut run = spawn_epic(o.clone(), "hx");
 
     w.await_line("bd list failed: ");
+    w.await_line("bd ready failed: ");
     w.await_line("hx-1 PR #hx-1 opened");
     w.control("retry-hx-9");
     w.await_line("hx-9 refused: not a Ticket of this run");
