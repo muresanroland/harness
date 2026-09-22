@@ -4,8 +4,19 @@ This run uses `~/Documents/Projects/test-harness-repo`, prepared on `main`
 at `26c39551072069ae62ad2fcd300324a9ee9fd60e`. The human starts Harness and
 merges PRs. The automation has prepared the tickets but has not launched agents.
 
-Use the freshly built `../harness/harness` binary from inside the target repo.
-The globally installed `harness` may be an older build.
+Build the Rust binary first, then use it from inside the target repo:
+
+```bash
+cd ~/Documents/Projects/harness
+cargo build --release
+```
+
+The binary is `../harness/target/release/harness` relative to the target repo.
+The globally installed `harness` may be an older build (the Go one carried no
+version and no updater); reinstall it by hand with `cargo install --path .`
+from the harness checkout, or with the release binary once it ships.
+`.harness/state.json` keeps its format, so a target repo mid-run resumes under
+the new binary with the same commands.
 
 ## Prepared epic
 
@@ -43,7 +54,7 @@ cd ~/Documents/Projects/test-harness-repo
   : "${HERDR_PANE_ID:?This shell needs a Herdr pane ID}"
   : "${HERDR_WORKSPACE_ID:?This shell needs a Herdr workspace ID}"
   : "${TYPESAFE_API_KEY:?Load your existing TypeSafe API key into this shell}"
-  ../harness/harness start test-harness-repo-6fs --max 2
+  ../harness/target/release/harness start test-harness-repo-6fs --max 2
 )
 ```
 
@@ -79,8 +90,8 @@ From the second shell pane:
 
 ```bash
 cd ~/Documents/Projects/test-harness-repo
-../harness/harness status
-../harness/harness stop
+../harness/target/release/harness status
+../harness/target/release/harness stop
 ```
 
 Wait for the original foreground command to exit. Its agent panes should remain
@@ -98,7 +109,7 @@ moving. Then, from the second shell pane:
 
 ```bash
 cd ~/Documents/Projects/test-harness-repo
-../harness/harness retry test-harness-repo-6fs.4
+../harness/target/release/harness retry test-harness-repo-6fs.4
 ```
 
 A fresh Review session should appear and the pipeline should continue. If the
@@ -119,7 +130,7 @@ worktree belong to the earlier run and are not part of this cleanup expectation.
 During the run, these read-only commands are useful from the target repo:
 
 ```bash
-../harness/harness status
+../harness/target/release/harness status
 bd list --parent test-harness-repo-6fs --all
 gh pr list --state all --json number,headRefName,state,url
 git worktree list
@@ -133,8 +144,8 @@ that merged A before reviewing D's own changes.
 The live test passes when there are never more than two tickets in the pipeline,
 each ticket produces one valid PR, D waits for A's merge, stop preserves panes
 and resumable state, retry replaces only the failed stage, and all merged
-tickets close and clean up correctly. A green Go suite alone does not establish
-these live results. Trust dialogs and PR merges are expected human actions.
+tickets close and clean up correctly. A green `cargo test` alone does not
+establish these live results. Trust dialogs and PR merges are expected human actions.
 
 If anything differs, preserve the state and log and report the ticket/stage and
 observed behavior. A clean restart must not erase the evidence being tested.

@@ -7,7 +7,6 @@
 *.gate.lock*
 
 # Harness build output and run directory
-/harness
 .harness/
 .claude/worktrees/
 /target/

@@ -29,16 +29,16 @@ cp -rf source dest          # NOT: cp -r source dest
 
 ## Build and test
 
-Go, standard library only (no third-party modules).
+Rust, edition 2021, rust-version 1.89. Crates: serde, serde_json, regex, chrono, crossterm, ratatui, ureq; anything else needs a ticket.
 
 ```bash
-go build -o harness ./cmd/harness   # the binary; skills/ is embedded with go:embed
-go vet ./...                        # typecheck
-go test -race ./...                 # all tests; -run <Name> for one
+cargo build --release               # the binary at target/release/harness; skills/ is read with include_str!
+cargo check                         # typecheck; cargo clippy too if installed
+cargo test                          # all tests; cargo test <name> for one
 ```
 
-- `cmd/harness`: entry point. `internal/cli`: commands and flags. `internal/setup`: `harness init` and preflight. `internal/orchestrator`: Stages, Pipeline, scheduler, state file, merge poller. `internal/runner`: the seam to every external tool (herdr, bd, gh, git). `skills/`: the skills the Harness ships.
-- Tests substitute `runnertest.Fake` for the runner; `internal/orchestrator/world_test.go` fakes a whole herdr/bd/gh world and never starts real sessions.
+- `src/main.rs`: entry point. `src/cli.rs`: commands and flags. `src/setup.rs`: `harness init` and preflight. `src/orchestrator/`: stage, pipeline, scheduler, state, herdr, result, trust. `src/tools.rs`: the seam to every external tool (herdr, bd, gh, git). `src/skills.rs`: the shipped skills via `include_str!`. `skills/`: the SKILL.md files.
+- Tests are in-crate `#[cfg(test)]` modules, one file per area (`src/<area>/<name>_test.rs`). Tests substitute the fake behind the Tools seam; `src/orchestrator/world.rs` fakes a whole herdr/bd/gh world and never starts real sessions.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
