@@ -21,7 +21,7 @@ fn merged_ticket_is_retried_until_bd_closes_it() {
     let merged = w
         .main_lines()
         .iter()
-        .filter(|l| l.contains("hx-1 merged"))
+        .filter(|l| l.contains("hx-1 merged, Ticket closed"))
         .count();
     assert_eq!(
         merged, 1,
@@ -44,10 +44,11 @@ fn merge_cleanup_forces_past_bd_safety_checks_and_says_what_it_could_not_remove(
         got.len() == 1 && got[0].contains("--force"),
         "worktree removal = {got:?}, want --force: the PR is merged"
     );
-    let line = w.await_line("hx-1 merged");
+    w.await_line("hx-1 merged, Ticket closed");
+    let said = w.await_event("could not remove the worktree, remove it by hand: ");
     assert!(
-        line.contains("could not"),
-        "merge line claims a clean-up that failed: {line:?}"
+        !said.panel && said.ticket.as_deref() == Some("hx-1"),
+        "the failed clean-up is housekeeping, for the log alone: {said:?}"
     );
 }
 
@@ -60,23 +61,23 @@ fn lines_main_could_not_receive_are_delivered_later_in_order() {
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
     // Lines stay in order, so the first line is what gets retried; a third
-    // attempt means the Ticket is already holding on its queued WAKE.
+    // attempt means the Ticket is already holding on its queued Wake.
     while w.called("herdr agent prompt main").len() < 3 {
         thread::sleep(Duration::from_millis(1));
     }
     let got = w.main_lines();
     assert!(got.is_empty(), "a blocked launching pane received {got:?}");
     w.lock().main_blocked = false;
-    w.await_line("WAKE hx-1 implement");
+    w.await_line("hx-1 stuck in implement");
     w.control("park-hx-1");
     run.wait();
 
     let lines = w.main_lines();
     let started = lines.iter().position(|l| l.contains("implement started"));
-    let wake = lines.iter().position(|l| l.contains("WAKE"));
+    let wake = lines.iter().position(|l| l.contains("stuck in"));
     assert!(
         matches!((started, wake), (Some(s), Some(k)) if s <= k)
-            && lines[0].contains("worktree ready"),
+            && lines[0] == "hx-1 branch hx-1 created",
         "lines arrived out of order or were lost: {lines:?}"
     );
 }
@@ -99,7 +100,8 @@ fn verdict_that_drops_findings_is_not_a_clean_verdict() {
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 debate Verdict settles 0 of the Review's 2 Findings");
+    w.await_line("hx-1 review 1 found 2 findings");
+    w.await_line("hx-1 stuck in debate 1: Verdict settles 0 of the Review's 2 Findings (pane 1-3)");
     w.control("park-hx-1");
     run.wait();
     assert!(
@@ -127,6 +129,7 @@ fn fix_session_is_given_only_the_fix_items() {
     });
     o.run_ticket("hx-1");
 
+    w.await_line("hx-1 debate 1 settled: 1 to fix, 1 skipped");
     let fix_text = fix_text.lock().unwrap();
     assert!(
         fix_text.contains("a.go:1 — nil map write"),

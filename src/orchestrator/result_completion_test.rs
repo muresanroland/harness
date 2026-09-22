@@ -43,7 +43,7 @@ fn result_acceptance_across_completion_paths() {
             verdict: "STATUS: done\n",
             invalid: "STATUS: done\n",
             accepted: "STATUS: done\nPR: https://example.test/pr/accepted\n",
-            reason: "wrote a done result without a 'PR:' line",
+            reason: "finished without a PR link",
             pr: "https://example.test/pr/accepted",
         },
     ];
@@ -93,14 +93,14 @@ fn result_acceptance_across_completion_paths() {
             let mut want_attempts = 1;
             match path {
                 "live" => {
-                    w.await_line(&format!("WAKE hx-1 {} {}", c.stage.name, c.reason));
+                    w.await_line(&format!("hx-1 stuck in {} 1: {}", c.stage.name, c.reason));
                     w.control("retry-hx-1");
                     want_attempts = 2;
                 }
                 "resume accepted" => want_attempts = 0,
                 "late" => {
                     w.await_line(&format!(
-                        "WAKE hx-1 {} went idle without a done result",
+                        "hx-1 stuck in {} 1: went idle without a result",
                         c.stage.name
                     ));
                     write_file(&file, c.invalid);

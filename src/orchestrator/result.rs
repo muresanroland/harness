@@ -24,7 +24,9 @@ pub(crate) struct ResultRequirements {
     pub(crate) require_pr: bool,
 }
 
-const NOT_DONE: &str = "went idle without a done result";
+/// The Wake reasons a result file gives (docs/design/events.md).
+const NO_RESULT: &str = "went idle without a result";
+const NOT_STATUS: &str = "wrote a result file whose first line is not STATUS:";
 
 /// Interprets and accepts result contents for live completion, resume, and
 /// late completion alike. A nonempty reason means the result is not accepted;
@@ -32,16 +34,16 @@ const NOT_DONE: &str = "went idle without a done result";
 pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (StageResult, String) {
     let rejected = |reason: &str| (StageResult::default(), reason.to_string());
     let Ok(body) = fs::read_to_string(path) else {
-        return rejected(NOT_DONE);
+        return rejected(NO_RESULT);
     };
     let first = body.lines().next().unwrap_or("").trim();
     let Some(value) = first.strip_prefix("STATUS:") else {
-        return rejected(NOT_DONE);
+        return rejected(NOT_STATUS);
     };
     match value.trim().to_lowercase().as_str() {
-        "failed" => return rejected("reported STATUS: failed"),
+        "failed" => return rejected("session reported failure"),
         "done" => {}
-        _ => return rejected(NOT_DONE),
+        _ => return rejected(NOT_STATUS),
     }
 
     let mut result = StageResult::default();
@@ -77,7 +79,7 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         ));
     }
     if want.require_pr && result.pr.is_empty() {
-        return rejected("wrote a done result without a 'PR:' line");
+        return rejected("finished without a PR link");
     }
     (result, String::new())
 }

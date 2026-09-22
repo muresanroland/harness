@@ -52,16 +52,8 @@ fn implement_stage_runs_in_a_ticket_tab_and_reports_to_main() {
         assert!(start.contains(&want), "agent start lacks {want:?}: {start}");
     }
     // The launching pane is told where the session is and that it finished.
-    let started = w.await_line("hx-12 implement started");
-    assert!(
-        started.ends_with("-> 2-1"),
-        "started line does not locate the pane: {started:?}"
-    );
-    assert!(
-        started.contains(&format!("claude in {}", o.worktree("hx-12").display())),
-        "started line does not say what runs where: {started:?}"
-    );
-    w.await_line("hx-12 implement done");
+    w.await_line("hx-12 implement started: claude (pane 2-1)");
+    w.await_line("hx-12 implemented");
 }
 
 #[test]
@@ -76,7 +68,10 @@ fn clean_first_verdict_opens_pr_after_one_round() {
         ts.status == STATUS_PR_OPEN && ts.pr == "https://example.test/pr/hx-1",
         "state = {ts:?}"
     );
-    w.await_line("hx-1 pr open after 1 round(s): https://example.test/pr/hx-1");
+    w.await_line("hx-1 review 1 found 0 findings");
+    w.await_line("hx-1 debate 1 settled: 0 to fix, 0 skipped");
+    w.await_line("hx-1 fix 1 done");
+    w.await_line("hx-1 PR #hx-1 opened after 1 round (https://example.test/pr/hx-1)");
     assert_eq!(
         w.called("herdr tab close").len(),
         1,
@@ -161,7 +156,7 @@ fn ticket_that_keeps_producing_fix_items_gets_pr_after_exactly_three_rounds() {
             "last Fix prompt lacks {file} for the PR's Verdict history"
         );
     }
-    w.await_line("hx-1 pr open after 3 round(s)");
+    w.await_line("hx-1 PR #hx-1 opened after 3 rounds");
 }
 
 #[test]
@@ -182,7 +177,7 @@ fn open_pr_prunes_build_scratch_and_keeps_evidence() {
 
     o.run_ticket("hx-1");
 
-    w.await_line("hx-1 pr open after 1 round(s)");
+    w.await_line("hx-1 PR #hx-1 opened after 1 round");
     for gone in [".review-cache", "check-testharness"] {
         assert!(
             !run_dir.join(gone).exists(),

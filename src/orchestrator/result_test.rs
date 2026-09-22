@@ -20,26 +20,26 @@ fn stage_result_acceptance() {
             "failed",
             "STATUS: failed\ntests red\n",
             none,
-            "reported STATUS: failed",
+            "session reported failure",
         ),
-        ("missing file", "", none, "went idle without a done result"),
+        ("missing file", "", none, "went idle without a result"),
         (
             "status not on first line",
             "notes\nSTATUS: done\n",
             none,
-            "went idle without a done result",
+            "wrote a result file whose first line is not STATUS:",
         ),
         (
             "missing prefix",
             "done\n",
             none,
-            "went idle without a done result",
+            "wrote a result file whose first line is not STATUS:",
         ),
         (
             "unknown status",
             "STATUS: working\n",
             none,
-            "went idle without a done result",
+            "wrote a result file whose first line is not STATUS:",
         ),
         ("crlf spacing and case", " STATUS:  DONE \r\n", none, ""),
         (
@@ -60,7 +60,7 @@ fn stage_result_acceptance() {
             "final Fix needs PR",
             "STATUS: done\n",
             pr,
-            "wrote a done result without a 'PR:' line",
+            "finished without a PR link",
         ),
         (
             "final Fix with PR",
@@ -72,7 +72,7 @@ fn stage_result_acceptance() {
             "failed even with PR",
             "STATUS: failed\nPR: https://example.test/pr/7\n",
             pr,
-            "reported STATUS: failed",
+            "session reported failure",
         ),
     ];
     for (name, body, want, reason) in cases {

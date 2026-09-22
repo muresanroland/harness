@@ -4,7 +4,9 @@
 use std::fs;
 
 use super::result::ResultRequirements;
-use super::stage::{result_name, Orchestrator, StageError, DEBATE, FIX, IMPLEMENT, REVIEW};
+use super::stage::{
+    plural, pr_ref, result_name, Orchestrator, StageError, DEBATE, FIX, IMPLEMENT, REVIEW,
+};
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
 const MAX_ROUNDS: usize = 3;
@@ -27,7 +29,7 @@ impl Orchestrator {
                     ts.status = STATUS_PARKED.to_string();
                     ts.reason = reason.clone();
                 });
-                self.report(&format!("{ticket} parked: {reason}"));
+                self.report(ticket, &format!("parked: {reason}"));
             }
         }
     }
@@ -40,16 +42,19 @@ impl Orchestrator {
         self.prepare_worktree(ticket)?;
 
         self.run_stage(ticket, &IMPLEMENT, 0, &[], ResultRequirements::default())?;
-        self.report(&format!("{ticket} implement done"));
+        self.report(ticket, "implemented");
 
         let mut verdicts = Vec::new();
         for round in 1..=MAX_ROUNDS {
             let review =
                 self.run_stage(ticket, &REVIEW, round, &[], ResultRequirements::default())?;
-            self.report(&format!(
-                "{ticket} review {round} done: {} findings",
-                review.findings
-            ));
+            self.report(
+                ticket,
+                &format!(
+                    "review {round} found {}",
+                    plural(review.findings, "finding")
+                ),
+            );
             let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
             let verdict = self.run_stage(
                 ticket,
@@ -62,11 +67,14 @@ impl Orchestrator {
                 },
             )?;
             let fixes = verdict.fixes;
-            self.report(&format!(
-                "{ticket} debate {round} done: {} to fix, {} skipped",
-                fixes.len(),
-                verdict.skips
-            ));
+            self.report(
+                ticket,
+                &format!(
+                    "debate {round} settled: {} to fix, {} skipped",
+                    fixes.len(),
+                    verdict.skips
+                ),
+            );
             verdicts.push(
                 self.run_dir(ticket)
                     .join(result_name(&DEBATE, round))
@@ -100,7 +108,7 @@ impl Orchestrator {
                     ..Default::default()
                 },
             )?;
-            self.report(&format!("{ticket} fix {round} done"));
+            self.report(ticket, &format!("fix {round} done"));
             if !last {
                 continue;
             }
@@ -115,10 +123,17 @@ impl Orchestrator {
             if !tab.is_empty() {
                 let _ = self.herdr(&["tab", "close", &tab]);
             }
-            self.report(&format!(
-                "{ticket} pr open after {round} round(s): {}",
-                fix.pr
-            ));
+            // The url rides on the line; the Shell's panel may trim it.
+            self.report(
+                ticket,
+                &format!(
+                    "{} opened after {} ({})",
+                    pr_ref(&fix.pr),
+                    plural(round, "round"),
+                    fix.pr
+                ),
+            );
+            self.wait_dependents(ticket, &fix.pr);
             self.prune_run_dir(ticket);
             return Ok(());
         }
@@ -149,9 +164,7 @@ impl Orchestrator {
                     fs::remove_file(&path)
                 };
                 if let Err(err) = removed {
-                    self.log(&format!(
-                        "{ticket}: scratch left in the run directory: {err}"
-                    ));
+                    self.log(ticket, &format!("scratch left in the run directory: {err}"));
                 }
             }
         }
@@ -184,11 +197,9 @@ impl Orchestrator {
             )));
         }
         if let Err(err) = tools.run(repo, &["bd", "update", ticket, "--status", "in_progress"]) {
-            self.log(&format!("{ticket}: not marked in_progress: {err}"));
+            self.log(ticket, &format!("not marked in_progress: {err}"));
         }
-        self.report(&format!(
-            "{ticket} worktree ready on branch {ticket}, Ticket in_progress"
-        ));
+        self.report(ticket, &format!("branch {ticket} created"));
         Ok(())
     }
 }

@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,6 +55,19 @@ pub(crate) enum StageError {
 /// with no result counts as a Stage that did not write one.
 const SETTLE_TICKS: u32 = 3;
 
+/// One moment of the run, said once in plain language: the same words on the
+/// Shell's RECENT panel and in the log (docs/design/events.md).
+#[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))] // read by the Shell (harness-kqe.9)
+pub(crate) struct Event {
+    pub(crate) time: chrono::DateTime<chrono::Local>,
+    /// None for a run-level line.
+    pub(crate) ticket: Option<String>,
+    pub(crate) text: String,
+    /// Shown on the panel; false keeps housekeeping in the log alone.
+    pub(crate) panel: bool,
+}
+
 /// What 'harness start' knows at launch.
 pub(crate) struct Config {
     /// The seam to every external tool.
@@ -76,6 +90,8 @@ pub(crate) struct Config {
     pub(crate) max: usize,
     /// Where every event line goes.
     pub(crate) log: Mutex<Box<dyn Write + Send>>,
+    /// Every Event, for the Shell; a dropped receiver is tolerated.
+    pub(crate) events: Sender<Event>,
     /// Every Stage's deadline in the tests; None is the Stage table's. Go's
     /// tests shortened only stageImplement.Timeout, but the one test that
     /// sets it never gets past Implement, so shortening every Stage is the
@@ -145,7 +161,7 @@ impl Orchestrator {
     }
 
     fn timed_out(&self, st: &Stage) -> String {
-        format!("timed out after {}", go_duration(self.timeout(st)))
+        format!("timed out after {}", short_duration(self.timeout(st)))
     }
 
     pub(crate) fn run_dir(&self, ticket: &str) -> PathBuf {
@@ -160,26 +176,50 @@ impl Orchestrator {
             .join(ticket)
     }
 
-    /// One log line, prefixed with the local time as Go's log.LstdFlags did.
-    pub(crate) fn log(&self, line: &str) {
-        let mut log = self.cfg.log.lock().unwrap();
-        let _ = writeln!(
-            log,
-            "{} {line}",
-            chrono::Local::now().format("%Y/%m/%d %H:%M:%S")
-        );
+    /// The one way an event is said: a log line 'YYYY-MM-DD HH:MM:SS <bd id>
+    /// <event>' in local time (no id for a run-level line, ticket ""), the
+    /// same words into the launching pane when it shows on the panel, and the
+    /// Event to whoever holds the receiver.
+    pub(crate) fn emit(&self, ticket: &str, text: &str, panel: bool) {
+        let time = chrono::Local::now();
+        let id = if ticket.is_empty() {
+            String::new()
+        } else {
+            format!("{ticket} ")
+        };
+        {
+            let mut log = self.cfg.log.lock().unwrap();
+            let _ = writeln!(log, "{} {id}{text}", time.format("%Y-%m-%d %H:%M:%S"));
+        }
+        if panel {
+            self.unsent
+                .lock()
+                .unwrap()
+                .lines
+                .push(format!("{id}{text}"));
+            self.flush();
+        }
+        let _ = self.cfg.events.send(Event {
+            time,
+            ticket: (!ticket.is_empty()).then(|| ticket.to_string()),
+            text: text.to_string(),
+            panel,
+        });
     }
 
-    /// Sends one event line into the launching pane. herdr refuses a prompt
+    /// An event that shows on the panel.
+    pub(crate) fn report(&self, ticket: &str, text: &str) {
+        self.emit(ticket, text, true);
+    }
+
+    /// Housekeeping: in the log only.
+    pub(crate) fn log(&self, ticket: &str, text: &str) {
+        self.emit(ticket, text, false);
+    }
+
+    /// Sends the panel lines into the launching pane. herdr refuses a prompt
     /// while the agent there is blocked on a prompt of its own, so a line
     /// that cannot be delivered is kept and sent, in order, once it can be.
-    pub(crate) fn report(&self, event: &str) {
-        let line = format!("[harness] {event}");
-        self.log(&line);
-        self.unsent.lock().unwrap().lines.push(line);
-        self.flush();
-    }
-
     pub(crate) fn flush(&self) {
         let mut unsent = self.unsent.lock().unwrap();
         if self.cfg.main_pane.is_empty() || unsent.no_main {
@@ -196,15 +236,19 @@ impl Orchestrator {
                     // Launched from a shell pane rather than a Claude session:
                     // there is nobody to tell, and retrying every line forever
                     // buries the log in the failure.
-                    self.log("the launching pane hosts no agent; events are in this log only");
+                    self.log(
+                        "",
+                        "the launching pane hosts no agent, events are in this log only",
+                    );
                     unsent.no_main = true;
                     unsent.lines.clear();
                     return;
                 }
                 Err(err) => {
-                    self.log(&format!(
-                        "the launching pane did not take {line:?}, will retry: {err}"
-                    ));
+                    self.log(
+                        "",
+                        &format!("the launching pane did not take {line:?}, will retry: {err}"),
+                    );
                     return;
                 }
             }
@@ -227,8 +271,10 @@ impl Orchestrator {
                 ..Default::default()
             });
         change(ts);
-        if let Err(err) = state.save(&self.cfg.repo) {
-            self.log(&format!("state not saved: {err}"));
+        let saved = state.save(&self.cfg.repo);
+        drop(state); // report reaches the launching pane through Tools
+        if let Err(err) = saved {
+            self.report("", &format!("state not saved: {err}"));
         }
     }
 
@@ -242,6 +288,27 @@ impl Orchestrator {
             .cloned()
             .unwrap_or_default()
     }
+}
+
+/// How a Stage is named in an event: "implement", "review 1", "fix 2".
+pub(crate) fn stage_label(st: &Stage, round: usize) -> String {
+    if round == 0 {
+        st.name.to_string()
+    } else {
+        format!("{} {round}", st.name)
+    }
+}
+
+/// "1 round", "3 findings".
+pub(crate) fn plural(n: usize, word: &str) -> String {
+    let s = if n == 1 { "" } else { "s" };
+    format!("{n} {word}{s}")
+}
+
+/// A PR named by its number, as gh shows it: "PR #12".
+pub(crate) fn pr_ref(url: &str) -> String {
+    let number = url.trim_end_matches('/').rsplit('/').next().unwrap_or(url);
+    format!("PR #{number}")
 }
 
 /// The name of a Stage's result file in the run directory.
@@ -306,9 +373,11 @@ impl Orchestrator {
             ("Result file", &file_s),
         ];
         all.extend_from_slice(inputs);
+        let label = stage_label(st, round);
 
+        let mut retry = false;
         loop {
-            let (result, reason) = self.attempt(ticket, st, &file, &all, want);
+            let (result, reason) = self.attempt(ticket, st, round, retry, &file, &all, want);
             if self.stopping() {
                 return Err(StageError::Stopped);
             }
@@ -318,28 +387,23 @@ impl Orchestrator {
             let ts = self.ticket(ticket);
             if ts.retried {
                 return Err(StageError::Parked(format!(
-                    "{} {reason} again after a retry",
-                    st.name
+                    "{label} {reason} again after a retry"
                 )));
             }
             let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
             self.consume(&format!("retry-{ticket}")); // a command sent before this Wake is not an answer to it
             self.consume(&format!("park-{ticket}"));
-            self.report(&format!(
-                "WAKE {ticket} {} {reason} at {}",
-                st.name,
-                self.locate(&pane)
-            ));
+            self.report(
+                ticket,
+                &format!("stuck in {label}: {reason} {}", self.locate(&pane)),
+            );
             let (result, command) = self.hold(ticket, &pane, &file, want);
             match command {
                 "retry" => {
                     self.update(ticket, |ts| ts.retried = true);
-                    self.report(&format!(
-                        "{ticket} {} retrying with a fresh session",
-                        st.name
-                    ));
+                    retry = true;
                 }
-                "park" => return Err(StageError::Parked(format!("{} {reason}", st.name))),
+                "park" => return Err(StageError::Parked(format!("{label} {reason}"))),
                 "done" => return Ok(result),
                 _ => return Err(StageError::Stopped),
             }
@@ -347,16 +411,21 @@ impl Orchestrator {
     }
 
     /// Runs the Stage once in a fresh session and returns its accepted
-    /// result, or the reason it cannot complete.
+    /// result, or the reason it cannot complete. `retry` says so on the
+    /// panel, once the fresh pane can be named.
+    #[allow(clippy::too_many_arguments)]
     fn attempt(
         &self,
         ticket: &str,
         st: &Stage,
+        round: usize,
+        retry: bool,
         file: &Path,
         inputs: &[(&str, &str)],
         want: ResultRequirements,
     ) -> (StageResult, String) {
         let none = StageResult::default();
+        let label = stage_label(st, round);
         let skill_path = self
             .cfg
             .repo
@@ -376,14 +445,23 @@ impl Orchestrator {
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return (none, err.to_string());
         }
-        let reason = self.await_trust(ticket, st);
-        if !reason.is_empty() {
-            return (none, reason);
-        }
         let pane = match self.fresh_pane(ticket, st) {
             Ok(pane) => pane,
             Err(err) => return (none, format!("got no pane: {err}")),
         };
+        let at = self.locate(&pane);
+        if retry {
+            self.report(
+                ticket,
+                &format!("retrying {label} with a fresh session {at}"),
+            );
+        }
+        // ponytail: the user accepts trust in that very pane, so start_agent's
+        // agent_pane_busy patience (six ticks) is how long they have to exit it.
+        let reason = self.await_trust(ticket, st, &at);
+        if !reason.is_empty() {
+            return (none, reason);
+        }
         // The previous session can still write while its pane is closing.
         // Clear its result only after fresh_pane has replaced it, before the
         // new writer.
@@ -409,16 +487,10 @@ impl Orchestrator {
                 return (none, format!("session did not start: {err}"));
             }
         }
-        self.report(&format!(
-            "{ticket} {} started: {} in {} -> {}",
-            st.name,
-            st.kind,
-            self.stage_cwd(ticket, st).display(),
-            self.locate(&pane)
-        ));
+        self.report(ticket, &format!("{label} started: {} {at}", st.kind));
         if start_err.is_some() {
             // blocked at startup: nothing can be prompted yet
-            let reason = self.wait_unblocked(ticket, st, &pane, deadline);
+            let reason = self.wait_unblocked(ticket, st, round, &pane, deadline);
             if !reason.is_empty() {
                 return (none, reason);
             }
@@ -431,13 +503,15 @@ impl Orchestrator {
         // from a Stage that finished and forgot to write one.
         let prompt = stage_prompt(&skill, inputs);
         if let Err(err) = self.herdr(&["agent", "prompt", &pane, &prompt]) {
-            return (none, format!("did not take the prompt: {err}"));
+            return (none, format!("never took the Stage skill: {err}"));
         }
-        self.report(&format!(
-            "{ticket} {} prompted, waiting for {}",
-            st.name,
-            file.file_name().unwrap_or_default().to_string_lossy()
-        ));
+        self.log(
+            ticket,
+            &format!(
+                "{label} prompted, waiting for {}",
+                file.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        );
         // A session that has just been prompted still reads idle until it
         // takes the prompt up, which looks exactly like a Stage that finished
         // without writing a result. Give it a few ticks before believing that.
@@ -447,9 +521,9 @@ impl Orchestrator {
                 return (none, "stopped".to_string());
             }
             match self.agent_status(&pane).as_deref() {
-                None => return (none, "pane died".to_string()),
+                None => return (none, "session died".to_string()),
                 Some("blocked") => {
-                    let reason = self.wait_unblocked(ticket, st, &pane, deadline);
+                    let reason = self.wait_unblocked(ticket, st, round, &pane, deadline);
                     if !reason.is_empty() {
                         return (none, reason);
                     }
@@ -476,10 +550,11 @@ impl Orchestrator {
         }
     }
 
-    /// Holds a Stage until its agent trusts the directory its pane will start
+    /// Holds a Stage until its agent trusts the directory its pane started
     /// in. Only the user can accept a trust dialog, so the Orchestrator names
-    /// the directory and waits instead of prompting into one.
-    fn await_trust(&self, ticket: &str, st: &Stage) -> String {
+    /// the pane, already in that directory, and waits instead of prompting
+    /// into one.
+    fn await_trust(&self, ticket: &str, st: &Stage, at: &str) -> String {
         if self.cfg.home.as_os_str().is_empty() {
             return String::new(); // no home, no trust stores to read: let the Stage try
         }
@@ -488,21 +563,23 @@ impl Orchestrator {
         if trusted() {
             return String::new();
         }
-        self.report(&format!(
-            "{ticket} {} waiting: {} does not trust {} yet. Open {} there once and accept it; the Stage carries on by itself",
-            st.name, st.kind, dir.display(), st.kind
-        ));
+        self.report(
+            ticket,
+            &format!(
+                "waiting: {} does not trust {} yet, open it there once and accept {at}",
+                st.kind,
+                dir.display()
+            ),
+        );
         while !trusted() {
             if !self.sleep() {
                 return "stopped".to_string();
             }
         }
-        self.report(&format!(
-            "{ticket} {}: {} trusts {} now",
-            st.name,
-            st.kind,
-            dir.display()
-        ));
+        self.report(
+            ticket,
+            &format!("{} trusts {} now, carrying on", st.kind, dir.display()),
+        );
         String::new()
     }
 
@@ -537,15 +614,25 @@ impl Orchestrator {
 
     /// Wakes the launching pane about a blocked session, which only the user
     /// may answer, and waits for the session to move on.
-    fn wait_unblocked(&self, ticket: &str, st: &Stage, pane: &str, deadline: Instant) -> String {
-        self.report(&format!(
-            "WAKE {ticket} {} blocked at {}",
-            st.name,
-            self.locate(pane)
-        ));
+    fn wait_unblocked(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        round: usize,
+        pane: &str,
+        deadline: Instant,
+    ) -> String {
+        self.report(
+            ticket,
+            &format!(
+                "waiting at a prompt in {} {}",
+                stage_label(st, round),
+                self.locate(pane)
+            ),
+        );
         loop {
             match self.agent_status(pane).as_deref() {
-                None => return "pane died".to_string(),
+                None => return "session died".to_string(),
                 Some(status) if status != "blocked" => return String::new(),
                 Some(_) if Instant::now() > deadline => return self.timed_out(st),
                 Some(_) => {}
@@ -593,7 +680,7 @@ impl Orchestrator {
         self.flush();
         if self.consume("stop") {
             self.stop.store(true, Ordering::SeqCst);
-            self.report("stopped; live panes left alone, 'harness start' resumes the run");
+            self.report("", "stopped, panes left running, /continue resumes");
             return false;
         }
         thread::sleep(self.cfg.tick);
@@ -683,7 +770,10 @@ impl Orchestrator {
     pub(crate) fn drain_commands(&self) {
         for name in self.commands() {
             if self.consume(&name) {
-                self.log(&format!("dropped {name:?}, left over from an earlier run"));
+                self.log(
+                    "",
+                    &format!("dropped a leftover command from an earlier run: {name}"),
+                );
             }
         }
     }
@@ -694,18 +784,15 @@ impl Orchestrator {
     }
 }
 
-/// Go's Duration string, for the deadlines the Stage table and the tests use:
-/// "1h0m0s", "30m0s", "5ms".
-// ponytail: whole units only; Go also prints "1.5s" and "2m30.5s".
-fn go_duration(d: Duration) -> String {
-    if d < Duration::from_secs(1) {
-        return format!("{}ms", d.as_millis());
-    }
+/// A deadline as the Stage table and the tests set them: "1h", "30m", "5ms".
+// ponytail: the largest whole unit; a 90-minute Stage would read "90m".
+fn short_duration(d: Duration) -> String {
     let secs = d.as_secs();
-    match (secs / 3600, secs % 3600 / 60, secs % 60) {
-        (0, 0, s) => format!("{s}s"),
-        (0, m, s) => format!("{m}m{s}s"),
-        (h, m, s) => format!("{h}h{m}m{s}s"),
+    match secs {
+        0 => format!("{}ms", d.as_millis()),
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
     }
 }
 
@@ -729,6 +816,7 @@ impl Config {
             poll_prs: Duration::from_millis(1),
             max: 3,
             log: Mutex::new(Box::new(io::sink())),
+            events: std::sync::mpsc::channel().0,
             timeout: None,
         }
     }
