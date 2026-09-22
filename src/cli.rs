@@ -202,6 +202,7 @@ fn start(
         poll_prs: Duration::from_secs(30),
         max: parsed.max,
         log: Mutex::new(Box::new(Events(log_file))),
+        events: std::sync::mpsc::channel().0, // the Shell (harness-kqe.9) holds the receiver
         #[cfg(test)]
         timeout: None,
     }) {

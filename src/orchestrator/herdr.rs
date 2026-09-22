@@ -88,15 +88,16 @@ impl Orchestrator {
         })
     }
 
+    /// Names a pane the way every event line does: "(pane 2-1)".
     pub(crate) fn locate(&self, pane_id: &str) -> String {
         let workspace = self.cfg.workspace.as_str();
-        let Ok(tabs) = self.herdr(&["tab", "list", "--workspace", workspace]) else {
-            return "?".to_string();
+        let tabs = self.herdr(&["tab", "list", "--workspace", workspace]);
+        let panes = self.herdr(&["pane", "list", "--workspace", workspace]);
+        let at = match (tabs, panes) {
+            (Ok(tabs), Ok(panes)) => location(&tabs.result.tabs, &panes.result.panes, pane_id),
+            _ => "?".to_string(),
         };
-        let Ok(panes) = self.herdr(&["pane", "list", "--workspace", workspace]) else {
-            return "?".to_string();
-        };
-        location(&tabs.result.tabs, &panes.result.panes, pane_id)
+        format!("(pane {at})")
     }
 
     /// The herdr lifecycle state of the agent in a pane; None when no agent

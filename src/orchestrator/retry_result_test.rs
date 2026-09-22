@@ -38,12 +38,12 @@ fn retry_discards_a_result_written_while_closing_the_old_pane() {
     }
     let o = Arc::new(o);
     let mut run = spawn_single(o.clone(), "hx-1");
-    w.await_line("WAKE hx-1 implement reported STATUS: failed");
+    w.await_line("hx-1 stuck in implement: session reported failure");
     w.control("retry-hx-1");
     run.wait();
     let ts = o.ticket("hx-1");
     assert!(
-        ts.status == STATUS_PARKED && ts.reason.contains("without a done result"),
+        ts.status == STATUS_PARKED && ts.reason.contains("without a result"),
         "a result from the old attempt completed its replacement: {ts:?}"
     );
     assert_eq!(*attempts.lock().unwrap(), 2, "Implement attempts");

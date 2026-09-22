@@ -6,15 +6,15 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use serde_json::json;
 
 use super::herdr::PaneInfo;
-use super::stage::{Config, Orchestrator};
+use super::stage::{Config, Event, Orchestrator};
 use super::state::load_state;
 use super::trust_test::trust_home;
 use super::write_file;
@@ -22,13 +22,12 @@ use crate::setup::install_skills;
 use crate::tempdir::TempDir;
 use crate::tools::{RunError, Tools};
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct BdTicket {
     pub(crate) id: String,
     pub(crate) status: String,
     pub(crate) issue_type: String,
     /// Ids that must be closed first.
-    #[serde(skip)]
     pub(crate) deps: Vec<String>,
 }
 
@@ -38,6 +37,21 @@ impl BdTicket {
             id: id.to_string(),
             ..Default::default()
         }
+    }
+
+    /// The issue as 'bd list --json' prints it, dependencies included.
+    fn json(&self) -> serde_json::Value {
+        let deps: Vec<_> = self
+            .deps
+            .iter()
+            .map(|d| json!({ "depends_on_id": d, "type": "blocks" }))
+            .collect();
+        json!({
+            "id": self.id,
+            "status": self.status,
+            "issue_type": self.issue_type,
+            "dependencies": deps,
+        })
     }
 }
 
@@ -150,6 +164,8 @@ pub(crate) struct World {
     calls: Mutex<Vec<String>>,
     inner: Mutex<Inner>,
     hook: Mutex<Option<Hook>>,
+    /// The Orchestrator's Events, as the Shell will receive them.
+    events: Mutex<(Receiver<Event>, Vec<Event>)>,
 }
 
 /// The fake world and an Orchestrator over it; both agents already trust the
@@ -174,6 +190,7 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
             ..t
         })
         .collect();
+    let (events, receiver) = channel();
     let w = Arc::new(World {
         _repo_dir: repo_dir,
         _home_dir: home_dir,
@@ -185,9 +202,11 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
             ..Default::default()
         }),
         hook: Mutex::new(None),
+        events: Mutex::new((receiver, Vec::new())),
     });
     let state = load_state(&repo).unwrap_or_default();
-    let o = Orchestrator::with_state(Config::for_tests(w.clone(), &repo, &home), state);
+    let mut o = Orchestrator::with_state(Config::for_tests(w.clone(), &repo, &home), state);
+    o.cfg.events = events;
     (w, o)
 }
 
@@ -360,10 +379,11 @@ impl World {
             return Ok(String::new());
         }
         if cmd.starts_with("bd list") {
-            return Ok(serde_json::to_string(&w.tickets).unwrap());
+            let all: Vec<_> = w.tickets.iter().map(BdTicket::json).collect();
+            return Ok(json!(all).to_string());
         }
         if cmd.starts_with("bd ready") {
-            let ready: Vec<&BdTicket> = w
+            let ready: Vec<_> = w
                 .tickets
                 .iter()
                 .filter(|t| {
@@ -374,8 +394,9 @@ impl World {
                                 .any(|d| d.id == *dep && d.status == "closed")
                         })
                 })
+                .map(BdTicket::json)
                 .collect();
-            return Ok(serde_json::to_string(&ready).unwrap());
+            return Ok(json!(ready).to_string());
         }
 
         if cmd.starts_with("gh pr view") {
@@ -409,6 +430,33 @@ impl World {
         panic!(
             "the launching pane never received {want:?}; it got:\n{}",
             self.main_lines().join("\n")
+        );
+    }
+
+    /// Every Event the Orchestrator has sent so far, panel and log-only alike.
+    pub(crate) fn events(&self) -> Vec<Event> {
+        let mut events = self.events.lock().unwrap();
+        let fresh: Vec<Event> = events.0.try_iter().collect();
+        events.1.extend(fresh);
+        events.1.clone()
+    }
+
+    /// Waits for an Event whose text contains want.
+    pub(crate) fn await_event(&self, want: &str) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(event) = self.events().into_iter().find(|e| e.text.contains(want)) {
+                return event;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!(
+            "no Event contained {want:?}; the Orchestrator sent:\n{}",
+            self.events()
+                .iter()
+                .map(|e| format!("{:?} {}", e.ticket, e.text))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 

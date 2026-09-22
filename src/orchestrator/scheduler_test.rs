@@ -52,7 +52,7 @@ fn scheduler_runs_every_ready_ticket_but_never_more_than_max_at_once() {
             peak, max,
             "most Tickets in the Pipeline at once, want exactly --max {max}"
         );
-        w.await_line("epic hx done");
+        w.await_line("Epic done, every Ticket closed");
     }
 }
 
@@ -104,6 +104,7 @@ fn blocked_ticket_starts_only_after_its_dependency_is_merged_and_closed() {
 
     run_epic(&o);
 
+    w.await_line("hx-2 waiting for PR #hx-1 to merge (Ticket hx-1)");
     let order = w.calls().join("\n");
     let closed = order.find("bd close hx-1");
     let started = order.find(&format!(
@@ -166,8 +167,8 @@ fn closed_pr_parks_the_ticket_and_conflict_is_reported_exactly_once() {
     let o = Arc::new(o);
     let mut run = spawn_epic(o.clone(), "hx");
 
-    w.await_line("hx-1 parked: PR closed without merging");
-    w.await_line("hx-2 pr conflicts with main");
+    w.await_line("hx-1 parked: PR #hx-1 closed without merging");
+    w.await_line("hx-2 PR #hx-2 conflicts with main, /address resolves it");
     thread::sleep(Duration::from_millis(30)); // many more polls
     w.control("stop");
     run.wait();
@@ -289,7 +290,7 @@ fn stop_exits_with_state_saved_and_leaves_panes_alone() {
         None
     });
     let mut run = spawn_epic(o.clone(), "hx");
-    w.await_line("WAKE hx-1");
+    w.await_line("hx-1 stuck in implement");
 
     armed.store(true, Ordering::SeqCst);
     assert!(
@@ -325,9 +326,9 @@ fn retry_unparks_a_parked_ticket() {
     let o = Arc::new(o);
     let mut run = spawn_epic(o.clone(), "hx");
 
-    w.await_line("WAKE hx-1");
+    w.await_line("hx-1 stuck in implement");
     w.control("park-hx-1");
-    w.await_line("hx-1 parked");
+    w.await_line("hx-1 parked: implement went idle without a result");
     w.session(succeed);
     w.control("retry-hx-1");
     run.wait();
@@ -381,10 +382,10 @@ fn address_command_starts_a_fresh_session_in_the_kept_worktree() {
     });
     let o = Arc::new(o);
     let mut run = spawn_epic(o.clone(), "hx");
-    w.await_line("hx-1 pr open");
+    w.await_line("hx-1 PR #hx-1 opened");
 
     w.control("address-hx-1");
-    w.await_line("hx-1 address done");
+    w.await_line("hx-1 addressed PR #hx-1");
     w.control("stop");
     run.wait();
     o.wait_in_flight();
@@ -422,8 +423,49 @@ fn epic_without_tickets_is_an_error_not_a_done_epic() {
     );
     for line in w.main_lines() {
         assert!(
-            !line.contains("done"),
+            !line.contains("Epic done"),
             "reported {line:?} for an Epic with no Tickets"
         );
     }
+}
+
+/// Every command answer names what happened, and a run-level failure shows.
+#[test]
+fn command_lines_say_what_was_refused_ignored_or_failed() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.fail_once("bd list", "dolt: database is locked");
+    let gh_down = AtomicBool::new(true);
+    w.hook(move |_, argv| {
+        // the address Stage's own gh view, not the merge poll's
+        if argv.join(" ").contains("reviews") && gh_down.swap(false, Ordering::SeqCst) {
+            return Some(Err("gh: boom".to_string()));
+        }
+        None
+    });
+    w.session(|p| {
+        if p.stage == "address" {
+            return (String::new(), "idle".to_string());
+        }
+        succeed(p)
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_epic(o.clone(), "hx");
+
+    w.await_line("bd list failed: ");
+    w.await_line("hx-1 PR #hx-1 opened");
+    w.control("retry-hx-9");
+    w.await_line("hx-9 refused: not a Ticket of this run");
+    w.control("park-hx-1");
+    w.await_line("hx-1 ignored: not waiting on a Wake");
+    w.control("address-hx-9");
+    w.await_line("hx-9 address refused: no open PR");
+    w.control("address-hx-1");
+    w.await_line("hx-1 address failed: ");
+    w.control("address-hx-1");
+    w.await_line("hx-1 stuck in address: went idle without a result (pane 1-1)");
+    w.control("park-hx-1");
+    w.await_line("hx-1 address gave up: address went idle without a result");
+    w.control("stop");
+    run.wait();
+    o.wait_in_flight();
 }

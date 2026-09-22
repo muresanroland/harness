@@ -114,7 +114,7 @@ fn a_session_still_picking_up_its_prompt_is_not_a_finished_stage() {
 
     for line in w.main_lines() {
         assert!(
-            !line.contains("WAKE"),
+            !line.contains("stuck in"),
             "a session that was still starting was woken on: {line:?}"
         );
     }

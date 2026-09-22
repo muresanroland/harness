@@ -1,6 +1,6 @@
 ---
 name: start-work
-description: Launch the Harness Pipeline for a beads Epic from the Main session and handle its [harness] lines and Wakes. Use when the user runs /start-work <epic-id> or asks to drive an Epic's Tickets to pull requests.
+description: Launch the Harness Pipeline for a beads Epic from the Main session and handle its event lines and Wakes. Use when the user runs /start-work <epic-id> or asks to drive an Epic's Tickets to pull requests.
 ---
 
 # Start work on an Epic
@@ -15,34 +15,15 @@ You are the Main session. A deterministic Orchestrator does the work; you launch
 
 Starting again after a kill, a `/clear`, or `harness stop` resumes the run from `.harness/state.json`. `harness status` prints that state.
 
-## The [harness] line protocol
-
-Lines beginning with `[harness]` are typed into this pane by the Orchestrator, not by the user. Locations are `<tab>-<pane>` as herdr shows them.
-
-| Line | Meaning | You |
-|---|---|---|
-| `<ticket> worktree ready on branch <b>, Ticket in_progress` | The Ticket's branch exists and bd knows it started | nothing |
-| `<ticket> <stage> started: <kind> in <dir> -> 2-1` | A Stage session started in that pane | nothing |
-| `<ticket> <stage> prompted, waiting for <file>` | The Stage skill reached the session | nothing |
-| `<ticket> <stage> waiting: <kind> does not trust <dir> yet` | The agent would open a trust dialog | tell the user to open that agent in that directory once and accept; it carries on by itself |
-| `<ticket> implement done`, `review N done: ...`, `debate N done: ...`, `fix N done` | A Stage finished | nothing |
-| `<ticket> pr open after N round(s): <url>` | The Ticket's Pipeline ended | tell the user the PR is ready to merge |
-| `<ticket> merged: ...` | The user merged it; the Ticket is closed and dependents unblock | nothing |
-| `<ticket> pr conflicts with main: <url>` | Merged work conflicts with this open PR | tell the user; `harness address <ticket>` resolves it, only on their say |
-| `<ticket> parked: <reason>` | The Ticket left the Pipeline | tell the user why |
-| `WAKE <ticket> <stage> <reason> at <tab>-<pane>` | A Stage cannot advance by rule | follow the Wake rules below |
-| `epic <id> done: ...` | Every Ticket is closed | tell the user |
-| `stopped; ...` | The Orchestrator exited on `harness stop` | nothing |
-
-Answer progress lines with at most one short sentence. Never start, prompt, or close Stage panes on your own initiative.
+Every event the Orchestrator has to say arrives in this pane as one plain-language line, `<ticket> <event>`, the same line it writes to `.harness/orchestrator.log`; a run-level line has no ticket. Pane locations are named `(pane <tab>-<pane>)` as herdr shows them. Answer progress lines with at most one short sentence. Never start, prompt, or close Stage panes on your own initiative.
 
 ## Wake rules
 
 A Wake holds only that Ticket; the others keep running. For each Wake:
 
-1. **`blocked`**: the session is waiting on a permission prompt or a question. Never answer a permission prompt. Tell the user which pane needs them (`<tab>-<pane>`) and do nothing else; the Stage continues by itself once they answer.
-   **`did not take the prompt`**: the session never received the Stage skill, usually because it is sitting at a dialog. Same answer: name the pane, let the user deal with it, then `harness retry <ticket>`.
-2. **Any other reason** (`reported STATUS: failed`, `went idle without a done result`, `timed out ...`, `pane died`, `wrote a done result without a 'PR:' line`): read the evidence first: `herdr agent read <pane-id> --source recent-unwrapped --lines 120` (find the pane id with `herdr pane list`; if the pane died there is nothing to read) and the Stage's result file in `.harness/runs/<ticket>/`.
+1. **`waiting at a prompt in <stage>`**: the session is waiting on a permission prompt or a question. Never answer a permission prompt. Tell the user which pane needs them (`<tab>-<pane>`) and do nothing else; the Stage continues by itself once they answer.
+   **`never took the Stage skill`**: the session never received the Stage skill, usually because it is sitting at a dialog. Same answer: name the pane, let the user deal with it, then `harness retry <ticket>`.
+2. **Any other `stuck in <stage>: <reason>`** (`session reported failure`, `went idle without a result`, `timed out ...`, `session died`, `finished without a PR link`): read the evidence first: `herdr agent read <pane-id> --source recent-unwrapped --lines 120` (find the pane id with `herdr pane list`; if the pane died there is nothing to read) and the Stage's result file in `.harness/runs/<ticket>/`.
 3. Then do exactly one of:
    - **One follow-up prompt** when the session is alive and plainly close: it finished but forgot the result file, or stopped to ask something you can answer from the Ticket. Send it with `herdr agent prompt <pane-id> "<text>"`. If it then writes `STATUS: done`, the Orchestrator advances by itself.
    - **One retry** when the session is dead, timed out, or went wrong in a way a fresh session could avoid: `harness retry <ticket>`.

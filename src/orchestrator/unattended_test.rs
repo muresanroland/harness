@@ -19,7 +19,7 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
         let (entered_tx, entered) = sync_channel::<()>(1);
         let (release_start, release) = channel::<()>();
         let release = Mutex::new(release);
-        let mut wait_line = "hx-1 implement prompted";
+        let mut wait_line = "implement prompted, waiting for implement.md";
         let home = TempDir::new();
         match phase {
             "trust" => {
@@ -43,11 +43,11 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
             }
             "blocked" => {
                 w.session(|_| (String::new(), "blocked".to_string()));
-                wait_line = "WAKE hx-1 implement blocked";
+                wait_line = "waiting at a prompt in implement (pane 1-1)";
             }
             "wake" => {
                 w.session(|_| (String::new(), "idle".to_string()));
-                wait_line = "WAKE hx-1 implement went idle";
+                wait_line = "stuck in implement: went idle without a result (pane 1-1)";
             }
             _ => {}
         }
@@ -58,7 +58,7 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("never attempted to start an agent");
         } else {
-            w.await_line(wait_line);
+            w.await_event(wait_line);
         }
         w.control("stop");
         drop(release_start);
@@ -67,6 +67,7 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
             "{phase}: stop did not end the run while waiting"
         );
         assert!(o.stopping(), "{phase}: run ended without consuming stop");
+        w.await_event("stopped, panes left running, /continue resumes");
         let saved = load_state(&w.repo).unwrap();
         let ts = saved.tickets.get("hx-1");
         assert!(
@@ -128,7 +129,10 @@ fn stage_waits_until_its_agent_trusts_the_directory() {
     let o = Arc::new(o);
     let _run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("does not trust");
+    w.await_line(&format!(
+        "hx-1 waiting: claude does not trust {} yet, open it there once and accept (pane 1-1)",
+        o.worktree("hx-1").display()
+    ));
     let got = w.called("herdr agent start");
     assert!(
         got.is_empty(),
@@ -143,7 +147,11 @@ fn stage_waits_until_its_agent_trusts_the_directory() {
             o.worktree("hx-1").display()
         ),
     );
-    w.await_line("hx-1 implement started");
+    w.await_line(&format!(
+        "hx-1 claude trusts {} now, carrying on",
+        o.worktree("hx-1").display()
+    ));
+    w.await_line("hx-1 implement started: claude (pane 1-1)");
 }
 
 /// A stop that arrives while a held Ticket sleeps ends the hold: a retry
@@ -156,7 +164,7 @@ fn stop_during_a_hold_does_not_start_a_fresh_session() {
     let o = Arc::new(o);
     let run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 implement went idle");
+    w.await_line("hx-1 stuck in implement: went idle");
     o.stop.store(true, std::sync::atomic::Ordering::SeqCst);
     w.control("retry-hx-1");
     assert!(

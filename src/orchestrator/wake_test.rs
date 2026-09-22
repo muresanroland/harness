@@ -23,11 +23,11 @@ fn fail_implement_once(
 #[test]
 fn each_wake_trigger_sends_a_wake_line_and_retry_restarts_the_stage() {
     for (name, reason) in [
-        ("failed", "reported STATUS: failed"),
-        ("idle without result", "went idle without a done result"),
-        ("timeout", "timed out"),
-        ("prompt not taken", "did not take the prompt"),
-        ("pane died", "pane died"),
+        ("failed", "session reported failure"),
+        ("idle without result", "went idle without a result"),
+        ("timeout", "timed out after 5ms"),
+        ("prompt not taken", "never took the Stage skill"),
+        ("pane died", "session died"),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         match name {
@@ -65,18 +65,19 @@ fn each_wake_trigger_sends_a_wake_line_and_retry_restarts_the_stage() {
         let o = Arc::new(o);
         let mut run = spawn_ticket(o.clone(), "hx-1");
 
-        let wake = w.await_line(&format!("WAKE hx-1 implement {reason}"));
+        let wake = w.await_line(&format!("hx-1 stuck in implement: {reason}"));
         assert!(
-            wake.ends_with(" at 1-1"),
-            "{name}: WAKE line does not end with the location: {wake:?}"
+            wake.ends_with(" (pane 1-1)"),
+            "{name}: the stuck line does not end with the pane: {wake:?}"
         );
         assert!(
             !run.finished_within(Duration::from_millis(20)),
-            "{name}: the Ticket did not wait after its WAKE"
+            "{name}: the Ticket did not wait after its Wake"
         );
 
         w.lock().wait_err = None;
         w.control("retry-hx-1");
+        w.await_line("hx-1 retrying implement with a fresh session (pane 1-1)");
         run.wait();
         assert_eq!(
             o.ticket("hx-1").status,
@@ -101,7 +102,7 @@ fn blocked_session_wakes_main_then_continues_when_the_user_answers() {
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 implement blocked at 1-1");
+    w.await_line("hx-1 waiting at a prompt in implement (pane 1-1)");
     for status in w.lock().agents.values_mut() {
         *status = "idle".to_string(); // the user answered the permission prompt
     }
@@ -121,7 +122,7 @@ fn second_failure_after_retry_parks_the_ticket() {
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 implement");
+    w.await_line("hx-1 stuck in implement");
     w.control("retry-hx-1");
     run.wait();
 
@@ -130,11 +131,15 @@ fn second_failure_after_retry_parks_the_ticket() {
         ts.status == STATUS_PARKED && ts.reason.contains("after a retry"),
         "state = {ts:?}, want parked after the retry failed"
     );
-    w.await_line("hx-1 parked:");
-    let wakes = w.main_lines().iter().filter(|l| l.contains("WAKE")).count();
+    w.await_line("hx-1 parked: implement session reported failure again after a retry");
+    let wakes = w
+        .main_lines()
+        .iter()
+        .filter(|l| l.contains("stuck in"))
+        .count();
     assert_eq!(
         wakes, 1,
-        "WAKE lines, want 1: the second failure parks instead"
+        "stuck lines, want 1: the second failure parks instead"
     );
 }
 
@@ -145,7 +150,7 @@ fn park_command_parks_a_woken_ticket() {
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 implement");
+    w.await_line("hx-1 stuck in implement");
     w.control("park-hx-1");
     run.wait();
     assert_eq!(o.ticket("hx-1").status, STATUS_PARKED, "want parked");
@@ -163,7 +168,7 @@ fn nudged_session_that_then_writes_done_advances_without_a_retry() {
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 implement went idle");
+    w.await_line("hx-1 stuck in implement: went idle");
     let file = file.lock().unwrap().clone();
     write_file(file.as_ref(), "STATUS: done\n"); // the follow-up prompt worked
     run.wait();
@@ -184,7 +189,7 @@ fn commands_sent_before_a_wake_do_not_answer_it() {
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("WAKE hx-1 implement");
+    w.await_line("hx-1 stuck in implement");
     assert!(
         !run.finished_within(Duration::from_millis(20)),
         "a stale command answered the Wake"
@@ -213,7 +218,7 @@ fn restart_does_not_grant_a_second_retry() {
     );
     for line in w.main_lines() {
         assert!(
-            !line.contains("WAKE"),
+            !line.contains("stuck in"),
             "unexpected {line:?}: the one retry was already spent"
         );
     }
