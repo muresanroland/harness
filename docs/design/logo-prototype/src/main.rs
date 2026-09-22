@@ -9,7 +9,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{buffer::Buffer, layout::Rect, style::{Color, Stylize}, text::Line, widgets::Widget};
 
 const SOURCE: &str = include_str!("../../logo.txt");
-const WIDTHS: [usize; 3] = [17, 34, 68];
+const WIDTHS: [usize; 3] = [12, 24, 48];
 const TICK: Duration = Duration::from_millis(50);
 /// Vertical pixel offset per tick over one hop cycle: rest is 2 pixels (one cell) down.
 const HOP: [usize; 24] = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 1, 2];
@@ -171,7 +171,7 @@ fn main() -> std::io::Result<()> {
         _ => folder,
     };
     let mut terminal = ratatui::init();
-    let (mut running, mut ticks, mut which) = (true, 0usize, 0usize);
+    let (mut running, mut ticks, mut which) = (true, 0usize, 1usize);
     let mut last = Instant::now();
     loop {
         let logo = &logos[which];
@@ -217,9 +217,9 @@ fn main() -> std::io::Result<()> {
 #[test]
 fn asset_parses_and_scales() {
     let logo = Logo::parse(SOURCE, true);
-    assert_eq!((logo.width(), logo.height()), (34, 19));
-    let small = logo.scaled(68, false);
-    assert_eq!(logo.scaled(17, true).height(), 10);
-    assert_eq!((small.width(), small.height()), (68, 38));
+    assert_eq!((logo.width(), logo.height()), (24, 13));
+    let small = logo.scaled(48, false);
+    assert_eq!(logo.scaled(12, true).height(), 6);
+    assert_eq!((small.width(), small.height()), (48, 25));
     assert!(small.rows.iter().flatten().any(|p| p.is_some()));
 }
