@@ -1,7 +1,7 @@
-//! PROTOTYPE (harness-7bj.8): the Shell screen over a fake run. Top bar (spinner,
-//! RUNNING, counts), the Overall bar shifting purple to green with progress, the
-//! header (logo, banner, version, folder), the boxed Ticket table, the boxed
-//! RECENT panel newest first, and the input line. Layout A of three; B and C
+//! PROTOTYPE (harness-7bj.8): the Shell screen over a fake run. The header (logo,
+//! banner, version, folder), the status row (spinner, RUNNING, counts), the
+//! Overall bar shifting purple to green with progress, the boxed Ticket table,
+//! the boxed RECENT panel newest first, and the input line. Layout A of three; B and C
 //! (side by side, log first) are in this branch's history.
 //! Keys: s clamps the view to 80x24, space pauses the animation and the fake
 //! events, q quits.
@@ -280,11 +280,11 @@ fn boxed(title: &'static str) -> Block<'static> {
 
 // ---------- the layout ----------
 
-/// Top bar, Overall, header, boxed Ticket table, boxed RECENT (newest first), input.
+/// Header, status row, Overall, boxed Ticket table, boxed RECENT (newest first), input.
 fn layout_a(f: &mut Frame, area: Rect, app: &App) {
     let n = app.tickets.len() as u16;
-    let [top, over, _, head, tickets, recent, _, input] = Layout::vertical([
-        Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Length(header_height(area)),
+    let [head, top, over, _, tickets, recent, _, input] = Layout::vertical([
+        Constraint::Length(header_height(area)), Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
         Constraint::Length(n + 3), Constraint::Min(4), Constraint::Length(1), Constraint::Length(1),
     ]).areas(area);
     f.render_widget(status_line(app), Rect::new(top.x + 1, top.y, top.width - 1, 1));
