@@ -122,7 +122,7 @@ fn result_acceptance_across_completion_paths() {
             );
             assert_eq!(*attempts.lock().unwrap(), want_attempts, "{name}: sessions");
             let first_fix = first_fix.lock().unwrap();
-            if std::ptr::eq(c.stage, &DEBATE) {
+            if c.stage.name == "debate" {
                 assert!(
                     first_fix.contains(FIX_ITEM) && !first_fix.contains(SKIP_ITEM),
                     "{name}: Fix did not receive only accepted fix items:\n{first_fix}"

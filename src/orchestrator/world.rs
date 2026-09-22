@@ -297,7 +297,7 @@ impl World {
                     w.close_pane(&p.pane_id);
                 }
             }
-            w.live -= 1;
+            w.live = w.live.saturating_sub(1);
             return reply(json!({ "type": "ok" }));
         }
         if cmd.starts_with("herdr agent start") {
@@ -540,15 +540,23 @@ impl Running {
             self.finished_within(Duration::from_secs(5)),
             "the run never finished"
         );
-        self.handle.take().unwrap().join().unwrap();
+        self.join();
+    }
+
+    /// Joins the run; a panic on its thread (a fake-world failure) fails the
+    /// test the way Go's t.Errorf did.
+    fn join(&mut self) {
+        if let Some(Err(panic)) = self.handle.take().map(JoinHandle::join) {
+            if !thread::panicking() {
+                std::panic::resume_unwind(panic);
+            }
+        }
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         self.o.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        self.join();
     }
 }

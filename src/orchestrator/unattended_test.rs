@@ -145,3 +145,33 @@ fn stage_waits_until_its_agent_trusts_the_directory() {
     );
     w.await_line("hx-1 implement started");
 }
+
+/// A stop that arrives while a held Ticket sleeps ends the hold: a retry
+/// sent in that same moment must not start a fresh session (ADR 0003).
+#[test]
+fn stop_during_a_hold_does_not_start_a_fresh_session() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.tick = Duration::from_millis(100); // the hold sleeps long enough to be caught in it
+    w.session(|_| (String::new(), "idle".to_string()));
+    let o = Arc::new(o);
+    let run = spawn_ticket(o.clone(), "hx-1");
+
+    w.await_line("WAKE hx-1 implement went idle");
+    o.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    w.control("retry-hx-1");
+    assert!(
+        run.finished_within(Duration::from_secs(1)),
+        "stop did not end the hold"
+    );
+    let starts = w.called("herdr agent start");
+    assert_eq!(
+        starts.len(),
+        1,
+        "a stopped hold started a fresh session: {starts:?}"
+    );
+    let ts = o.ticket("hx-1");
+    assert!(
+        ts.status == STATUS_RUNNING && ts.stage == "implement",
+        "stop did not preserve resumable state: {ts:?}"
+    );
+}

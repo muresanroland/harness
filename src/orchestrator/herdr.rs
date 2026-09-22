@@ -1,17 +1,21 @@
 //! What the Orchestrator reads from herdr and how it names things there.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+#[cfg(test)]
+use serde::Serialize;
 
 use super::stage::Orchestrator;
 use crate::tools::RunError;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 #[serde(default)]
 pub(crate) struct TabInfo {
     pub(crate) tab_id: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 #[serde(default)]
 pub(crate) struct PaneInfo {
     pub(crate) pane_id: String,

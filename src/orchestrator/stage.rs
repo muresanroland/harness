@@ -1,7 +1,6 @@
 //! The Orchestrator and its Config, the Stage table and the Stage loop: one
 //! Stage run to its completion rule, with the Wake hold when it cannot advance.
 
-use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -48,15 +47,6 @@ pub(crate) enum StageError {
     Parked(String),
     /// 'harness stop' arrived: a clean end, the Ticket resumes on restart.
     Stopped,
-}
-
-impl fmt::Display for StageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            StageError::Parked(reason) => write!(f, "parked: {reason}"),
-            StageError::Stopped => write!(f, "stopped"),
-        }
-    }
 }
 
 /// How long a just-prompted session may still look idle before an idle pane
@@ -573,11 +563,10 @@ impl Orchestrator {
             self.report("stopped; live panes left alone, 'harness start' resumes the run");
             return false;
         }
-        if self.stopping() {
-            return false;
-        }
         thread::sleep(self.cfg.tick);
-        true
+        // Checked after the sleep: a stop that arrived during it must not buy
+        // one more loop, which in a hold could start a fresh session.
+        !self.stopping()
     }
 
     /// Gives the Stage an empty shell pane in the Ticket tab, replacing the
@@ -645,8 +634,7 @@ impl Orchestrator {
 
     /// The control files waiting for the Orchestrator.
     pub(crate) fn commands(&self) -> Vec<String> {
-        let dir = control_file(&self.cfg.repo, "x");
-        let Ok(entries) = fs::read_dir(dir.parent().unwrap()) else {
+        let Ok(entries) = fs::read_dir(self.cfg.repo.join(".harness").join("control")) else {
             return Vec::new();
         };
         let mut names: Vec<String> = entries
