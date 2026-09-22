@@ -9,6 +9,7 @@ pub(crate) mod sha256;
 pub(crate) mod shell;
 pub(crate) mod skills;
 pub mod tools;
+pub(crate) mod update;
 pub mod version;
 
 /// A scratch directory that is removed on Drop, the port of Go's t.TempDir().

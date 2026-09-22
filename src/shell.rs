@@ -21,6 +21,7 @@ use crate::orchestrator::stage::{Config, Event, Orchestrator};
 use crate::orchestrator::state::{acquire_lock, load_state, Lock, State, STATUS_RUNNING};
 use crate::setup;
 use crate::tools::Tools;
+use crate::update::{self, Checked, Ready, Releases};
 
 mod draw;
 mod logo;
@@ -111,6 +112,15 @@ pub(crate) struct Screen {
     receiver: Receiver<Event>,
     run: Option<Run>,
     pending: Option<Pending>,
+    /// The running binary's real path, which an update renames over; tests
+    /// point it at a scratch file.
+    pub(crate) exe: PathBuf,
+    /// The updater thread's checks, applied between commands in poll().
+    updates: (Sender<Checked>, Receiver<Checked>),
+    /// A release downloaded while a run holds the lock: installed when it ends.
+    pub(crate) update: Option<Ready>,
+    /// An idle-Shell update installed: open() re-execs after the terminal is back.
+    pub(crate) reexec: bool,
 }
 
 impl Screen {
@@ -143,6 +153,10 @@ impl Screen {
             receiver,
             run: None,
             pending: None,
+            exe: PathBuf::new(),
+            updates: mpsc::channel(),
+            update: None,
+            reexec: false,
         }
     }
 
@@ -170,7 +184,82 @@ impl Screen {
         let mut screen = Screen::new(launch, folder, truecolor, Vec::new(), state);
         screen.missing = missing;
         screen.reload_epics();
+        match update::exe_path() {
+            Ok(exe) => {
+                screen.exe = exe;
+                screen.check_updates(Arc::new(update::GitHub));
+            }
+            Err(err) => screen.say(&format!("update check failed: {err}")),
+        }
         screen
+    }
+
+    /// The updater thread: one check now, then one a day, each handed to
+    /// poll(); it never renames. A dev build's check asks nothing.
+    pub(crate) fn check_updates(&self, releases: Arc<dyn Releases>) {
+        let (version, exe, tx) = (
+            self.version.clone(),
+            self.exe.clone(),
+            self.updates.0.clone(),
+        );
+        thread::spawn(move || loop {
+            if tx.send(update::check(&*releases, &version, &exe)).is_err() {
+                return;
+            }
+            thread::sleep(update::EVERY);
+        });
+    }
+
+    /// A check's outcome: a failure is one line; a release installs at once
+    /// on an idle Shell, or waits for the run to release the lock.
+    fn updated(&mut self, checked: Checked) {
+        match checked {
+            Err(err) => self.say(&format!("update check failed: {err}")),
+            Ok(None) => {}
+            Ok(Some(ready)) if self.run.is_some() => {
+                self.say(&format!(
+                    "{} downloaded, installs when the run stops",
+                    ready.tag
+                ));
+                if let Some(old) = self.update.replace(ready) {
+                    old.discard();
+                }
+            }
+            Ok(Some(ready)) => {
+                if self.install(ready) {
+                    self.quit = true;
+                    self.reexec = true;
+                }
+            }
+        }
+    }
+
+    /// The rename over the exe, said first; a refusal is one line.
+    fn install(&mut self, ready: Ready) -> bool {
+        self.say(&format!("updating to {}", ready.tag));
+        match ready.install() {
+            Ok(()) => true,
+            Err(err) => {
+                self.say(&format!("update check failed: {err}"));
+                false
+            }
+        }
+    }
+
+    /// The header's version: with a release waiting on the run, where it goes.
+    pub(crate) fn shown_version(&self) -> String {
+        match &self.update {
+            Some(ready) => format!("{} → {} at stop", self.version, ready.tag),
+            None => self.version.clone(),
+        }
+    }
+
+    /// The Shell's last act, after the terminal is back: the release that
+    /// waited on the run installs (/exit, with no re-exec).
+    pub(crate) fn close(&mut self) {
+        if let Some(ready) = self.update.take() {
+            self.install(ready);
+        }
     }
 
     /// The bd cache again: on open, on every /start-epic, after a Ticket
@@ -190,6 +279,9 @@ impl Screen {
     pub(crate) fn poll(&mut self) {
         while let Ok(event) = self.receiver.try_recv() {
             self.push(event);
+        }
+        while let Ok(checked) = self.updates.1.try_recv() {
+            self.updated(checked);
         }
         let Some(run) = &mut self.run else {
             return;
@@ -229,6 +321,10 @@ impl Screen {
             }
         }
         self.reload_epics();
+        drop(run); // the lock goes
+        if let Some(ready) = self.update.take() {
+            self.install(ready); // the last act of /stop-work
+        }
     }
 
     /// The scheduler has returned and Ticket threads are still leaving.
@@ -691,6 +787,11 @@ pub(crate) fn open(
     let mut terminal = ratatui::try_init()?;
     let result = run(&mut terminal, &mut screen);
     ratatui::restore();
+    screen.close();
+    if screen.reexec {
+        // An idle-Shell update: the same argv comes back under the new version.
+        eprintln!("harness: {}", update::reexec(&screen.exe));
+    }
     result
 }
 

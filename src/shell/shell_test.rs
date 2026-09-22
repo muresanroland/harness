@@ -11,13 +11,14 @@ use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
+use crate::update::FakeReleases;
 use chrono::TimeZone;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::Terminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -1020,6 +1021,149 @@ fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
         closed,
         "Ctrl-C closed a pane"
     );
+}
+
+/// A scratch exe in the Target repo stands in for the running binary; the
+/// Screen is a release build of v1.0.0 over it.
+fn release_shell(w: &Arc<World>) -> (Screen, PathBuf) {
+    let mut s = shell(w);
+    s.version = "v1.0.0".to_string();
+    s.exe = w.repo.join("harness");
+    std::fs::write(&s.exe, b"old").unwrap();
+    (s, w.repo.join("harness"))
+}
+
+fn await_update(s: &mut Screen) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.update.is_none() && !s.quit {
+        assert!(Instant::now() < deadline, "the update never arrived");
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn an_update_waits_while_the_lock_is_held_and_installs_at_stop_work() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.session(|_| (String::new(), "working".to_string()));
+    let (mut s, exe) = release_shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 implement started: claude (pane 1-1)");
+
+    s.check_updates(Arc::new(FakeReleases::new("v1.1.0", b"new")));
+    await_update(&mut s);
+    await_line(&mut s, "v1.1.0 downloaded, installs when the run stops");
+    assert_eq!(
+        std::fs::read(&exe).unwrap(),
+        b"old",
+        "swapped while the lock was held"
+    );
+    assert_eq!(s.shown_version(), "v1.0.0 → v1.1.0 at stop");
+    let buf = render(&s, 120, 40);
+    assert_eq!(cols(&buf, 4, 16, 16 + 24), "v1.0.0 → v1.1.0 at stop ");
+    assert_eq!(
+        buf[(16, 4)].fg,
+        buf[(30, 4)].fg,
+        "the pending text is not the version's gray"
+    );
+    assert!(
+        row(&render(&s, 60, 16), 0).starts_with("HARNESS v1.0.0 → v1.1.0 at stop  ~/hx"),
+        "{:?}",
+        row(&render(&s, 60, 16), 0)
+    );
+    assert!(s.run.is_some() && !s.quit);
+
+    s.command("/stop-work");
+    await_line(&mut s, "stopped, panes left running, /continue resumes");
+    await_end(&mut s);
+    assert_eq!(
+        std::fs::read(&exe).unwrap(),
+        b"new",
+        "not installed at /stop-work"
+    );
+    assert!(
+        s.update.is_none() && !s.reexec && !s.quit,
+        "a deferred swap re-execs"
+    );
+    assert_eq!(s.shown_version(), "v1.0.0");
+    let log = log(&w);
+    let (downloaded, stopped, updating) = (
+        log.find("v1.1.0 downloaded, installs when the run stops\n")
+            .unwrap(),
+        log.find("stopped, panes left running, /continue resumes\n")
+            .unwrap(),
+        log.find(" updating to v1.1.0\n").unwrap(),
+    );
+    assert!(downloaded < stopped && stopped < updating, "log:\n{log}");
+    assert!(!w
+        .repo
+        .join(format!("harness.new.{}", std::process::id()))
+        .exists());
+}
+
+#[test]
+fn an_idle_shell_installs_an_update_at_once_and_reexecs() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    let (mut s, exe) = release_shell(&w);
+    s.check_updates(Arc::new(FakeReleases::new("v1.1.0", b"new")));
+    await_update(&mut s);
+    assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+    assert!(s.quit && s.reexec, "an idle swap did not re-exec");
+    assert!(
+        log(&w).contains(" updating to v1.1.0\n"),
+        "log:\n{}",
+        log(&w)
+    );
+    assert!(!log(&w).contains("downloaded"));
+    assert_eq!(s.shown_version(), "v1.0.0");
+
+    // A failed check is one log line, the temp file gone, nothing in the header.
+    let (mut s, exe) = release_shell(&w);
+    let mut releases = FakeReleases::new("v1.1.0", b"new binary");
+    releases.truncated = true;
+    s.check_updates(Arc::new(releases));
+    await_line(&mut s, "update check failed: truncated body: 5 of 10 bytes");
+    assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+    assert!(!s.quit && !s.reexec && s.update.is_none());
+    assert_eq!(s.shown_version(), "v1.0.0");
+    assert!(!w
+        .repo
+        .join(format!("harness.new.{}", std::process::id()))
+        .exists());
+
+    // A dev build never asks.
+    let (mut s, _) = release_shell(&w);
+    s.version = "v1.0.0-dev".to_string();
+    let releases = Arc::new(FakeReleases::new("v9.0.0", b"new"));
+    s.check_updates(releases.clone());
+    thread::sleep(Duration::from_millis(20));
+    s.poll();
+    assert_eq!(releases.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(s.update.is_none() && !s.quit);
+}
+
+#[test]
+fn exit_with_a_run_live_installs_the_update_as_its_last_act() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "working".to_string()));
+    let (mut s, exe) = release_shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 implement started");
+    s.check_updates(Arc::new(FakeReleases::new("v1.1.0", b"new")));
+    await_update(&mut s);
+    type_line(&mut s, "/exit");
+    type_line(&mut s, "y");
+    assert!(s.quit);
+    assert_eq!(
+        std::fs::read(&exe).unwrap(),
+        b"old",
+        "swapped before the last act"
+    );
+    s.close();
+    assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+    assert!(!s.reexec);
+    assert!(log(&w).contains(" updating to v1.1.0\n"));
 }
 
 #[test]
