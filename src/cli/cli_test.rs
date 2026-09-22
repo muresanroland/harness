@@ -27,3 +27,12 @@ fn unknown_command_prints_usage() {
     assert_ne!(code, 0, "exit code = 0, want non-zero");
     assert!(out.contains("usage:"), "no usage in output:\n{out}");
 }
+
+#[test]
+fn version_flag_prints_version() {
+    let (code, out) = run_with(&["--version"], TempDir::new().path(), Fake::quiet(), &|_| {
+        String::new()
+    });
+    assert_eq!(code, 0, "exit code = {code}, want 0:\n{out}");
+    assert_eq!(out, format!("{}\n", crate::version::version()));
+}

@@ -21,6 +21,7 @@ const USAGE: &str = "usage: harness <command>
   park <ticket>               park a Ticket
   address <ticket>            act on a Ticket's PR review comments and conflicts
   stop                        stop scheduling and exit, leaving live panes alone
+  --version                   print the version
 ";
 
 /// Runs one harness command inside the Target repo and returns the exit code.
@@ -49,6 +50,10 @@ pub fn run(
         "start" => start(&args[1..], out, repo, tools, env),
         "status" => print_status(out, repo),
         "stop" | "retry" | "park" | "address" => command(args, out, repo),
+        "--version" | "version" => {
+            let _ = writeln!(out, "{}", crate::version::version());
+            0
+        }
         _ => {
             let _ = out.write_all(USAGE.as_bytes());
             2
