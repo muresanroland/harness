@@ -33,9 +33,16 @@ pub struct Exec;
 
 impl Tools for Exec {
     fn run(&self, dir: &Path, argv: &[&str]) -> Result<String, RunError> {
-        let command = format!("{} {}", argv[0], argv[1..].join(" "));
-        let output = Command::new(argv[0])
-            .args(&argv[1..])
+        let [name, args @ ..] = argv else {
+            return Err(RunError {
+                command: String::new(),
+                status: "no command".to_string(),
+                stderr: String::new(),
+            });
+        };
+        let command = format!("{name} {}", args.join(" "));
+        let output = Command::new(name)
+            .args(args)
             .current_dir(dir)
             .output()
             .map_err(|err| RunError {

@@ -12,7 +12,6 @@ const USAGE: &str = "usage: harness <command>
   init [--force]              install the shipped skills and preflight the Target repo
   start <epic> [--max N]      run an Epic's Tickets through the Pipeline, here
   start --ticket <id>         run one Ticket through the Pipeline, here
-    --detach                  run it in the background instead, logging to a file
   status                      print the state of the run
   retry <ticket>              restart a Ticket's current Stage with a fresh session
   park <ticket>               park a Ticket
@@ -44,7 +43,7 @@ pub fn run(
             setup::report_missing(out, &setup::preflight(repo, &*tools, env))
         }
         "start" => start(&args[1..], out, repo, &*tools, env),
-        "status" => not_ported("status"),
+        "status" => not_ported("status", out),
         "stop" | "retry" | "park" | "address" => command(args, out),
         _ => {
             let _ = out.write_all(USAGE.as_bytes());
@@ -55,8 +54,8 @@ pub fn run(
 
 // ponytail: the Orchestrator lands with harness-kqe.2 to .4; until then every
 // command that needs it stops here.
-fn not_ported(name: &str) -> i32 {
-    eprintln!("harness {name}: not ported yet");
+fn not_ported(name: &str, out: &mut dyn Write) -> i32 {
+    let _ = writeln!(out, "harness {name}: not ported yet");
     2
 }
 
@@ -68,7 +67,7 @@ fn command(args: &[String], out: &mut dyn Write) -> i32 {
         let _ = writeln!(out, "usage: harness {name} <ticket>");
         return 2;
     }
-    not_ported(name)
+    not_ported(name, out)
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -128,7 +127,8 @@ fn start(
     tools: &dyn Tools,
     env: &dyn Fn(&str) -> String,
 ) -> i32 {
-    if parse_start(args).is_err() {
+    if let Err(err) = parse_start(args) {
+        let _ = writeln!(out, "{err}");
         let _ = out.write_all(USAGE.as_bytes());
         return 2;
     }
@@ -140,7 +140,7 @@ fn start(
         let _ = writeln!(out, "start: {err}");
         return 1;
     }
-    not_ported("start")
+    not_ported("start", out)
 }
 
 #[cfg(test)]

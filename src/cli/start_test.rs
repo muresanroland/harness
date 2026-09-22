@@ -37,6 +37,17 @@ fn start_arguments_parse_in_any_order() {
     ] {
         assert!(parse(bad).is_err(), "parse_start({bad:?}) accepted");
     }
+    // A bad flag is named before the usage, as Go's flag package did.
+    let (code, out) = run_with(
+        &["start", "hx", "--max", "lots"],
+        prepared_repo().path(),
+        ok_tools(),
+        &herdr_env,
+    );
+    assert!(
+        code == 2 && out.starts_with("invalid value \"lots\" for flag -max\nusage:"),
+        "bad --max: exit {code}, output {out:?}"
+    );
 }
 
 // ponytail: second_start_in_the_same_repo_refuses and
@@ -54,7 +65,10 @@ fn orchestrator_commands_are_not_ported_yet() {
         &["address", "hx-1"],
     ] {
         let (code, out) = run_with(args, repo.path(), ok_tools(), &herdr_env);
-        assert_eq!(code, 2, "{args:?}: exit {code}, output {out:?}");
+        assert!(
+            code == 2 && out.ends_with(&format!("harness {}: not ported yet\n", args[0])),
+            "{args:?}: exit {code}, output {out:?}"
+        );
     }
     let (code, out) = run_with(&["retry"], repo.path(), ok_tools(), &herdr_env);
     assert!(
