@@ -1,4 +1,4 @@
-# Harness logo, 24x25 pixels, one char per pixel, . is transparent
+# Harness logo, 12x12 pixels, one char per pixel, . is transparent
 a=#000a1a
 b=#2cf2fa
 c=#00f27c
@@ -6,28 +6,15 @@ d=#0090fa
 e=#aa2efa
 f=#fac800
 
-..bbbbbbbbbbbbbbbbbbbb..
-.baaaaaaaaaaaaaaaaaaaab.
-baddaaeeaaffaaaaaaaaaaab
-baddaaeeaaffaaaaaaaaaaab
-baddaaeeaaffaaaaaaaaaaab
-baaaaaaaaaaaaaaaaaaaaaab
-bbbbbbbbbbbbbbbbbbbbbbbb
-baaaaaaaaaaaaaaaaaaaaaab
-baaaaaaaaaaaaaaaaaaaaaab
-baaaaaaaaaaaaaaaaaaaaaab
-baaaaaccaaaaaaaaaaaaaaab
-baaaaacccaaaaaaaaaaaaaab
-baaaaaacccaaaaaaaaaaaaab
-baaaaaaacccaaaccccaaaaab
-baaaaaaaacccaaccccaaaaab
-baaaaaaaaacccaccccaaaaab
-baaaaaaaacccaaccccaaaaab
-baaaaaaacccaaaccccaaaaab
-baaaaaacccaaaaccccaaaaab
-baaaaacccaaaaaaaaaaaaaab
-baaaaaccaaaaaaaaaaaaaaab
-baaaaaaaaaaaaaaaaaaaaaab
-baaaaaaaaaaaaaaaaaaaaaab
-.baaaaaaaaaaaaaaaaaaaab.
-..bbbbbbbbbbbbbbbbbbbb..
+.bbbbbbbbbb.
+badaeafaaaab
+badaeafaaaab
+bbbbbbbbbbbb
+baaaaaaaaaab
+baacaaaaaaab
+baaacaaccaab
+baaaacaccaab
+baaacaaccaab
+baacaaaaaaab
+baaaaaaaaaab
+.bbbbbbbbbb.
