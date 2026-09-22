@@ -123,7 +123,7 @@ fn header(f: &mut Frame, area: Rect, s: &Screen) {
     if area.height < 8 || area.width < 64 {
         let l = Line::from(vec![
             "HARNESS ".fg(TEXT).bold(),
-            s.version.as_str().fg(GRAY),
+            s.shown_version().fg(GRAY),
             "  ".into(),
             s.folder.as_str().fg(MUTED),
         ]);
@@ -149,7 +149,7 @@ fn header(f: &mut Frame, area: Rect, s: &Screen) {
         f.buffer_mut(),
     );
     f.render_widget(
-        Line::from(s.version.as_str().fg(GRAY)),
+        Line::from(s.shown_version().fg(GRAY)),
         Rect::new(x, area.y + 4, w, 1),
     );
     f.render_widget(

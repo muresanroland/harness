@@ -36,6 +36,7 @@ pub fn run(
     };
     match name.as_str() {
         "init" => {
+            crate::update::at_init(repo, out); // before the gate: a greater release re-execs
             let force = args.get(1).is_some_and(|a| a == "--force");
             // The questions read the terminal, a scripted input, or, when
             // stdin is neither, nothing: a non-interactive init cancels and skips.
