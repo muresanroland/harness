@@ -9,7 +9,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{buffer::Buffer, layout::Rect, style::{Color, Stylize}, text::Line, widgets::Widget};
 
 const SOURCE: &str = include_str!("../../logo.txt");
-const WIDTHS: [usize; 6] = [144, 96, 72, 56, 48, 36];
+const WIDTHS: [usize; 3] = [30, 60, 90];
 const TICK: Duration = Duration::from_millis(50);
 /// Vertical pixel offset per tick over one hop cycle: rest is 2 pixels (one cell) down.
 const HOP: [usize; 24] = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 1, 2];
@@ -40,7 +40,7 @@ impl Logo {
         Self { rows, truecolor }
     }
 
-    /// Box-filter downscale to `w` pixels wide (prototype only; the port embeds the final size).
+    /// Box-filter rescale to `w` pixels wide (prototype only; the port embeds the final size).
     fn scaled(&self, w: usize) -> Self {
         let (sw, sh) = (self.rows[0].len(), self.rows.len());
         let h = (sh * w / sw + 1) & !1; // even, so it fills whole cells
@@ -108,16 +108,16 @@ fn paint((r, g, b): (u8, u8, u8), truecolor: bool) -> Color {
     }
 }
 
-/// 5x5 block font, only the letters the banner needs.
+/// 3x5 block font, only the letters the banner needs; drawn in half-blocks, so 3 rows tall.
 const FONT: &[(char, [&str; 5])] = &[
-    ('T', ["#####", "..#..", "..#..", "..#..", "..#.."]),
-    ('H', ["#...#", "#...#", "#####", "#...#", "#...#"]),
-    ('E', ["#####", "#....", "####.", "#....", "#####"]),
-    ('A', [".###.", "#...#", "#####", "#...#", "#...#"]),
-    ('R', ["####.", "#...#", "####.", "#..#.", "#...#"]),
-    ('N', ["#...#", "##..#", "#.#.#", "#..##", "#...#"]),
-    ('S', [".####", "#....", ".###.", "....#", "####."]),
-    (' ', [".....", ".....", ".....", ".....", "....."]),
+    ('T', ["###", ".#.", ".#.", ".#.", ".#."]),
+    ('H', ["#.#", "#.#", "###", "#.#", "#.#"]),
+    ('E', ["###", "#..", "##.", "#..", "###"]),
+    ('A', [".#.", "#.#", "###", "#.#", "#.#"]),
+    ('R', ["##.", "#.#", "##.", "#.#", "#.#"]),
+    ('N', ["##.", "#.#", "#.#", "#.#", "#.#"]),
+    ('S', ["###", "#..", "###", "..#", "###"]),
+    (' ', ["...", "...", "...", "...", "..."]),
 ];
 
 fn hsv((h, s, v): (f32, f32, f32)) -> (u8, u8, u8) {
@@ -138,14 +138,17 @@ fn banner(text: &str, area: Rect, ticks: usize, truecolor: bool, buf: &mut Buffe
     let pulse = 0.7 + 0.3 * (t / 25.0).sin();
     for (i, ch) in text.chars().enumerate() {
         let Some((_, glyph)) = FONT.iter().find(|(k, _)| *k == ch) else { continue };
-        for (row, line) in glyph.iter().enumerate() {
+        for (row, pair) in glyph.chunks(2).enumerate() {
             let y = area.y + row as u16;
             if y >= area.bottom() { break; }
-            for (col, bit) in line.chars().enumerate() {
-                let x = area.x + (i * 6 + col) as u16;
-                if bit != '#' || x >= area.right() { continue; }
-                let hue = ((i * 6 + col) as f32 * 4.0 + t * 1.2) % 360.0;
-                buf[(x, y)].set_char('█').set_fg(paint(hsv((hue, 0.85, pulse)), truecolor));
+            for col in 0..3 {
+                let x = area.x + (i * 4 + col) as u16;
+                if x >= area.right() { continue; }
+                let hi = pair[0].as_bytes()[col] == b'#';
+                let lo = pair.get(1).map_or(false, |l| l.as_bytes()[col] == b'#');
+                let ch = match (hi, lo) { (true, true) => '\u{2588}', (true, false) => '\u{2580}', (false, true) => '\u{2584}', _ => continue };
+                let hue = ((i * 4 + col) as f32 * 6.0 + t * 1.2) % 360.0;
+                buf[(x, y)].set_char(ch).set_fg(paint(hsv((hue, 0.85, pulse)), truecolor));
             }
         }
     }
@@ -165,7 +168,7 @@ fn main() -> std::io::Result<()> {
         _ => folder,
     };
     let mut terminal = ratatui::init();
-    let (mut running, mut ticks, mut which) = (true, 0usize, 2usize);
+    let (mut running, mut ticks, mut which) = (true, 0usize, 0usize);
     let mut last = Instant::now();
     loop {
         let logo = &logos[which];
@@ -176,9 +179,9 @@ fn main() -> std::io::Result<()> {
             // Header beside the logo: banner, version in light gray, then the folder.
             let x = 2 + logo.width() + 3;
             let w = a.width.saturating_sub(x);
-            banner("THE HARNESS", Rect::new(x, 2, w, 5), ticks, truecolor, f.buffer_mut());
-            f.render_widget(Line::from("v0.1.0".fg(Color::Rgb(160, 160, 160))), Rect::new(x, 8, w, 1));
-            f.render_widget(Line::from(folder.as_str()), Rect::new(x, 9, w, 1));
+            banner("THE HARNESS", Rect::new(x, 2, w, 3), ticks, truecolor, f.buffer_mut());
+            f.render_widget(Line::from("v0.1.0".fg(Color::Rgb(160, 160, 160))), Rect::new(x, 6, w, 1));
+            f.render_widget(Line::from(folder.as_str()), Rect::new(x, 7, w, 1));
             let status = format!(
                 "{}  |  {} px wide = {}x{} cells  |  terminal {}x{}  |  {}  |  left/right: size, space: toggle, q: quit",
                 if running { "RUNNING (hopping)" } else { "STILL" },
@@ -210,8 +213,8 @@ fn main() -> std::io::Result<()> {
 #[test]
 fn asset_parses_and_scales() {
     let logo = Logo::parse(SOURCE, true);
-    assert_eq!((logo.width(), logo.height()), (144, 64));
-    let small = logo.scaled(48);
-    assert_eq!((small.width(), small.height()), (48, 21));
+    assert_eq!((logo.width(), logo.height()), (30, 18));
+    let small = logo.scaled(60);
+    assert_eq!((small.width(), small.height()), (60, 35));
     assert!(small.rows.iter().flatten().any(|p| p.is_some()));
 }
