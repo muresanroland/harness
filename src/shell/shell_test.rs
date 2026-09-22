@@ -4,13 +4,13 @@ use super::{Epic, Screen};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Event;
 use crate::orchestrator::state::{
-    State, TicketState, STATUS_MERGED, STATUS_PR_OPEN, STATUS_RUNNING,
+    State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING,
 };
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
 use chrono::TimeZone;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
@@ -36,7 +36,8 @@ fn ticket(status: &str) -> TicketState {
     }
 }
 
-/// One open Epic with three Tickets, and a saved run with 2 of 7 PRs.
+/// One open Epic with seven Tickets on the bd tree, four of them started in
+/// the saved run, two of those with a PR: the Overall bar reads 2/7.
 fn screen() -> Screen {
     let epic = Epic {
         id: "harness-kqe".to_string(),
@@ -50,6 +51,10 @@ fn screen() -> Screen {
                 "in_progress",
             ),
             issue("harness-kqe.10", "The Shell runs the Orchestrator", "open"),
+            issue("harness-kqe.11", "Questions", "open"),
+            issue("harness-kqe.12", "Judgment", "open"),
+            issue("harness-kqe.13", "Plan mode", "open"),
+            issue("harness-kqe.14", "Self-update", "open"),
         ],
     };
     let mut state = State {
@@ -57,17 +62,11 @@ fn screen() -> Screen {
         ..Default::default()
     };
     for (n, status) in [
-        STATUS_MERGED,
-        STATUS_PR_OPEN,
-        STATUS_RUNNING,
-        STATUS_RUNNING,
-        "",
-        "",
-        "",
-    ]
-    .into_iter()
-    .enumerate()
-    {
+        (8, STATUS_MERGED),
+        (9, STATUS_PR_OPEN),
+        (10, STATUS_RUNNING),
+        (11, STATUS_RUNNING),
+    ] {
         state
             .tickets
             .insert(format!("harness-kqe.{n}"), ticket(status));
@@ -83,6 +82,10 @@ fn render(s: &Screen, w: u16, h: u16) -> Buffer {
 
 fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+fn rows(buf: &Buffer) -> Vec<String> {
+    (0..buf.area.height).map(|y| row(buf, y)).collect()
 }
 
 /// Columns `from..to` of row `y`.
@@ -146,7 +149,7 @@ fn header_at_120x40_shows_the_logo_banner_version_and_folder() {
     assert!(row(&buf, 5).contains("~/harness"), "{:?}", row(&buf, 5));
     assert!(
         row(&buf, 8).contains(
-            "IDLE    1 open Epics  ·  3 Tickets  ·  saved run on harness-kqe, /continue resumes"
+            "IDLE    1 open Epic  ·  7 Tickets  ·  saved run on harness-kqe, /continue resumes"
         ),
         "{:?}",
         row(&buf, 8)
@@ -154,7 +157,9 @@ fn header_at_120x40_shows_the_logo_banner_version_and_folder() {
     assert!(find(&buf, " TICKETS ").is_some());
     assert!(find(&buf, " RECENT ").is_some());
     assert!(
-        row(&buf, 39).starts_with("› ▌  /start-epic  /continue  /retry  /park  /address  /exit"),
+        row(&buf, 39).starts_with(
+            "› ▌  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit"
+        ),
         "{:?}",
         row(&buf, 39)
     );
@@ -189,25 +194,33 @@ fn the_fold_under_64_columns_or_18_rows_is_one_plain_line() {
         assert!(row(&buf, 1).contains("IDLE"), "{w}x{h}: {:?}", row(&buf, 1));
         assert!(!row(&buf, 1).contains('▀'), "{w}x{h} keeps the logo");
     }
+    // 80x24 is above every fold: the logo, banner and labels all stay.
     let buf = render(&s, 80, 24);
     assert!(
         row(&buf, 4).contains(&s.version),
-        "80x24 folds the header: {:?}",
+        "the header folds at 80x24, it must not: {:?}",
         row(&buf, 4)
     );
     assert!(find(&buf, "DONE").is_some(), "80x24 drops the status label");
-    // Under 60 columns the label goes; the indicator carries the status.
-    let buf = render(&s, 56, 24);
-    assert!(find(&buf, "DONE").is_none());
+    // Under 60 terminal columns the label goes; the indicator carries the status.
+    assert!(
+        find(&render(&s, 60, 24), "DONE").is_some(),
+        "60 columns drop the label"
+    );
+    let buf = render(&s, 59, 24);
+    assert!(find(&buf, "DONE").is_none(), "59 columns keep the label");
     assert!(find(&buf, "✓  8 Events").is_some());
 }
 
 #[test]
-fn the_overall_bar_blends_purple_to_green_by_the_share_of_tickets_with_a_pr() {
+fn the_overall_bar_counts_the_epics_tickets_and_blends_purple_to_green_by_the_pr_share() {
     let mut s = screen();
     let buf = render(&s, 120, 40);
     let line = row(&buf, 9);
-    assert!(line.contains("2/7 PRs"), "{line:?}");
+    assert!(
+        line.contains("2/7 PRs"),
+        "unstarted Tickets are not counted: {line:?}"
+    );
     assert_eq!(line.matches('█').count(), 40 * 2 / 7);
     assert_eq!(line.matches('░').count(), 40 - 40 * 2 / 7);
     // The banner has full blocks too: look on the Overall row alone.
@@ -221,12 +234,17 @@ fn the_overall_bar_blends_purple_to_green_by_the_share_of_tickets_with_a_pr() {
     assert_eq!(fill(&buf), lerp((PURPLE, GREEN), 2.0 / 7.0));
     assert_ne!(fill(&buf), PURPLE);
 
-    for ts in s.state.tickets.values_mut() {
-        ts.status = STATUS_MERGED.to_string();
+    for n in 8..15 {
+        s.state
+            .tickets
+            .insert(format!("harness-kqe.{n}"), ticket(STATUS_MERGED));
     }
     let buf = render(&s, 120, 40);
     assert!(row(&buf, 9).contains("7/7 PRs"));
     assert_eq!(fill(&buf), GREEN);
+    // Without the Epic on the tree the started Tickets are all there is.
+    s.epics.clear();
+    assert!(row(&render(&s, 120, 40), 9).contains("7/7 PRs"));
 
     s.state = State::default();
     let buf = render(&s, 80, 24);
@@ -259,12 +277,19 @@ fn recent_is_newest_first_with_the_ticket_column_colored_and_cut_to_22() {
     assert_eq!(ticket_color("harness-kqe.9"), CYAN);
     let (x, y) = find(&buf, "harness   ").unwrap();
     assert_eq!(buf[(x, y)].fg, MUTED);
-    // Under 70 columns the Ticket column narrows to 12.
-    let buf = render(&s, 60, 24);
+    // Under 70 terminal columns the Ticket column narrows to 12.
+    let buf = render(&s, 70, 24);
+    let (_, y) = find(&buf, " RECENT ").unwrap();
+    assert!(
+        row(&buf, y + 1).contains("12:04:44  9 The Shell, idle: har  implemented"),
+        "70 columns narrow the column: {:?}",
+        row(&buf, y + 1)
+    );
+    let buf = render(&s, 69, 24);
     let (_, y) = find(&buf, " RECENT ").unwrap();
     assert!(
         row(&buf, y + 1).contains("12:04:44  9 The Shell,  implemented"),
-        "{:?}",
+        "69 columns keep the wide column: {:?}",
         row(&buf, y + 1)
     );
 }
@@ -274,12 +299,12 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
     let repo = TempDir::new();
     write_file(
         &repo.path().join(".harness/state.json"),
-        r#"{"epic":"harness-kqe","tickets":{"harness-kqe.9":{"status":"running","stage":"review","round":2}}}"#,
+        r#"{"epic":"harness-kqe","tickets":{"harness-kqe.9":{"status":"running","stage":"review","round":2},"harness-kqe.10":{"status":"parked","stage":"implement","round":0,"reason":"went idle"}}}"#,
     );
     let fake = Fake::new(|_, argv| {
         match argv.join(" ").as_str() {
         "bd list --json --brief --all" => Ok(r#"[
-            {"id":"harness-kqe.10","title":"The Shell runs the Orchestrator","status":"open","issue_type":"task","parent":"harness-kqe"},
+            {"id":"harness-kqe.10","title":"The Shell runs the Orchestrator","status":"in_progress","issue_type":"task","parent":"harness-kqe"},
             {"id":"harness-kqe.9","title":"The Shell, idle","status":"in_progress","issue_type":"task","parent":"harness-kqe"},
             {"id":"harness-kqe.8","title":"Events","status":"closed","issue_type":"task","parent":"harness-kqe"},
             {"id":"harness-kqe","title":"Build: the Rust port","status":"open","issue_type":"epic"},
@@ -299,10 +324,9 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
         }
     });
     assert_eq!(fake.calls(), ["bd list --json --brief --all"]);
-    assert!(
-        s.folder.starts_with("~/harness-test-"),
-        "folder = {}",
-        s.folder
+    assert_eq!(
+        s.folder,
+        format!("~/{}", repo.path().file_name().unwrap().to_str().unwrap())
     );
     assert!(!s.truecolor);
     assert_eq!(
@@ -340,8 +364,11 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
         "{:?}",
         row(&buf, y + 2)
     );
+    // A Ticket Parked in the saved run is Parked whatever bd says.
     assert!(
-        row(&buf, y + 3).contains("·  10 The Shell runs the Orchestrator"),
+        row(&buf, y + 3).contains("◌  10 The Shell runs the Orchestrator")
+            && row(&buf, y + 3).contains("implement")
+            && row(&buf, y + 3).contains("PARKED"),
         "{:?}",
         row(&buf, y + 3)
     );
@@ -362,11 +389,75 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
 }
 
 #[test]
+fn a_parked_ticket_of_the_saved_run_reads_parked() {
+    let mut s = screen();
+    s.state
+        .tickets
+        .insert("harness-kqe.8".to_string(), ticket(STATUS_PARKED));
+    let buf = render(&s, 120, 40);
+    let (_, y) = find(&buf, "◌  8 Events").unwrap();
+    assert!(row(&buf, y).contains("PARKED"), "{:?}", row(&buf, y));
+}
+
+#[test]
+fn a_tall_tree_scrolls_to_its_last_epic() {
+    let mut s = screen();
+    for n in 0..3 {
+        s.epics.push(Epic {
+            id: format!("harness-e{n}"),
+            title: format!("Epic {n}"),
+            resumable: false,
+            tickets: (0..5)
+                .map(|i| issue(&format!("harness-e{n}.{i}"), "work", "open"))
+                .collect(),
+        });
+    }
+    assert_eq!(s.rows(), 8 + 18);
+    // 80x24 leaves the TICKETS box 7 rows: the header row, 3 rows and the tail.
+    let buf = render(&s, 80, 24);
+    assert!(find(&buf, "▾  harness-kqe  Build").is_some());
+    assert!(find(&buf, "… 23 more").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "Epic 2").is_none());
+    for _ in 0..3 {
+        s.key(key(KeyCode::PageDown));
+    }
+    assert_eq!(s.scroll, 25, "clamped to the last row");
+    for _ in 0..3 {
+        s.key(key(KeyCode::Up));
+    }
+    assert_eq!(s.scroll, 22);
+    // Epic 2 is row 20: 8 rows of harness-kqe, then two Epics of 6 rows each.
+    s.key(key(KeyCode::PageUp));
+    assert_eq!(s.scroll, 12);
+    for _ in 0..8 {
+        s.key(key(KeyCode::Down));
+    }
+    assert_eq!(s.scroll, 20);
+    let buf = render(&s, 80, 24);
+    assert!(
+        find(&buf, "▾  harness-e2  Epic 2").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "… 3 more").is_some(), "{:#?}", rows(&buf));
+    s.scroll = 25;
+    assert!(
+        find(&render(&s, 80, 24), "more").is_none(),
+        "the last row alone needs no tail"
+    );
+    // Typing takes the arrows back for the input line.
+    s.key(key(KeyCode::Char('/')));
+    s.key(key(KeyCode::Down));
+    assert_eq!(s.scroll, 25);
+}
+
+#[test]
 fn a_bd_failure_is_a_notice_over_an_empty_tree() {
     let repo = TempDir::new();
     let fake = Fake::new(|_, _| Err("boom".to_string()));
     let s = Screen::open(repo.path(), &*fake, &|_| String::new());
     assert!(s.epics.is_empty());
+    assert_eq!(s.folder, repo.path().display().to_string(), "no HOME, no ~");
     let buf = render(&s, 80, 24);
     assert!(
         row(&buf, 22).contains("bd list failed: bd list --json --brief --all: exit status 1: boom"),
@@ -392,7 +483,18 @@ fn exit_command_ctrl_c_twice_and_an_unknown_command() {
     assert!(row(&render(&s, 80, 24), 22).contains("unknown command: /bogus now"));
     assert!(s.input.is_empty());
 
+    // A repeat types, a release does not, nor does a Char with Ctrl or Alt.
     s.key(key(KeyCode::Char('x')));
+    s.key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT));
+    s.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    let mut repeat = key(KeyCode::Char('x'));
+    repeat.kind = KeyEventKind::Repeat;
+    s.key(repeat);
+    let mut release = key(KeyCode::Char('r'));
+    release.kind = KeyEventKind::Release;
+    s.key(release);
+    assert_eq!(s.input, "xx");
+
     s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(!s.quit, "one Ctrl-C exits");
     assert_eq!(
@@ -401,7 +503,7 @@ fn exit_command_ctrl_c_twice_and_an_unknown_command() {
     );
     assert!(row(&render(&s, 80, 24), 22).contains("press Ctrl-C again to exit"));
     assert!(
-        row(&render(&s, 80, 24), 23).starts_with("› x▌"),
+        row(&render(&s, 80, 24), 23).starts_with("› xx▌"),
         "typed text is not shown"
     );
     s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));

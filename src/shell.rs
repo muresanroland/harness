@@ -19,8 +19,10 @@ use crate::tools::Tools;
 mod draw;
 mod logo;
 
-/// The hop and the banner step every 50 ms.
+/// The hop and the banner step every 50 ms while a run is live; at rest the
+/// screen redraws every 250 ms.
 const TICK: Duration = Duration::from_millis(50);
+const IDLE_TICK: Duration = Duration::from_millis(250);
 /// How long 'press Ctrl-C again to exit' stands.
 const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 const NOTICE_WINDOW: Duration = Duration::from_secs(5);
@@ -47,6 +49,8 @@ pub(crate) struct Screen {
     /// The panel's lines, oldest first.
     pub(crate) events: Vec<Event>,
     pub(crate) input: String,
+    /// The first TICKETS row shown, for a tree taller than its box.
+    pub(crate) scroll: usize,
     /// One line above the input, and when it goes.
     pub(crate) notice: Option<(String, Instant)>,
     ctrl_c: Option<Instant>,
@@ -67,6 +71,7 @@ impl Screen {
             state,
             events: Vec::new(),
             input: String::new(),
+            scroll: 0,
             notice: None,
             ctrl_c: None,
             ticks: 0,
@@ -77,11 +82,10 @@ impl Screen {
 
     /// The idle screen for a Target repo: the open Epics from bd and the saved run.
     pub(crate) fn open(repo: &Path, tools: &dyn Tools, env: &dyn Fn(&str) -> String) -> Self {
-        let folder = repo.display().to_string();
         let home = env("HOME");
-        let folder = match folder.strip_prefix(&home) {
-            Some(rest) if !home.is_empty() => format!("~{rest}"),
-            _ => folder,
+        let folder = match repo.strip_prefix(&home) {
+            Ok(rest) if !home.is_empty() => Path::new("~").join(rest).display().to_string(),
+            _ => repo.display().to_string(),
         };
         let colorterm = env("COLORTERM");
         let truecolor = colorterm == "truecolor" || colorterm == "24bit";
@@ -124,9 +128,12 @@ impl Screen {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) {
-        if key.kind != KeyEventKind::Press {
+        if key.kind == KeyEventKind::Release {
             return;
         }
+        let held = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.ctrl_c.is_some_and(|at| at.elapsed() < CTRL_C_WINDOW) {
                 self.quit = true;
@@ -136,8 +143,15 @@ impl Screen {
             }
             return;
         }
+        let rows = self.rows();
+        let scroll = |by: isize| (self.scroll as isize + by).clamp(0, rows as isize - 1) as usize;
         match key.code {
+            KeyCode::Char(_) if held => {}
             KeyCode::Char(c) => self.input.push(c),
+            KeyCode::Down if self.input.is_empty() => self.scroll = scroll(1),
+            KeyCode::Up if self.input.is_empty() => self.scroll = scroll(-1),
+            KeyCode::PageDown if self.input.is_empty() => self.scroll = scroll(10),
+            KeyCode::PageUp if self.input.is_empty() => self.scroll = scroll(-10),
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -160,6 +174,11 @@ impl Screen {
 
     fn notice(&mut self, text: &str, span: Duration) {
         self.notice = Some((text.to_string(), Instant::now() + span));
+    }
+
+    /// The rows of the TICKETS tree: one per Epic and one per Ticket.
+    pub(crate) fn rows(&self) -> usize {
+        self.epics.iter().map(|e| e.tickets.len() + 1).sum()
     }
 
     /// The title of a Ticket on the idle tree, for the RECENT Ticket column.
@@ -218,13 +237,15 @@ pub(crate) fn open(
     // ponytail: the sender is dropped here; harness-kqe.10 hands it to the
     // Orchestrator's Config.
     let (_events, receiver) = mpsc::channel::<Event>();
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init()?;
     let result = run(&mut terminal, &mut screen, &receiver);
     ratatui::restore();
     result
 }
 
-/// The screen thread: draw, poll for a key until the next tick, tick.
+/// The screen thread: take the Events, draw, poll for a key until the next
+/// tick, tick. A redraw follows every key, Event and tick; at rest the tick
+/// is 250 ms, in a live run 50 ms for the hop.
 fn run(
     terminal: &mut DefaultTerminal,
     screen: &mut Screen,
@@ -232,11 +253,12 @@ fn run(
 ) -> io::Result<()> {
     let mut last = Instant::now();
     while !screen.quit {
+        while let Ok(event) = events.try_recv() {
+            screen.push(event);
+        }
         terminal.draw(|f| draw::draw(f, screen))?;
-        if !event::poll(TICK.saturating_sub(last.elapsed()))? {
-            while let Ok(event) = events.try_recv() {
-                screen.push(event);
-            }
+        let tick = if screen.running { TICK } else { IDLE_TICK };
+        if !event::poll(tick.saturating_sub(last.elapsed()))? {
             screen.tick();
             last = Instant::now();
             continue;

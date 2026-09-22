@@ -13,10 +13,12 @@ use super::logo::{
     TICKET_COLORS,
 };
 use super::{suffix, Screen};
+use crate::orchestrator::stage::plural;
 use crate::orchestrator::stage::Event;
-use crate::orchestrator::state::{STATUS_MERGED, STATUS_PR_OPEN};
+use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN};
 
-const PLACEHOLDER: &str = "  /start-epic  /continue  /retry  /park  /address  /exit";
+const PLACEHOLDER: &str =
+    "  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit";
 
 fn fg(c: Color) -> Style {
     Style::default().fg(c)
@@ -42,15 +44,10 @@ pub(crate) fn ticket_color(id: &str) -> Color {
 /// Header, status row, Overall, boxed TICKETS, boxed RECENT (newest first), notice, input.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let area = f.area();
-    let rows = s
-        .epics
-        .iter()
-        .map(|e| e.tickets.len() as u16 + 1)
-        .sum::<u16>();
+    let rows = s.rows() as u16;
     let head_h = header_height(area);
-    // The TICKETS box takes its rows; RECENT keeps at least four.
-    // ponytail: no scrolling; a tree taller than the screen is clipped.
-    // Add a scroll offset when a real Epic list needs it.
+    // The TICKETS box takes its rows; RECENT keeps at least four. A taller
+    // tree scrolls (Up, Down, PageUp, PageDown with the input empty).
     let free = area.height.saturating_sub(head_h + 5);
     let tickets_h = (rows + 3).min(free.saturating_sub(4).max(3));
     let [head, top, over, _, tickets, recent, notice, input] = Layout::vertical([
@@ -74,12 +71,12 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Rect::new(over.x + 1, over.y, over.width.saturating_sub(1), 1),
     );
     f.render_widget(
-        ticket_table(s, tickets.width.saturating_sub(4)).block(boxed("TICKETS")),
+        ticket_table(s, area.width, tickets_h.saturating_sub(3) as usize).block(boxed("TICKETS")),
         tickets,
     );
     let inner = boxed("RECENT").inner(recent);
     f.render_widget(
-        Paragraph::new(recent_lines(s, inner.height as usize, inner.width)).block(boxed("RECENT")),
+        Paragraph::new(recent_lines(s, inner.height as usize, area.width)).block(boxed("RECENT")),
         recent,
     );
     if let Some((text, _)) = &s.notice {
@@ -155,9 +152,12 @@ fn status_line(s: &Screen) -> Line<'static> {
     let tickets: usize = s.epics.iter().map(|e| e.tickets.len()).sum();
     let mut spans = vec![
         Span::styled("○ IDLE", bold(MUTED)),
-        Span::styled(format!("    {} open Epics", s.epics.len()), fg(TEXT)),
+        Span::styled(
+            format!("    {}", plural(s.epics.len(), "open Epic")),
+            fg(TEXT),
+        ),
         dot(),
-        Span::styled(format!("{tickets} Tickets"), fg(TEXT)),
+        Span::styled(plural(tickets, "Ticket"), fg(TEXT)),
     ];
     if !s.state.epic.is_empty() {
         spans.push(dot());
@@ -170,9 +170,14 @@ fn status_line(s: &Screen) -> Line<'static> {
 }
 
 /// Filled cells over empty, labelled N/M PRs; purple blending to green by the
-/// share of Tickets with a PR open or merged.
+/// share of the saved Epic's Tickets (every child on the bd tree, started or
+/// not) with a PR open or merged.
 fn overall(s: &Screen, width: u16) -> Line<'static> {
-    let total = s.state.tickets.len();
+    let total = s
+        .epics
+        .iter()
+        .find(|e| e.id == s.state.epic)
+        .map_or(s.state.tickets.len(), |e| e.tickets.len());
     let prs = s
         .state
         .tickets
@@ -191,9 +196,10 @@ fn overall(s: &Screen, width: u16) -> Line<'static> {
 }
 
 /// One row per Epic, then one per Ticket: indicator, suffix and title, the
-/// saved Stage in muted text, and DONE / ACTIVE / RESUMABLE in bold. Under 60
-/// columns the label goes and the indicator carries the status.
-fn ticket_table(s: &Screen, width: u16) -> Table<'static> {
+/// saved Stage in muted text, and DONE / ACTIVE / PARKED / RESUMABLE in bold.
+/// Under 60 terminal columns the label goes and the indicator carries the
+/// status. From `s.scroll`, `visible` rows; a clipped tree ends in "… N more".
+fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
     let narrow = width < 60;
     let label = |text: &'static str, c: Color| {
         Cell::from(Span::styled(if narrow { "" } else { text }, bold(c)))
@@ -218,12 +224,16 @@ fn ticket_table(s: &Screen, width: u16) -> Table<'static> {
         ]));
         for t in &epic.tickets {
             let color = ticket_color(&t.id);
+            let saved = s.state.tickets.get(&t.id);
             let (ind, ic, text, status) = match t.status.as_str() {
+                _ if saved.is_some_and(|ts| ts.status == STATUS_PARKED) => {
+                    ("◌", MUTED, TEXT, label("PARKED", MUTED))
+                }
                 "closed" => ("✓", GREEN, TEXT, label("DONE", GREEN)),
                 "in_progress" => ("●", color, TEXT, label("ACTIVE", color)),
                 _ => ("·", BORDER, MUTED, label("", BORDER)),
             };
-            let stage = s.state.tickets.get(&t.id).map_or(String::new(), |ts| {
+            let stage = saved.map_or(String::new(), |ts| {
                 if ts.round > 0 {
                     format!("{} {}", ts.stage, ts.round)
                 } else {
@@ -240,6 +250,15 @@ fn ticket_table(s: &Screen, width: u16) -> Table<'static> {
                 status,
             ]));
         }
+    }
+    let mut rows: Vec<Row> = rows.into_iter().skip(s.scroll).collect();
+    if rows.len() > visible {
+        let more = rows.len() - visible.saturating_sub(1);
+        rows.truncate(visible.saturating_sub(1));
+        rows.push(Row::new(vec![
+            Cell::from(""),
+            Cell::from(Span::styled(format!("… {more} more"), fg(MUTED))),
+        ]));
     }
     let widths = if narrow {
         [
@@ -282,7 +301,7 @@ fn event_line(s: &Screen, ev: &Event, name_width: usize) -> Line<'static> {
     ])
 }
 
-/// Newest first; the Ticket column narrows to 12 under 70 columns.
+/// Newest first; the Ticket column narrows to 12 under 70 terminal columns.
 fn recent_lines(s: &Screen, rows: usize, width: u16) -> Vec<Line<'static>> {
     let name_width = if width < 70 { 12 } else { 22 };
     s.events
