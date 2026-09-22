@@ -7,8 +7,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
-const SKILL_NAMES: [&str; 6] = [
-    "start-work",
+const SKILL_NAMES: [&str; 5] = [
     "stage-implement",
     "stage-review",
     "stage-moderate",
@@ -125,29 +124,15 @@ fn preflight_names_each_missing_prerequisite() {
     });
     let no_env = |_: &str| String::new();
 
-    for args in [vec!["init"], vec!["start", "some-epic"]] {
-        let command = args[0];
-        let start_repo = TempDir::new(); // start installs nothing, so it still misses create-pr
-        let mut want = vec![
-            "bd workspace",
-            "gh is not authenticated",
-            "git remote",
-            "HERDR_ENV",
-        ];
-        let repo = if command == "start" {
-            want.push("create-pr");
-            &start_repo
-        } else {
-            &repo
-        };
-        let (code, out) = run_with(&args, repo.path(), tools.clone(), &no_env);
-        assert_ne!(code, 0, "{command}: exit 0 with nothing prepared");
-        for want in want {
-            assert!(
-                out.contains(want),
-                "{command}: output lacks {want:?}:\n{out}"
-            );
-        }
+    let (code, out) = run_with(&["init"], repo.path(), tools.clone(), &no_env);
+    assert_ne!(code, 0, "init: exit 0 with nothing prepared");
+    for want in [
+        "bd workspace",
+        "gh is not authenticated",
+        "git remote",
+        "HERDR_ENV",
+    ] {
+        assert!(out.contains(want), "init: output lacks {want:?}:\n{out}");
     }
 }
 

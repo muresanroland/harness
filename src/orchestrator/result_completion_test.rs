@@ -94,7 +94,7 @@ fn result_acceptance_across_completion_paths() {
             match path {
                 "live" => {
                     w.await_line(&format!("hx-1 stuck in {} 1: {}", c.stage.name, c.reason));
-                    w.control("retry-hx-1");
+                    o.command("retry-hx-1");
                     want_attempts = 2;
                 }
                 "resume accepted" => want_attempts = 0,

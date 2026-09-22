@@ -18,7 +18,6 @@ use super::herdr::PaneInfo;
 use super::stage::{Config, Event, Orchestrator};
 use super::state::load_state;
 use super::trust_test::trust_home;
-use super::write_file;
 use crate::setup::install_skills;
 use crate::tempdir::TempDir;
 use crate::tools::{RunError, Tools};
@@ -49,12 +48,17 @@ impl BdTicket {
             .collect();
         json!({
             "id": self.id,
+            "title": format!("Ticket {}", self.id),
             "status": self.status,
             "issue_type": self.issue_type,
+            "parent": EPIC,
             "dependencies": deps,
         })
     }
 }
+
+/// The one Epic of the fake world, the parent of every Ticket.
+pub(crate) const EPIC: &str = "hx";
 
 /// A Stage prompt as the fake session sees it.
 #[derive(Clone, Debug, Default)]
@@ -126,6 +130,11 @@ pub(crate) type Session = Arc<dyn Fn(&Prompt) -> (String, String) + Send + Sync>
 /// Answers a call before the world does, or None to let the world answer.
 pub(crate) type Hook = Arc<dyn Fn(&Path, &[&str]) -> Option<Result<String, String>> + Send + Sync>;
 
+/// A session that starts and never finishes.
+pub(crate) fn working(_: &Prompt) -> (String, String) {
+    (String::new(), "working".to_string())
+}
+
 /// The default session: every Stage is done, Verdicts are clean, and the last
 /// Fix opens a PR.
 pub(crate) fn succeed(p: &Prompt) -> (String, String) {
@@ -138,11 +147,6 @@ pub(crate) fn succeed(p: &Prompt) -> (String, String) {
     ("STATUS: done\n".to_string(), "idle".to_string())
 }
 
-/// A session that starts and never finishes.
-pub(crate) fn working(_: &Prompt) -> (String, String) {
-    (String::new(), "working".to_string())
-}
-
 /// What the world's lock guards, the port of world's mu-guarded fields.
 #[derive(Default)]
 pub(crate) struct Inner {
@@ -153,15 +157,9 @@ pub(crate) struct Inner {
     pub(crate) agents: BTreeMap<String, String>,
     /// Width, height in cells of every pane; zero means roomy and square.
     pub(crate) rect: (usize, usize),
-    /// Lines the launching pane received.
-    main: Vec<String>,
     pub(crate) tickets: Vec<BdTicket>,
     /// PR url -> gh JSON.
     pub(crate) prs: BTreeMap<String, String>,
-    /// The launching pane refuses prompts: agent_blocked.
-    pub(crate) main_blocked: bool,
-    /// The launching pane is a shell: agent_not_found.
-    pub(crate) main_no_agent: bool,
     /// Command prefix -> the error its next call fails with.
     failing: BTreeMap<String, String>,
     /// Every PR is merged as soon as gh is asked about it.
@@ -346,16 +344,6 @@ impl World {
             return reply(json!({}));
         }
         if cmd.starts_with("herdr agent prompt") {
-            if argv[3] == "main" {
-                if w.main_blocked {
-                    return Err(r#"{"error":{"code":"agent_blocked"}}"#.to_string());
-                }
-                if w.main_no_agent {
-                    return Err(r#"{"error":{"code":"agent_not_found","message":"agent target main not found"}}"#.to_string());
-                }
-                w.main.push(argv[4].to_string());
-                return reply(json!({}));
-            }
             let p = parse_prompt(argv[3], argv[4]);
             let session = w.session.clone();
             drop(w);
@@ -402,7 +390,11 @@ impl World {
             return Ok(String::new());
         }
         if cmd.starts_with("bd list") {
-            let all: Vec<_> = w.tickets.iter().map(BdTicket::json).collect();
+            let mut all: Vec<_> = w.tickets.iter().map(BdTicket::json).collect();
+            if !cmd.contains("--parent") {
+                // the Shell's bd cache: the Epic row too, with its title
+                all.push(json!({ "id": EPIC, "title": "Epic hx", "status": "open", "issue_type": "epic" }));
+            }
             return Ok(json!(all).to_string());
         }
         if cmd.starts_with("bd ready") {
@@ -437,22 +429,31 @@ impl World {
         Ok(String::new())
     }
 
-    pub(crate) fn main_lines(&self) -> Vec<String> {
-        self.lock().main.clone()
+    /// The panel Events so far as lines, '<bd id> <event>' (no id for a
+    /// run-level line): what the Shell's RECENT panel shows.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.events()
+            .iter()
+            .filter(|e| e.panel)
+            .map(|e| match &e.ticket {
+                Some(id) => format!("{id} {}", e.text),
+                None => e.text.clone(),
+            })
+            .collect()
     }
 
-    /// Waits for the launching pane to receive a line containing want.
+    /// Waits for a panel line containing want.
     pub(crate) fn await_line(&self, want: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Some(line) = self.main_lines().into_iter().find(|l| l.contains(want)) {
+            if let Some(line) = self.lines().into_iter().find(|l| l.contains(want)) {
                 return line;
             }
             thread::sleep(Duration::from_millis(1));
         }
         panic!(
-            "the launching pane never received {want:?}; it got:\n{}",
-            self.main_lines().join("\n")
+            "the panel never showed {want:?}; it got:\n{}",
+            self.lines().join("\n")
         );
     }
 
@@ -486,10 +487,6 @@ impl World {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-    }
-
-    pub(crate) fn control(&self, name: &str) {
-        write_file(&self.repo.join(".harness").join("control").join(name), "");
     }
 
     /// Makes the next command starting with prefix fail.
@@ -580,8 +577,7 @@ pub(crate) fn spawn_ticket(o: Arc<Orchestrator>, ticket: &str) -> Running {
     }
 }
 
-/// Run in the background, as 'harness start <epic>' does; an error fails
-/// the test.
+/// Run in the background, as /start-epic does; an error fails the test.
 pub(crate) fn spawn_epic(o: Arc<Orchestrator>, epic: &str) -> Running {
     let (run, epic) = (o.clone(), epic.to_string());
     Running {
@@ -594,7 +590,7 @@ pub(crate) fn spawn_epic(o: Arc<Orchestrator>, epic: &str) -> Running {
     }
 }
 
-/// RunTicket in the background: stale control files drained first.
+/// run_single in the background.
 pub(crate) fn spawn_single(o: Arc<Orchestrator>, ticket: &str) -> Running {
     let (run, ticket) = (o.clone(), ticket.to_string());
     Running {

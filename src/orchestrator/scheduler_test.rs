@@ -2,8 +2,8 @@ use super::result::stage_prompt;
 use super::scheduler::address_inputs;
 use super::stage::{Config, Orchestrator};
 use super::state::{
-    acquire_lock, load_state, lock_holder, print_status, STATUS_MERGED, STATUS_PARKED,
-    STATUS_PR_OPEN, STATUS_RUNNING,
+    acquire_lock, load_state, lock_holder, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
+    STATUS_RUNNING,
 };
 use super::world::{new_world, spawn_epic, succeed, BdTicket, Prompt};
 use std::fs;
@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// Runs the Orchestrator until it returns, as 'harness start <epic>' does.
+/// Runs the Orchestrator until it returns, as /start-epic does.
 pub(super) fn run_epic(o: &Arc<Orchestrator>) {
     let mut run = spawn_epic(o.clone(), "hx");
     assert!(
@@ -133,7 +133,7 @@ fn one_run_per_target_repo_but_a_stale_lock_does_not_block_a_restart() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("already running"),
+        err.contains("a run is live"),
         "second lock = {err}, want a refusal"
     );
     assert_eq!(
@@ -170,12 +170,12 @@ fn closed_pr_parks_the_ticket_and_conflict_is_reported_exactly_once() {
     w.await_line("hx-1 parked: PR #hx-1 closed without merging");
     w.await_line("hx-2 PR #hx-2 conflicts with main, /address resolves it");
     thread::sleep(Duration::from_millis(30)); // many more polls
-    w.control("stop");
+    o.stop();
     run.wait();
     o.wait_in_flight();
 
     let conflicts = w
-        .main_lines()
+        .lines()
         .iter()
         .filter(|l| l.contains("conflicts with main"))
         .count();
@@ -214,14 +214,6 @@ fn killed_run_resumes_at_the_right_stage_without_redoing_finished_ones() {
     assert!(
         ts.status == STATUS_RUNNING && ts.stage == "review" && ts.round == 1,
         "state when killed = {ts:?}"
-    );
-
-    let mut status = Vec::new();
-    print_status(&mut status, &w.repo);
-    let status = String::from_utf8(status).unwrap();
-    assert!(
-        status.contains("hx-1") && status.contains("review round 1"),
-        "status output:\n{status}"
     );
 
     // A new process: fresh Orchestrator, state loaded from the file.
@@ -277,14 +269,14 @@ fn stop_exits_with_state_saved_and_leaves_panes_alone() {
     // returns, even though its persisted state is deliberately still running.
     let armed = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
-    let (arm, world, run) = (armed.clone(), w.clone(), o.clone());
+    let (arm, run) = (armed.clone(), o.clone());
     w.hook(move |_, argv| {
         if argv.join(" ").starts_with("bd list")
             && !stopped.load(Ordering::SeqCst)
             && arm.load(Ordering::SeqCst)
         {
             stopped.store(true, Ordering::SeqCst);
-            world.control("stop");
+            run.stop();
             run.wait_in_flight();
         }
         None
@@ -327,10 +319,10 @@ fn retry_unparks_a_parked_ticket() {
     let mut run = spawn_epic(o.clone(), "hx");
 
     w.await_line("hx-1 stuck in implement");
-    w.control("park-hx-1");
+    o.command("park-hx-1");
     w.await_line("hx-1 parked: implement went idle without a result");
     w.session(succeed);
-    w.control("retry-hx-1");
+    o.command("retry-hx-1");
     run.wait();
     o.wait_in_flight();
     assert_eq!(
@@ -384,9 +376,9 @@ fn address_command_starts_a_fresh_session_in_the_kept_worktree() {
     let mut run = spawn_epic(o.clone(), "hx");
     w.await_line("hx-1 PR #hx-1 opened");
 
-    w.control("address-hx-1");
+    o.command("address-hx-1");
     w.await_line("hx-1 addressed PR #hx-1");
-    w.control("stop");
+    o.stop();
     run.wait();
     o.wait_in_flight();
 
@@ -421,7 +413,7 @@ fn epic_without_tickets_is_an_error_not_a_done_epic() {
         err.contains("no Tickets"),
         "Run = {err}, want an error naming the empty Epic"
     );
-    for line in w.main_lines() {
+    for line in w.lines() {
         assert!(
             !line.contains("Epic done"),
             "reported {line:?} for an Epic with no Tickets"
@@ -455,19 +447,19 @@ fn command_lines_say_what_was_refused_ignored_or_failed() {
     w.await_line("bd list failed: ");
     w.await_line("bd ready failed: ");
     w.await_line("hx-1 PR #hx-1 opened");
-    w.control("retry-hx-9");
+    o.command("retry-hx-9");
     w.await_line("hx-9 refused: not a Ticket of this run");
-    w.control("park-hx-1");
+    o.command("park-hx-1");
     w.await_line("hx-1 ignored: not waiting on a Wake");
-    w.control("address-hx-9");
+    o.command("address-hx-9");
     w.await_line("hx-9 address refused: no open PR");
-    w.control("address-hx-1");
+    o.command("address-hx-1");
     w.await_line("hx-1 address failed: ");
-    w.control("address-hx-1");
+    o.command("address-hx-1");
     w.await_line("hx-1 stuck in address: went idle without a result (pane 1-1)");
-    w.control("park-hx-1");
+    o.command("park-hx-1");
     w.await_line("hx-1 address gave up: address went idle without a result");
-    w.control("stop");
+    o.stop();
     run.wait();
     o.wait_in_flight();
 }

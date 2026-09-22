@@ -47,7 +47,7 @@ pub(crate) const ADDRESS: Stage = stage("address", "stage-address", "claude", 60
 pub(crate) enum StageError {
     /// The Ticket left the Pipeline; the reason is what the state file keeps.
     Parked(String),
-    /// 'harness stop' arrived: a clean end, the Ticket resumes on restart.
+    /// /stop-work arrived: a clean end, the Ticket resumes on /continue.
     Stopped,
 }
 
@@ -67,21 +67,19 @@ pub(crate) struct Event {
     pub(crate) panel: bool,
 }
 
-/// What 'harness start' knows at launch.
+/// What the Shell knows when it starts a run.
 pub(crate) struct Config {
     /// The seam to every external tool.
     pub(crate) tools: Arc<dyn Tools>,
     /// The Target repo's root.
     pub(crate) repo: PathBuf,
-    /// HERDR_PANE_ID of the launching pane, which every event line is sent to.
-    pub(crate) main_pane: String,
     /// HERDR_WORKSPACE_ID.
     pub(crate) workspace: String,
     /// TYPESAFE_API_KEY, handed to the Debate pane.
     pub(crate) api_key: String,
     /// Where the agents record which directories they trust.
     pub(crate) home: PathBuf,
-    /// How often holds, control files and bd are polled.
+    /// How often holds, commands and bd are polled.
     pub(crate) tick: Duration,
     /// How often gh is asked about open PRs.
     pub(crate) poll_prs: Duration,
@@ -89,7 +87,7 @@ pub(crate) struct Config {
     pub(crate) max: usize,
     /// Where every event line goes.
     pub(crate) log: Mutex<Box<dyn Write + Send>>,
-    /// Every Event, for the Shell; a dropped receiver is tolerated.
+    /// Every Event, for the Shell's RECENT panel; a dropped receiver is tolerated.
     pub(crate) events: Sender<Event>,
     /// Every Stage's deadline in the tests; None is the Stage table's. Go's
     /// tests shortened only stageImplement.Timeout, but the one test that
@@ -105,24 +103,17 @@ pub(crate) struct Orchestrator {
     pub(crate) cfg: Config,
     /// Never held across a sleep or a Tools call.
     pub(crate) state: Mutex<State>,
-    /// 'harness stop' arrived: every sleep checks it (ADR 0003).
+    /// /stop-work arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
-    /// One line at a time into the launching pane.
-    pub(crate) unsent: Mutex<Unsent>,
+    /// The Shell's commands waiting to be consumed: retry-<ticket>,
+    /// park-<ticket>, address-<ticket>. Stop is the flag above.
+    pub(crate) commands: Mutex<Vec<String>>,
     /// The Tickets running on a thread of this process.
     pub(crate) active: Mutex<BTreeSet<String>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
     /// failure on one fails the test as Go's t.Errorf did.
     #[cfg(test)]
     pub(crate) threads: Mutex<Vec<thread::JoinHandle<()>>>,
-}
-
-#[derive(Default)]
-pub(crate) struct Unsent {
-    /// Lines the launching pane has not taken yet, oldest first.
-    pub(crate) lines: Vec<String>,
-    /// The launching pane hosts no agent: events go to the log alone.
-    no_main: bool,
 }
 
 impl Orchestrator {
@@ -143,7 +134,7 @@ impl Orchestrator {
             cfg,
             state: Mutex::new(state),
             stop: AtomicBool::new(false),
-            unsent: Mutex::new(Unsent::default()),
+            commands: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
             threads: Mutex::new(Vec::new()),
@@ -176,10 +167,9 @@ impl Orchestrator {
     }
 
     /// The one way an event is said: a log line 'YYYY-MM-DD HH:MM:SS <bd id>
-    /// <event>' in local time (no id for a run-level line, ticket ""), the
-    /// same words into the launching pane when it shows on the panel, and the
-    /// Event to whoever holds the receiver. A `detail` (a PR's url) goes on
-    /// the log line alone, in parentheses.
+    /// <event>' in local time (no id for a run-level line, ticket ""), and
+    /// the Event to the Shell. A `detail` (a PR's url) goes on the log line
+    /// alone, in parentheses.
     pub(crate) fn emit(&self, ticket: &str, text: &str, panel: bool, detail: &str) {
         let time = chrono::Local::now();
         let id = if ticket.is_empty() {
@@ -200,14 +190,6 @@ impl Orchestrator {
                 time.format("%Y-%m-%d %H:%M:%S")
             );
         }
-        if panel {
-            self.unsent
-                .lock()
-                .unwrap()
-                .lines
-                .push(format!("{id}{text}"));
-            self.flush();
-        }
         let _ = self.cfg.events.send(Event {
             time,
             ticket: (!ticket.is_empty()).then(|| ticket.to_string()),
@@ -226,49 +208,40 @@ impl Orchestrator {
         self.emit(ticket, text, false, "");
     }
 
-    /// Sends the panel lines into the launching pane. herdr refuses a prompt
-    /// while the agent there is blocked on a prompt of its own, so a line
-    /// that cannot be delivered is kept and sent, in order, once it can be.
-    /// It logs (panel=false) while holding `unsent`: a panel emit here would
-    /// deadlock on that lock.
-    pub(crate) fn flush(&self) {
-        let mut unsent = self.unsent.lock().unwrap();
-        if self.cfg.main_pane.is_empty() || unsent.no_main {
-            unsent.lines.clear(); // every line is in the log already
-            return;
-        }
-        while let Some(line) = unsent.lines.first() {
-            let argv = ["herdr", "agent", "prompt", &self.cfg.main_pane, line];
-            match self.cfg.tools.run(&self.cfg.repo, &argv) {
-                Ok(_) => {
-                    unsent.lines.remove(0);
-                }
-                Err(err) if err.to_string().contains("agent_not_found") => {
-                    // Launched from a shell pane rather than a Claude session:
-                    // there is nobody to tell, and retrying every line forever
-                    // buries the log in the failure.
-                    self.log(
-                        "",
-                        "the launching pane hosts no agent, events are in this log only",
-                    );
-                    unsent.no_main = true;
-                    unsent.lines.clear();
-                    return;
-                }
-                Err(err) => {
-                    self.log(
-                        "",
-                        &format!("the launching pane did not take {line:?}, will retry: {err}"),
-                    );
-                    return;
-                }
-            }
+    /// Whether the run ended on /stop-work.
+    pub(crate) fn stopping(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// /stop-work: scheduling ends at the next sleep, live panes stay, and
+    /// the state file already holds every Ticket as saved. Said once.
+    pub(crate) fn stop(&self) {
+        if !self.stop.swap(true, Ordering::SeqCst) {
+            self.report("", "stopped, panes left running, /continue resumes");
         }
     }
 
-    /// Whether the run ended on 'harness stop'.
-    pub(crate) fn stopping(&self) -> bool {
-        self.stop.load(Ordering::SeqCst)
+    /// A command from the Shell: retry-<ticket>, park-<ticket> or
+    /// address-<ticket>, consumed by the Ticket's hold or the scheduler.
+    pub(crate) fn command(&self, name: &str) {
+        self.commands.lock().unwrap().push(name.to_string());
+    }
+
+    /// The commands waiting to be consumed.
+    pub(crate) fn commands(&self) -> Vec<String> {
+        self.commands.lock().unwrap().clone()
+    }
+
+    /// Whether a command was waiting, and removes it.
+    pub(crate) fn consume(&self, name: &str) -> bool {
+        let mut commands = self.commands.lock().unwrap();
+        match commands.iter().position(|c| c == name) {
+            Some(i) => {
+                commands.remove(i);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Changes one Ticket's state and writes the state file.
@@ -283,7 +256,7 @@ impl Orchestrator {
             });
         change(ts);
         let saved = state.save(&self.cfg.repo);
-        drop(state); // report reaches the launching pane through Tools
+        drop(state);
         if let Err(err) = saved {
             self.report("", &format!("state not saved: {err}"));
         }
@@ -337,18 +310,11 @@ fn wait_for(deadline: Instant, tick: Duration) -> String {
     left.as_millis().max(1).to_string()
 }
 
-/// Where a control command (stop, retry-<ticket>, park-<ticket>,
-/// address-<ticket>) is left for the running Orchestrator.
-// ponytail: a polled directory; a socket if latency ever matters.
-pub(crate) fn control_file(repo: &Path, name: &str) -> PathBuf {
-    repo.join(".harness").join("control").join(name)
-}
-
 impl Orchestrator {
     /// Runs one Stage to its completion rule and returns its accepted result.
     /// A Stage with an already accepted result is not rerun. When it cannot
-    /// advance by rule the launching pane is woken and the Ticket holds for a
-    /// retry, a park, or a late done result.
+    /// advance by rule the Shell is woken and the Ticket holds for a retry,
+    /// a park, or a late done result.
     pub(crate) fn run_stage(
         &self,
         ticket: &str,
@@ -559,7 +525,7 @@ impl Orchestrator {
                 return (none, "stopped".to_string());
             }
             // A tick at a time, never to the Stage's deadline: a wait that
-            // blocks for an hour is an hour in which 'harness stop' does
+            // blocks for an hour is an hour in which /stop-work does
             // nothing.
             let timeout = wait_for(deadline, self.cfg.tick);
             let _ = self.herdr(&["agent", "wait", &pane, "--timeout", &timeout]);
@@ -629,8 +595,8 @@ impl Orchestrator {
         }
     }
 
-    /// Wakes the launching pane about a blocked session, which only the user
-    /// may answer, and waits for the session to move on.
+    /// Wakes the Shell about a blocked session, which only the user may
+    /// answer, and waits for the session to move on.
     fn wait_unblocked(
         &self,
         ticket: &str,
@@ -657,7 +623,7 @@ impl Orchestrator {
     }
 
     /// Keeps a woken Ticket waiting, leaving every other Ticket running, until
-    /// a control command arrives or the user's nudge produces a done result.
+    /// a retry or park arrives or the user's nudge produces a done result.
     fn hold(
         &self,
         ticket: &str,
@@ -687,13 +653,9 @@ impl Orchestrator {
         }
     }
 
-    /// One tick of every polling loop, and so also the moment undelivered
-    /// lines are tried again. False once 'harness stop' has arrived.
+    /// One tick of every polling loop. False once /stop-work has arrived.
     pub(crate) fn sleep(&self) -> bool {
-        self.flush();
-        if self.consume("stop") {
-            self.stop.store(true, Ordering::SeqCst);
-            self.report("", "stopped, panes left running, /continue resumes");
+        if self.stopping() {
             return false;
         }
         thread::sleep(self.cfg.tick);
@@ -768,37 +730,6 @@ impl Orchestrator {
         });
         Ok(pane)
     }
-
-    /// The control files waiting for the Orchestrator.
-    pub(crate) fn commands(&self) -> Vec<String> {
-        let Ok(entries) = fs::read_dir(self.cfg.repo.join(".harness").join("control")) else {
-            return Vec::new();
-        };
-        let mut names: Vec<String> = entries
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
-    /// Drops control files left behind by an earlier run: a 'stop' sent to a
-    /// process that has since died must not stop this one before it starts.
-    pub(crate) fn drain_commands(&self) {
-        for name in self.commands() {
-            if self.consume(&name) {
-                self.log(
-                    "",
-                    &format!("dropped a leftover command from an earlier run: {name}"),
-                );
-            }
-        }
-    }
-
-    /// Whether a control command was waiting, and removes it.
-    pub(crate) fn consume(&self, name: &str) -> bool {
-        fs::remove_file(control_file(&self.cfg.repo, name)).is_ok()
-    }
 }
 
 /// A deadline as the Stage table and the tests set them: "1h", "30m", "5ms".
@@ -825,7 +756,6 @@ impl Config {
         Config {
             tools,
             repo: repo.to_path_buf(),
-            main_pane: "main".to_string(),
             workspace: "w1".to_string(),
             api_key: "sk-test".to_string(),
             home: home.to_path_buf(),

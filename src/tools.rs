@@ -116,14 +116,6 @@ pub(crate) mod fake {
         pub(crate) fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
-
-        /// The calls that start with prefix.
-        pub(crate) fn called(&self, prefix: &str) -> Vec<String> {
-            self.calls()
-                .into_iter()
-                .filter(|c| c.starts_with(prefix))
-                .collect()
-        }
     }
 
     impl Tools for Fake {

@@ -1,6 +1,6 @@
 //! The scheduler: starts ready Tickets, at most max at once, each on a thread
 //! of its own that is never joined (ADR 0003), resumes the ones a killed run
-//! left behind, polls PRs for merges (ADR 0002) and obeys the control commands.
+//! left behind, polls PRs for merges (ADR 0002) and obeys the Shell's commands.
 
 use serde::Deserialize;
 use std::fs;
@@ -69,10 +69,10 @@ impl Orchestrator {
     }
 
     /// Drives an Epic: it starts ready Tickets, at most max at once, resumes
-    /// the ones a killed run left behind, polls PRs for merges, obeys control
-    /// commands, and returns when every child Ticket is closed or on 'stop'.
+    /// the ones a stopped run left behind, polls PRs for merges, obeys the
+    /// Shell's commands, and returns when every child Ticket is closed or on
+    /// /stop-work.
     pub(crate) fn run(self: &Arc<Self>, epic: &str) -> Result<(), String> {
-        self.drain_commands();
         self.state.lock().unwrap().epic = epic.to_string();
 
         let launch = |ticket: &str, work: fn(&Orchestrator, &str)| {
@@ -90,7 +90,7 @@ impl Orchestrator {
             #[cfg(test)]
             self.threads.lock().unwrap().push(handle);
             #[cfg(not(test))]
-            let _ = handle; // never joined: 'stop' must not wait out a Stage
+            let _ = handle; // never joined: /stop-work must not wait out a Stage
         };
         let busy = |ticket: &str| self.active.lock().unwrap().contains(ticket);
         let in_pipeline = || self.active.lock().unwrap().len();
@@ -150,7 +150,7 @@ impl Orchestrator {
                 }
             }
             if !self.sleep() {
-                return Ok(()); // 'harness stop' is a clean end, not a failure
+                return Ok(()); // /stop-work is a clean end, not a failure
             }
         }
     }
@@ -158,7 +158,6 @@ impl Orchestrator {
     /// Runs a single Ticket's Pipeline, without scheduling or merge polling,
     /// and reports whether the Ticket ended Parked.
     pub(crate) fn run_single(&self, ticket: &str) -> bool {
-        self.drain_commands();
         self.run_ticket(ticket);
         self.ticket(ticket).status == STATUS_PARKED
     }

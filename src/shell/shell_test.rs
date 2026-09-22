@@ -1,11 +1,13 @@
 use super::draw::{draw, ticket_color};
 use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
-use super::{Epic, Screen};
+use super::{Epic, Launch, Screen};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Event;
 use crate::orchestrator::state::{
-    State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING,
+    acquire_lock, load_state, State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
+    STATUS_RUNNING,
 };
+use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
@@ -15,6 +17,10 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::Terminal;
+use std::path::Path;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn issue(id: &str, title: &str, status: &str) -> BdIssue {
     BdIssue {
@@ -42,7 +48,6 @@ fn screen() -> Screen {
     let epic = Epic {
         id: "harness-kqe".to_string(),
         title: "Build: the Rust port".to_string(),
-        resumable: true,
         tickets: vec![
             issue("harness-kqe.8", "Events: one plain-language line", "closed"),
             issue(
@@ -71,7 +76,65 @@ fn screen() -> Screen {
             .tickets
             .insert(format!("harness-kqe.{n}"), ticket(status));
     }
-    Screen::new("~/harness".to_string(), true, vec![epic], state)
+    Screen::new(
+        Launch::for_tests(Fake::quiet(), Path::new(""), Path::new("")),
+        "~/harness".to_string(),
+        true,
+        vec![epic],
+        state,
+    )
+}
+
+/// The Shell over the fake world, no terminal: what the slash commands drive.
+fn shell(w: &Arc<World>) -> Screen {
+    Screen::new(
+        Launch::for_tests(w.clone(), &w.repo, &w.home),
+        "~/hx".to_string(),
+        true,
+        Vec::new(),
+        load_state(&w.repo).unwrap_or_default(),
+    )
+}
+
+/// Polls the Shell until a panel line (as world::lines formats it) shows.
+fn await_line(s: &mut Screen, want: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        s.poll();
+        if s.events.iter().any(|e| line(e).contains(want)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    panic!(
+        "the panel never showed {want:?}; it got:\n{}",
+        s.events.iter().map(line).collect::<Vec<_>>().join("\n")
+    );
+}
+
+fn line(e: &Event) -> String {
+    match &e.ticket {
+        Some(id) => format!("{id} {}", e.text),
+        None => e.text.clone(),
+    }
+}
+
+/// Polls the Shell until the run is over.
+fn await_end(s: &mut Screen) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.run.is_some() {
+        assert!(Instant::now() < deadline, "the run never ended");
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn notice(s: &Screen) -> &str {
+    s.notice.as_ref().map_or("", |(t, _)| t.as_str())
+}
+
+fn log(w: &World) -> String {
+    std::fs::read_to_string(w.repo.join(".harness/orchestrator.log")).unwrap_or_default()
 }
 
 fn render(s: &Screen, w: u16, h: u16) -> Buffer {
@@ -316,14 +379,22 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
     }
     });
     let home = repo.path().parent().unwrap().display().to_string();
-    let s = Screen::open(repo.path(), &*fake, &|key| {
+    let mut s = Screen::open(repo.path(), fake.clone(), &|key| {
         if key == "HOME" {
             home.clone()
         } else {
             String::new()
         }
     });
-    assert_eq!(fake.calls(), ["bd list --json --brief --all"]);
+    assert_eq!(
+        fake.calls(),
+        [
+            "gh auth status",
+            "git remote",
+            "bd list --json --brief --all"
+        ],
+        "the preflight, then the bd cache"
+    );
     assert_eq!(
         s.folder,
         format!("~/{}", repo.path().file_name().unwrap().to_str().unwrap())
@@ -332,10 +403,18 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
     assert_eq!(
         s.epics
             .iter()
-            .map(|e| (e.id.as_str(), e.resumable, e.tickets.len()))
+            .map(|e| (e.id.as_str(), e.tickets.len()))
             .collect::<Vec<_>>(),
-        [("harness-kqe", true, 3), ("harness-7bj", false, 0)]
+        [("harness-kqe", 3), ("harness-7bj", 0)]
     );
+    // Nothing prepared: a run is refused with the first missing thing.
+    s.command("/continue");
+    assert!(
+        notice(&s).starts_with("refused: no bd workspace here"),
+        "{:?}",
+        s.notice
+    );
+    assert!(s.run.is_none());
     assert_eq!(
         s.epics[0]
             .tickets
@@ -406,7 +485,6 @@ fn a_tall_tree_scrolls_to_its_last_epic() {
         s.epics.push(Epic {
             id: format!("harness-e{n}"),
             title: format!("Epic {n}"),
-            resumable: false,
             tickets: (0..5)
                 .map(|i| issue(&format!("harness-e{n}.{i}"), "work", "open"))
                 .collect(),
@@ -455,7 +533,7 @@ fn a_tall_tree_scrolls_to_its_last_epic() {
 fn a_bd_failure_is_a_notice_over_an_empty_tree() {
     let repo = TempDir::new();
     let fake = Fake::new(|_, _| Err("boom".to_string()));
-    let s = Screen::open(repo.path(), &*fake, &|_| String::new());
+    let s = Screen::open(repo.path(), fake, &|_| String::new());
     assert!(s.epics.is_empty());
     assert_eq!(s.folder, repo.path().display().to_string(), "no HOME, no ~");
     let buf = render(&s, 80, 24);
@@ -512,6 +590,281 @@ fn exit_command_ctrl_c_twice_and_an_unknown_command() {
     let mut s = screen();
     type_line(&mut s, "/exit");
     assert!(s.quit);
+}
+
+#[test]
+fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    w.lock().merged = true;
+    let mut s = shell(&w);
+    s.command("/start-epic hx --max 1");
+    assert_eq!(notice(&s), "", "start refused");
+    assert!(s.running && s.run.is_some());
+    assert!(
+        acquire_lock(&w.repo).is_err(),
+        "the lock is not held while the run is live"
+    );
+    await_line(&mut s, "hx-1 PR #hx-1 opened after 1 round");
+    await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    assert!(!s.running, "still running after the Epic is done");
+    assert!(acquire_lock(&w.repo).is_ok(), "the lock outlived the run");
+    assert_eq!(s.state, State::default(), "a done Epic is still saved");
+    assert_eq!(load_state(&w.repo).unwrap(), State::default());
+    assert_eq!(w.lock().peak, 1, "--max 1 was not obeyed");
+    assert!(
+        log(&w).contains(" hx-1 PR #hx-1 opened after 1 round (https://example.test/pr/hx-1)\n")
+            && log(&w).contains(" Epic done, every Ticket closed\n"),
+        "log:\n{}",
+        log(&w)
+    );
+    // The tree came from bd again: both Tickets are closed.
+    let buf = render(&s, 120, 40);
+    assert!(
+        find(&buf, "✓  hx-1 Ticket hx-1").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "IDLE    1 open Epic  ·  2 Tickets").is_some());
+    assert!(find(&buf, "saved run").is_none());
+}
+
+#[test]
+fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.session(|_| (String::new(), "working".to_string())); // never finishes
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 implement started: claude (pane 1-1)");
+
+    s.command("/start-epic hx");
+    assert_eq!(notice(&s), "refused: a run is live, /stop-work first");
+    s.command("/continue");
+    assert_eq!(notice(&s), "refused: a run is live, /stop-work first");
+    s.poll();
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 8).contains("RUNNING    1 active  ·  0 blocked  ·  0 complete"),
+        "{:?}",
+        row(&buf, 8)
+    );
+    let (_, y) = find(&buf, "hx  Epic hx").unwrap();
+    assert!(
+        row(&buf, y).contains("1 Tickets") && row(&buf, y).contains("RUNNING"),
+        "{:?}",
+        row(&buf, y)
+    );
+    assert!(
+        row(&buf, y + 1).contains("●  hx-1 Ticket hx-1")
+            && row(&buf, y + 1).contains("implement")
+            && row(&buf, y + 1).contains("ACTIVE"),
+        "{:?}",
+        row(&buf, y + 1)
+    );
+
+    s.command("/stop-work");
+    await_line(&mut s, "stopped, panes left running, /continue resumes");
+    await_end(&mut s);
+    assert!(!s.running);
+    assert!(
+        acquire_lock(&w.repo).is_ok(),
+        "the lock outlived /stop-work"
+    );
+    assert_eq!(
+        w.called("herdr pane close").len() + w.called("herdr tab close").len(),
+        0,
+        "stop closed a live pane"
+    );
+    let saved = load_state(&w.repo).unwrap();
+    assert!(
+        saved.epic == "hx"
+            && saved.tickets["hx-1"].status == STATUS_RUNNING
+            && saved.tickets["hx-1"].stage == "implement",
+        "saved state = {saved:?}"
+    );
+    assert_eq!(s.state, saved, "the Shell's State is not the saved one");
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 8)
+            .contains("IDLE    1 open Epic  ·  1 Ticket  ·  saved run on hx, /continue resumes"),
+        "{:?}",
+        row(&buf, 8)
+    );
+    s.command("/stop-work");
+    assert_eq!(notice(&s), "nothing is running");
+
+    // /continue resumes the saved Ticket as saved: Implement starts again
+    // in a fresh session and the Epic runs to its end.
+    w.session(succeed);
+    s.command("/continue");
+    assert!(s.running, "/continue did not start: {:?}", s.notice);
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    assert_eq!(
+        w.called("herdr agent start h-hx-1-implement").len(),
+        2,
+        "want a fresh Implement session on resume"
+    );
+    assert_eq!(w.called("bd worktree create").len(), 1);
+    assert!(s.state.epic.is_empty());
+}
+
+#[test]
+fn retry_and_park_reach_the_ticket_and_refusals_are_logged() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.session(|_| (String::new(), "idle".to_string())); // no result: a Wake
+    let mut s = shell(&w);
+    s.command("/retry hx-1");
+    assert_eq!(
+        notice(&s),
+        "refused: no run is live, /start-epic or /continue starts one"
+    );
+    s.command("/start-epic hx");
+    await_line(
+        &mut s,
+        "hx-1 stuck in implement: went idle without a result (pane 1-1)",
+    );
+    s.poll();
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 8).contains("RUNNING    0 active  ·  1 blocked  ·  0 complete"),
+        "{:?}",
+        row(&buf, 8)
+    );
+    let (_, y) = find(&buf, "◆  hx-1 Ticket hx-1").unwrap();
+    assert!(row(&buf, y).contains("BLOCKED"), "{:?}", row(&buf, y));
+
+    s.command("/retry");
+    assert_eq!(notice(&s), "usage: /retry <ticket>");
+    s.command("/retry hx-9");
+    await_line(&mut s, "hx-9 refused: not a Ticket of this run");
+    s.command("/park hx-1");
+    await_line(&mut s, "hx-1 parked: implement went idle without a result");
+    s.poll();
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 8).contains("0 complete  ·  1 parked"),
+        "{:?}",
+        row(&buf, 8)
+    );
+    assert!(find(&buf, "◌  hx-1 Ticket hx-1").is_some());
+    s.command("/park hx-1");
+    await_line(&mut s, "hx-1 ignored: not waiting on a Wake");
+    assert!(
+        log(&w).contains(" hx-9 refused: not a Ticket of this run\n")
+            && log(&w).contains(" hx-1 ignored: not waiting on a Wake\n"),
+        "log:\n{}",
+        log(&w)
+    );
+
+    w.session(succeed);
+    s.command("/retry hx-1"); // unparks
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    assert_eq!(w.called("herdr agent start h-hx-1-implement").len(), 2);
+}
+
+#[test]
+fn start_epic_resolves_its_argument_from_the_bd_cache_and_asks_before_discarding_a_saved_run() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    w.lock().merged = true;
+    let mut s = shell(&w);
+    s.state = State {
+        epic: "old".to_string(),
+        ..Default::default()
+    };
+    s.state.save(&w.repo).unwrap();
+
+    s.command("/start-epic nothing-like-it");
+    assert_eq!(notice(&s), "no open Epic matches \"nothing-like-it\"");
+    s.command("/start-epic hx --max 0");
+    assert_eq!(notice(&s), "--max wants a number of at least 1");
+    s.command("/start-ticket hx-");
+    assert_eq!(notice(&s), "matches: hx-1 Ticket hx-1  ·  hx-2 Ticket hx-2");
+    // Tab fills in the one match, by id or title substring.
+    s.input = "/start-epic EPIC".to_string();
+    s.key(key(KeyCode::Tab));
+    assert_eq!(s.input, "/start-epic hx ");
+    s.input = "/start-ticket ticket hx-2".to_string();
+    s.key(key(KeyCode::Tab));
+    assert_eq!(s.input, "/start-ticket hx-2 ");
+    assert!(s.run.is_none());
+    s.input.clear();
+
+    type_line(&mut s, "/start-epic Epic hx");
+    assert_eq!(notice(&s), "discard the saved run on old? (y/n)");
+    assert!(s.run.is_none(), "started before the answer");
+    type_line(&mut s, "n");
+    assert!(s.run.is_none(), "started on no");
+    type_line(&mut s, "/start-epic hx");
+    type_line(&mut s, "y");
+    assert!(s.run.is_some(), "did not start on yes: {:?}", s.notice);
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    assert!(
+        w.called("herdr agent start h-hx-1-implement").len() == 1
+            && w.called("herdr agent start h-hx-2-implement").len() == 1
+    );
+
+    // /start-ticket runs one Ticket's Pipeline without an Epic to schedule.
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    let mut s = shell(&w);
+    s.command("/start-ticket");
+    assert_eq!(notice(&s), "no Ticket matches \"\"");
+    s.reload_epics();
+    s.command("/start-ticket hx-2");
+    assert!(s.run.is_some(), "{:?}", s.notice);
+    await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
+    await_end(&mut s);
+    assert!(
+        w.called("bd ready").is_empty(),
+        "a single Ticket was scheduled"
+    );
+    assert!(w.called("herdr agent start h-hx-1-implement").is_empty());
+    assert!(s.state.epic.is_empty());
+    assert_eq!(s.state.tickets["hx-2"].status, STATUS_PR_OPEN);
+}
+
+#[test]
+fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "working".to_string()));
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 implement started");
+    type_line(&mut s, "/exit");
+    assert_eq!(notice(&s), "stop the run and exit? (y/n)");
+    assert!(!s.quit);
+    type_line(&mut s, "n");
+    assert!(!s.quit && s.running);
+    type_line(&mut s, "/exit");
+    type_line(&mut s, "y");
+    assert!(s.quit, "yes did not exit");
+    await_line(&mut s, "stopped, panes left running, /continue resumes");
+    await_end(&mut s);
+    assert_eq!(w.called("herdr pane close").len(), 0, "exit closed a pane");
+
+    let mut s = shell(&w);
+    s.command("/continue");
+    await_line(&mut s, "hx-1 implement started: claude (pane 1-1)"); // a fresh Screen: its own Events
+    let closed = w.called("herdr pane close").len();
+    s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(s.quit);
+    await_line(&mut s, "stopped, panes left running, /continue resumes");
+    await_end(&mut s);
+    assert_eq!(
+        load_state(&w.repo).unwrap().tickets["hx-1"].status,
+        STATUS_RUNNING
+    );
+    assert_eq!(
+        w.called("herdr pane close").len(),
+        closed,
+        "Ctrl-C closed a pane"
+    );
 }
 
 #[test]

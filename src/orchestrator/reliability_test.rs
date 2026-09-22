@@ -1,8 +1,6 @@
 use super::scheduler_test::{run_epic, with_deps};
 use super::world::{new_world, spawn_ticket, succeed, BdTicket};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 #[test]
 fn merged_ticket_is_retried_until_bd_closes_it() {
@@ -19,7 +17,7 @@ fn merged_ticket_is_retried_until_bd_closes_it() {
         "bd close hx-1, want a retry after the failure"
     );
     let merged = w
-        .main_lines()
+        .lines()
         .iter()
         .filter(|l| l.contains("hx-1 merged, Ticket closed"))
         .count();
@@ -51,37 +49,6 @@ fn merge_cleanup_forces_past_bd_safety_checks_and_says_what_it_could_not_remove(
         "the failed clean-up is housekeeping, for the log alone: {said:?}"
     );
 }
-
-#[test]
-fn lines_main_could_not_receive_are_delivered_later_in_order() {
-    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    w.lock().main_blocked = true; // the launching pane sits at its own permission prompt
-    w.session(|_| (String::new(), "idle".to_string()));
-    let o = Arc::new(o);
-    let mut run = spawn_ticket(o.clone(), "hx-1");
-
-    // Lines stay in order, so the first line is what gets retried; a third
-    // attempt means the Ticket is already holding on its queued Wake.
-    while w.called("herdr agent prompt main").len() < 3 {
-        thread::sleep(Duration::from_millis(1));
-    }
-    let got = w.main_lines();
-    assert!(got.is_empty(), "a blocked launching pane received {got:?}");
-    w.lock().main_blocked = false;
-    w.await_line("hx-1 stuck in implement");
-    w.control("park-hx-1");
-    run.wait();
-
-    let lines = w.main_lines();
-    let started = lines.iter().position(|l| l.contains("implement started"));
-    let wake = lines.iter().position(|l| l.contains("stuck in"));
-    assert!(
-        matches!((started, wake), (Some(s), Some(k)) if s <= k)
-            && lines[0] == "hx-1 branch hx-1 created",
-        "lines arrived out of order or were lost: {lines:?}"
-    );
-}
-
 #[test]
 fn verdict_that_drops_findings_is_not_a_clean_verdict() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -102,7 +69,7 @@ fn verdict_that_drops_findings_is_not_a_clean_verdict() {
 
     w.await_line("hx-1 review 1 found 2 findings");
     w.await_line("hx-1 stuck in debate 1: Verdict settles 0 of the Review's 2 Findings (pane 1-3)");
-    w.control("park-hx-1");
+    o.command("park-hx-1");
     run.wait();
     assert!(
         w.called("herdr agent start h-hx-1-fix").is_empty(),

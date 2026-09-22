@@ -1,8 +1,8 @@
 //! What the first live run exposed: a Stage nobody is watching has to be
-//! stoppable, has to survive a launching pane that is not an agent, and must
-//! not start a session into a trust dialog it cannot answer.
+//! stoppable, and must not start a session into a trust dialog it cannot
+//! answer.
 
-use super::state::{load_state, STATUS_PR_OPEN, STATUS_RUNNING};
+use super::state::{load_state, STATUS_RUNNING};
 use super::world::{new_world, spawn_single, spawn_ticket, working, BdTicket};
 use super::write_file;
 use crate::tempdir::TempDir;
@@ -61,13 +61,12 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
         } else {
             w.await_event(wait_line);
         }
-        w.control("stop");
+        o.stop();
         drop(release_start);
         assert!(
             run.finished_within(Duration::from_secs(1)),
             "{phase}: stop did not end the run while waiting"
         );
-        assert!(o.stopping(), "{phase}: run ended without consuming stop");
         w.await_event("stopped, panes left running, /continue resumes");
         let saved = load_state(&w.repo).unwrap();
         let ts = saved.tickets.get("hx-1");
@@ -84,42 +83,6 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
             "{phase}: a stopped stage advanced to Review"
         );
     }
-}
-
-#[test]
-fn control_files_left_by_an_earlier_run_do_not_command_this_one() {
-    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    w.control("stop"); // the stop that ended the run before this one
-
-    assert!(!o.run_single("hx-1"), "the Ticket parked");
-    let got = o.ticket("hx-1");
-    assert_eq!(
-        got.status, STATUS_PR_OPEN,
-        "a stale stop ended the run before it began: {got:?}"
-    );
-}
-
-#[test]
-fn events_go_to_the_log_alone_when_the_launching_pane_hosts_no_agent() {
-    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    w.lock().main_no_agent = true; // started from a shell pane, not a Claude session
-
-    o.run_ticket("hx-1");
-
-    let got = o.ticket("hx-1");
-    assert_eq!(
-        got.status, STATUS_PR_OPEN,
-        "the Pipeline did not finish: {got:?}"
-    );
-    // One line is tried, finds nobody, and the rest go to the log: the run
-    // must not spend every tick retrying a pane that will never take them.
-    let got = w.called("herdr agent prompt main");
-    assert_eq!(
-        got.len(),
-        1,
-        "tried to reach a pane with no agent {} times: {got:?}",
-        got.len()
-    );
 }
 
 #[test]
@@ -191,9 +154,9 @@ fn trust_accepted_in_a_busy_pane_waits_for_the_pane_to_free() {
         w.called("herdr agent start")
     );
     assert!(
-        !w.main_lines().iter().any(|l| l.contains("stuck in")),
+        !w.lines().iter().any(|l| l.contains("stuck in")),
         "a busy pane after a trust wait raised a Wake: {:?}",
-        w.main_lines()
+        w.lines()
     );
 }
 
@@ -209,7 +172,7 @@ fn stop_during_a_hold_does_not_start_a_fresh_session() {
 
     w.await_line("hx-1 stuck in implement: went idle");
     o.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    w.control("retry-hx-1");
+    o.command("retry-hx-1");
     assert!(
         run.finished_within(Duration::from_secs(1)),
         "stop did not end the hold"

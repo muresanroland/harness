@@ -45,4 +45,4 @@ mod unattended_test;
 #[cfg(test)]
 mod wake_test;
 #[cfg(test)]
-mod world;
+pub(crate) mod world;

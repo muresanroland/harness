@@ -8,10 +8,9 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
 /// Every event goes through emit: a timestamped log line with the bd id (none
-/// for a run-level line), the same words to the launching pane unless it is
-/// log-only, and an Event to the receiver.
+/// for a run-level line) and an Event to the receiver, without a tool call.
 #[test]
-fn emit_writes_the_log_line_the_pane_line_and_the_event() {
+fn emit_writes_the_log_line_and_the_event() {
     let repo = TempDir::new();
     let home = TempDir::new();
     let pane = Fake::new(|_, _| Ok("{}".to_string()));
@@ -53,14 +52,10 @@ fn emit_writes_the_log_line_the_pane_line_and_the_event() {
         ],
         "log:\n{log}"
     );
-    assert_eq!(
-        pane.calls(),
-        [
-            "herdr agent prompt main hx-1 implemented",
-            "herdr agent prompt main stopped, panes left running, /continue resumes",
-            "herdr agent prompt main hx-1 PR #7 opened after 1 round",
-        ],
-        "the pane gets the panel lines only, without the detail"
+    assert!(
+        pane.calls().is_empty(),
+        "an event ran a tool: {:?}",
+        pane.calls()
     );
     let events: Vec<_> = received.try_iter().collect();
     assert!(
@@ -98,15 +93,19 @@ fn emit_writes_the_log_line_the_pane_line_and_the_event() {
 fn state_that_cannot_be_saved_is_said_on_the_panel() {
     let repo = TempDir::new();
     let home = TempDir::new();
-    let pane = Fake::new(|_, _| Ok("{}".to_string()));
-    let o = Orchestrator::with_state(
-        Config::for_tests(pane.clone(), repo.path(), home.path()),
+    let mut o = Orchestrator::with_state(
+        Config::for_tests(Fake::quiet(), repo.path(), home.path()),
         Default::default(),
     );
+    let (events, received) = channel();
+    o.cfg.events = events;
     std::fs::create_dir_all(repo.path().join(".harness/state.json")).unwrap(); // a directory in the file's place
     o.update("hx-1", |_| {});
-    let got = pane.called("herdr agent prompt main state not saved: ");
-    assert_eq!(got.len(), 1, "{:?}", pane.calls());
+    let got: Vec<_> = received.try_iter().collect();
+    assert!(
+        got.len() == 1 && got[0].panel && got[0].text.starts_with("state not saved: "),
+        "{got:?}"
+    );
 }
 
 #[test]
@@ -140,34 +139,4 @@ fn update_saves_the_state_file_and_ticket_snapshots_it() {
     assert_eq!(result_name(&DEBATE, 2), "verdict-2.md");
     assert_eq!(result_name(&FIX, 1), "fix-1.md");
     assert_eq!(result_name(&IMPLEMENT, 1), "implement.md");
-}
-
-#[test]
-fn report_keeps_undelivered_lines_and_gives_up_on_a_shell_pane() {
-    let repo = TempDir::new();
-    let home = TempDir::new();
-    let blocked = Fake::new(|_, _| Err("agent_blocked".to_string()));
-    let o = Orchestrator::with_state(
-        Config::for_tests(blocked.clone(), repo.path(), home.path()),
-        Default::default(),
-    );
-    o.report("", "one");
-    o.report("", "two");
-    assert_eq!(
-        blocked.called("herdr agent prompt main").len(),
-        2,
-        "{:?}",
-        blocked.calls()
-    );
-    assert_eq!(o.unsent.lock().unwrap().lines, ["one", "two"]);
-
-    let shell = Fake::new(|_, _| Err("agent_not_found".to_string()));
-    let o = Orchestrator::with_state(
-        Config::for_tests(shell.clone(), repo.path(), home.path()),
-        Default::default(),
-    );
-    o.report("", "one");
-    o.report("", "two");
-    assert_eq!(shell.calls(), ["herdr agent prompt main one"]);
-    assert!(o.unsent.lock().unwrap().lines.is_empty());
 }

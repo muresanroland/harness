@@ -16,7 +16,12 @@ The globally installed `harness` may be an older build (the Go one carried no
 version and no updater); reinstall it by hand with `cargo install --path .`
 from the harness checkout, or with the release binary once it ships.
 `.harness/state.json` keeps its format, so a target repo mid-run resumes under
-the new binary with the same commands.
+the new binary with `/continue`.
+
+Everything is driven from the Shell: `harness` alone opens it, and its input
+line takes the slash commands (ADR 0004). There is no `harness start`,
+`status`, `stop` or `retry`; the TICKETS box is the status, the RECENT box
+and `.harness/orchestrator.log` are the events.
 
 ## Prepared epic
 
@@ -37,31 +42,38 @@ again: the installed stage skills match this checkout. The documented build's
 `testharness` binary is ignored locally through Git's shared `info/exclude`.
 
 `.harness/live-test.json` records preparation inputs and ticket IDs; it is a
-snapshot, not the current run status. Use `harness status` for live state.
+snapshot, not the current run status. The Shell's TICKETS box is the live
+state, `.harness/state.json` the machine record.
 
 ## Steps for the human
 
-### 1. Start in a normal Herdr terminal pane
+### 1. Open the Shell in a normal Herdr terminal pane
 
-Use a shell pane in the workspace where the ticket tabs should appear. Keep
-another pane available for control commands. The following checks only report
-missing environment variables; they do not print the TypeSafe API key.
+Use a shell pane in the workspace where the ticket tabs should appear. The
+following checks only report missing environment variables; they do not print
+the TypeSafe API key.
 
 ```bash
 cd ~/Documents/Projects/test-harness-repo
 (
   : "${HERDR_ENV:?Open a Herdr terminal pane first}"
-  : "${HERDR_PANE_ID:?This shell needs a Herdr pane ID}"
   : "${HERDR_WORKSPACE_ID:?This shell needs a Herdr workspace ID}"
   : "${TYPESAFE_API_KEY:?Load your existing TypeSafe API key into this shell}"
-  ../harness/target/release/harness start test-harness-repo-6fs --max 2
+  ../harness/target/release/harness
 )
 ```
 
-Leave this foreground command running. If a check reports a missing variable,
-fix that environment condition before launching; do not invent pane IDs. A
-plain shell as the launching pane is supported: events appear in its output
-and `.harness/orchestrator.log`.
+The Shell opens with the open Epics and their Tickets in the TICKETS box. If
+a check reports a missing variable, fix that environment condition before
+launching. Then, on the input line:
+
+```
+/start-epic test-harness-repo-6fs --max 2
+```
+
+Tab completes the Epic's id from its id or title. The status row turns to
+RUNNING with the active, blocked and complete counts; every event shows in
+RECENT and in `.harness/orchestrator.log`. Leave the Shell open.
 
 ### 2. Answer trust or permission prompts when they appear
 
@@ -86,30 +98,37 @@ every 30 seconds, so allow a polling interval before treating a delay as failure
 
 ### 4. Exercise stop and resume while D is active
 
-From the second shell pane:
+On the Shell's input line:
 
-```bash
-cd ~/Documents/Projects/test-harness-repo
-../harness/target/release/harness status
-../harness/target/release/harness stop
+```
+/stop-work
 ```
 
-Wait for the original foreground command to exit. Its agent panes should remain
-open. Agents can continue working after the orchestrator stops; `stop` does not
-freeze them. Restart with the same command from step 1. Do not clear state,
-delete result files, or reset tickets. Stages with accepted completed results
-should be skipped; an unfinished stage starts a fresh session replacing its old
-pane. There should be no second PR for an already completed ticket.
+RECENT shows "stopped, panes left running, /continue resumes", the status row
+returns to IDLE with "saved run on test-harness-repo-6fs" and the Epic row
+reads RESUMABLE. The agent panes remain open: agents can continue working
+after the Orchestrator stops; `/stop-work` does not freeze them. Then resume:
+
+```
+/continue
+```
+
+Do not clear state, delete result files, or reset tickets. Stages with
+accepted completed results should be skipped; an unfinished stage starts a
+fresh session replacing its old pane. There should be no second PR for an
+already completed ticket. Also try `/exit` while the run is live: it asks
+"stop the run and exit? (y/n)"; `y` stops the run, leaves the panes, and
+closes the Shell; `harness` then `/continue` picks the run up again.
 
 ### 5. Exercise one failed stage and retry
 
 While D's **Review** is actively working, close only that Review pane in Herdr.
-Wait for a `WAKE ... review pane died` event. Other active tickets should keep
-moving. Then, from the second shell pane:
+Wait for a "stuck in review 1: session died" line in RECENT; the Ticket's
+row turns to ◆ BLOCKED and the status row counts it blocked. Other active
+tickets should keep moving. Then, on the input line:
 
-```bash
-cd ~/Documents/Projects/test-harness-repo
-../harness/target/release/harness retry test-harness-repo-6fs.4
+```
+/retry test-harness-repo-6fs.4
 ```
 
 A fresh Review session should appear and the pipeline should continue. If the
@@ -127,10 +146,10 @@ worktree belong to the earlier run and are not part of this cleanup expectation.
 
 ## Evidence and acceptance
 
-During the run, these read-only commands are useful from the target repo:
+During the run the Shell's TICKETS box is the status. From another pane in
+the target repo, these read-only commands are useful too:
 
 ```bash
-../harness/target/release/harness status
 bd list --parent test-harness-repo-6fs --all
 gh pr list --state all --json number,headRefName,state,url
 git worktree list

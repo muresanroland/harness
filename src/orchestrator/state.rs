@@ -82,39 +82,6 @@ impl State {
     }
 }
 
-/// 'harness status'.
-pub(crate) fn print_status(out: &mut dyn Write, repo: &Path) -> i32 {
-    let state = match load_state(repo) {
-        Ok(state) => state,
-        Err(err) => {
-            let _ = writeln!(out, "status: {err}");
-            return 1;
-        }
-    };
-    let _ = match lock_holder(repo) {
-        0 => write!(out, "Orchestrator not running"),
-        pid => write!(out, "Orchestrator running (pid {pid})"),
-    };
-    if !state.epic.is_empty() {
-        let _ = write!(out, ", Epic {}", state.epic);
-    }
-    let _ = writeln!(out);
-    for (id, ts) in &state.tickets {
-        let mut line = format!("{id:<20} {:<8} {}", ts.status, ts.stage);
-        if ts.round > 0 {
-            line += &format!(" round {}", ts.round);
-        }
-        for extra in [&ts.pr, &ts.reason] {
-            if !extra.is_empty() {
-                line += "  ";
-                line += extra;
-            }
-        }
-        let _ = writeln!(out, "{line}");
-    }
-    0
-}
-
 fn lock_path(repo: &Path) -> PathBuf {
     repo.join(".harness").join("lock")
 }
@@ -154,7 +121,7 @@ pub(crate) fn acquire_lock(repo: &Path) -> io::Result<Lock> {
             // start in that same instant names pid 0; it still refuses.
             let pid = lock_holder(repo);
             return Err(io::Error::other(format!(
-                "an Orchestrator is already running in this repo (pid {pid}); 'harness stop' ends it"
+                "a run is live in this repo (pid {pid}); /stop-work there ends it"
             )));
         }
         Err(TryLockError::Error(err)) => return Err(err),

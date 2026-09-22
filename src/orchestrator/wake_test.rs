@@ -76,7 +76,7 @@ fn each_wake_trigger_sends_a_wake_line_and_retry_restarts_the_stage() {
         );
 
         w.lock().wait_err = None;
-        w.control("retry-hx-1");
+        o.command("retry-hx-1");
         let dropped = w.await_event("dropped a leftover pane (pane 1-1)");
         assert!(
             !dropped.panel,
@@ -128,7 +128,7 @@ fn second_failure_after_retry_parks_the_ticket() {
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
     w.await_line("hx-1 stuck in implement");
-    w.control("retry-hx-1");
+    o.command("retry-hx-1");
     run.wait();
 
     let ts = o.ticket("hx-1");
@@ -137,11 +137,7 @@ fn second_failure_after_retry_parks_the_ticket() {
         "state = {ts:?}, want parked after the retry failed"
     );
     w.await_line("hx-1 parked: implement session reported failure again after a retry");
-    let wakes = w
-        .main_lines()
-        .iter()
-        .filter(|l| l.contains("stuck in"))
-        .count();
+    let wakes = w.lines().iter().filter(|l| l.contains("stuck in")).count();
     assert_eq!(
         wakes, 1,
         "stuck lines, want 1: the second failure parks instead"
@@ -156,7 +152,7 @@ fn park_command_parks_a_woken_ticket() {
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
     w.await_line("hx-1 stuck in implement");
-    w.control("park-hx-1");
+    o.command("park-hx-1");
     run.wait();
     assert_eq!(o.ticket("hx-1").status, STATUS_PARKED, "want parked");
 }
@@ -188,8 +184,8 @@ fn nudged_session_that_then_writes_done_advances_without_a_retry() {
 #[test]
 fn commands_sent_before_a_wake_do_not_answer_it() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    w.control("park-hx-1"); // sent while the Ticket was running normally
-    w.control("retry-hx-1");
+    o.command("park-hx-1"); // sent while the Ticket was running normally
+    o.command("retry-hx-1");
     w.session(|_| (String::new(), "idle".to_string()));
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
@@ -199,7 +195,7 @@ fn commands_sent_before_a_wake_do_not_answer_it() {
         !run.finished_within(Duration::from_millis(20)),
         "a stale command answered the Wake"
     );
-    w.control("park-hx-1");
+    o.command("park-hx-1");
     run.wait();
 }
 
@@ -221,7 +217,7 @@ fn restart_does_not_grant_a_second_retry() {
         ts.status, STATUS_PARKED,
         "state after resume = {ts:?}, want parked: a restart must not grant another retry"
     );
-    for line in w.main_lines() {
+    for line in w.lines() {
         assert!(
             !line.contains("stuck in"),
             "unexpected {line:?}: the one retry was already spent"

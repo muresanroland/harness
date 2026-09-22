@@ -169,7 +169,7 @@ fn install_skills_records_the_hash_of_every_file_it_writes_without_a_gate() {
         "a fresh repo hit the gate:\n{out}"
     );
     let record = record(repo.path());
-    assert_eq!(record.len(), 7, "record: {record:?}");
+    assert_eq!(record.len(), 6, "record: {record:?}");
     for (rel, hash) in &record {
         assert_eq!(
             sha256(&fs::read(repo.path().join(rel)).unwrap()),

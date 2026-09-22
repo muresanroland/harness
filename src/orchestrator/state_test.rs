@@ -1,4 +1,4 @@
-use super::state::{acquire_lock, load_state, lock_holder, print_status, State, TicketState};
+use super::state::{acquire_lock, load_state, lock_holder, State, TicketState};
 use crate::tempdir::TempDir;
 use std::fs;
 
@@ -149,38 +149,6 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
     );
     assert_eq!(load_state(repo.path()).unwrap(), state);
 }
-
-#[test]
-fn status_lists_tickets_and_the_lock_holder() {
-    let repo = TempDir::new();
-    fs::create_dir_all(repo.path().join(".harness")).unwrap();
-    fs::write(repo.path().join(".harness/state.json"), GO_STATE).unwrap();
-    let mut out = Vec::new();
-    assert_eq!(print_status(&mut out, repo.path()), 0);
-    let out = String::from_utf8(out).unwrap();
-    assert!(
-        out.starts_with("Orchestrator not running, Epic test-harness-repo-6fs\n"),
-        "{out}"
-    );
-    assert!(
-        out.contains("test-harness-repo-6fs.4 pr-open  fix round 2  https://github.com/muresanroland/test-harness-repo/pull/5\n"),
-        "{out}"
-    );
-
-    let lock = acquire_lock(repo.path()).unwrap();
-    let mut out = Vec::new();
-    print_status(&mut out, repo.path());
-    let out = String::from_utf8(out).unwrap();
-    assert!(
-        out.starts_with(&format!(
-            "Orchestrator running (pid {})",
-            std::process::id()
-        )),
-        "{out}"
-    );
-    drop(lock);
-}
-
 #[test]
 fn a_second_lock_on_the_same_repo_fails_and_names_the_holder() {
     let repo = TempDir::new();
@@ -193,9 +161,7 @@ fn a_second_lock_on_the_same_repo_fails_and_names_the_holder() {
     let err = acquire_lock(repo.path()).unwrap_err().to_string();
     assert_eq!(
         err,
-        format!(
-            "an Orchestrator is already running in this repo (pid {pid}); 'harness stop' ends it"
-        )
+        format!("a run is live in this repo (pid {pid}); /stop-work there ends it")
     );
     drop(lock);
     assert_eq!(

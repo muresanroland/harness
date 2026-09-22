@@ -112,7 +112,7 @@ fn a_session_still_picking_up_its_prompt_is_not_a_finished_stage() {
 
     o.run_ticket("hx-1");
 
-    for line in w.main_lines() {
+    for line in w.lines() {
         assert!(
             !line.contains("stuck in"),
             "a session that was still starting was woken on: {line:?}"

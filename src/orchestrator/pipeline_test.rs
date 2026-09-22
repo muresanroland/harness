@@ -51,14 +51,14 @@ fn implement_stage_runs_in_a_ticket_tab_and_reports_to_main() {
     ] {
         assert!(start.contains(&want), "agent start lacks {want:?}: {start}");
     }
-    // The launching pane is told where the session is and that it finished.
+    // The panel is told where the session is and that it finished.
     w.await_line("hx-12 implement started: claude (pane 2-1)");
     w.await_line("hx-12 implemented");
     w.await_line("hx-12 review 1 started: codex (pane 2-2)");
     assert!(
-        !w.main_lines().iter().any(|l| l.contains("prompted")),
+        !w.lines().iter().any(|l| l.contains("prompted")),
         "'prompted' is for the log alone: {:?}",
-        w.main_lines()
+        w.lines()
     );
     assert!(
         w.log()

@@ -13,12 +13,23 @@ use super::logo::{
     TICKET_COLORS,
 };
 use super::{suffix, Screen};
-use crate::orchestrator::stage::plural;
-use crate::orchestrator::stage::Event;
-use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN};
+use crate::orchestrator::scheduler::BdIssue;
+use crate::orchestrator::stage::{plural, pr_ref, Event};
+use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
 const PLACEHOLDER: &str =
     "  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit";
+const SPINNER: [&str; 4] = ["|", "/", "—", "\\"];
+
+/// A Ticket's place on the tree.
+#[derive(Clone, Copy, PartialEq)]
+enum Status {
+    Active,
+    Blocked,
+    Done,
+    Parked,
+    Queued,
+}
 
 fn fg(c: Color) -> Style {
     Style::default().fg(c)
@@ -147,8 +158,50 @@ fn header(f: &mut Frame, area: Rect, s: &Screen) {
     );
 }
 
-/// Idle: IDLE, the open Epics and their Tickets, and the saved run when there is one.
+/// The status of a Ticket: the run's State first (a live snapshot or the
+/// saved run), then what bd says.
+fn status(s: &Screen, t: &BdIssue) -> Status {
+    match s.state.tickets.get(&t.id).map(|ts| ts.status.as_str()) {
+        Some(STATUS_PARKED) => Status::Parked,
+        Some(STATUS_RUNNING) if s.blocked(&t.id) => Status::Blocked,
+        Some(STATUS_RUNNING) => Status::Active,
+        Some(STATUS_PR_OPEN | STATUS_MERGED) => Status::Done,
+        _ if t.status == "closed" => Status::Done,
+        _ if t.status == "in_progress" => Status::Active,
+        _ => Status::Queued,
+    }
+}
+
+/// Live: the spinner, RUNNING and the counts over the run's Tickets. Idle:
+/// IDLE, the open Epics and their Tickets, and the saved run when there is one.
 fn status_line(s: &Screen) -> Line<'static> {
+    if s.running {
+        let count = |want: Status| {
+            s.epics
+                .iter()
+                .flat_map(|e| &e.tickets)
+                .filter(|t| s.state.tickets.contains_key(&t.id) && status(s, t) == want)
+                .count()
+        };
+        let mut spans = vec![
+            Span::styled(
+                SPINNER[(s.ticks / 4) as usize % SPINNER.len()],
+                bold(PURPLE),
+            ),
+            Span::styled(" RUNNING", bold(PURPLE)),
+            Span::styled(format!("    {} active", count(Status::Active)), fg(TEXT)),
+            dot(),
+            Span::styled(format!("{} blocked", count(Status::Blocked)), fg(ORANGE)),
+            dot(),
+            Span::styled(format!("{} complete", count(Status::Done)), fg(GREEN)),
+        ];
+        let parked = count(Status::Parked);
+        if parked > 0 {
+            spans.push(dot());
+            spans.push(Span::styled(format!("{parked} parked"), fg(MUTED)));
+        }
+        return Line::from(spans);
+    }
     let tickets: usize = s.epics.iter().map(|e| e.tickets.len()).sum();
     let mut spans = vec![
         Span::styled("○ IDLE", bold(MUTED)),
@@ -195,10 +248,12 @@ fn overall(s: &Screen, width: u16) -> Line<'static> {
     ])
 }
 
-/// One row per Epic, then one per Ticket: indicator, suffix and title, the
-/// saved Stage in muted text, and DONE / ACTIVE / PARKED / RESUMABLE in bold.
-/// Under 60 terminal columns the label goes and the indicator carries the
-/// status. From `s.scroll`, `visible` rows; a clipped tree ends in "… N more".
+/// One row per Epic, then one per Ticket: indicator (● pulsing while live,
+/// ◆ blocked, ✓ done, ◌ parked, · queued), suffix and title, the Stage in
+/// muted text, and ACTIVE / BLOCKED / DONE / PARKED in bold; the Epic of the
+/// run reads RUNNING or RESUMABLE. Under 60 terminal columns the label goes
+/// and the indicator carries the status. From `s.scroll`, `visible` rows; a
+/// clipped tree ends in "… N more".
 fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
     let narrow = width < 60;
     let label = |text: &'static str, c: Color| {
@@ -216,29 +271,30 @@ fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
                 format!("{} Tickets", epic.tickets.len()),
                 fg(MUTED),
             )),
-            if epic.resumable {
-                label("RESUMABLE", PURPLE)
-            } else {
-                label("", BORDER)
+            match (epic.id == s.state.epic, s.running) {
+                (false, _) => label("", BORDER),
+                (true, true) => label("RUNNING", PURPLE),
+                (true, false) => label("RESUMABLE", PURPLE),
             },
         ]));
-        for t in &epic.tickets {
+        for (n, t) in epic.tickets.iter().enumerate() {
             let color = ticket_color(&t.id);
             let saved = s.state.tickets.get(&t.id);
-            let (ind, ic, text, status) = match t.status.as_str() {
-                _ if saved.is_some_and(|ts| ts.status == STATUS_PARKED) => {
-                    ("◌", MUTED, TEXT, label("PARKED", MUTED))
-                }
-                "closed" => ("✓", GREEN, TEXT, label("DONE", GREEN)),
-                "in_progress" => ("●", color, TEXT, label("ACTIVE", color)),
-                _ => ("·", BORDER, MUTED, label("", BORDER)),
+            let (ind, ic, text, status) = match status(s, t) {
+                Status::Parked => ("◌", MUTED, TEXT, label("PARKED", MUTED)),
+                Status::Blocked => ("◆", ORANGE, TEXT, label("BLOCKED", ORANGE)),
+                Status::Done => ("✓", GREEN, TEXT, label("DONE", GREEN)),
+                Status::Active => ("●", color, TEXT, label("ACTIVE", color)),
+                Status::Queued => ("·", BORDER, MUTED, label("", BORDER)),
             };
-            let stage = saved.map_or(String::new(), |ts| {
-                if ts.round > 0 {
-                    format!("{} {}", ts.stage, ts.round)
-                } else {
-                    ts.stage.clone()
-                }
+            // a live Ticket's dot pulses, each on its own phase
+            let pulsing = s.running && ind == "●" && (s.ticks / 6 + n as u64) % 12 >= 6;
+            let ic = if pulsing { lerp((ic, BORDER), 0.6) } else { ic };
+            let stage = saved.map_or(String::new(), |ts| match ts.status.as_str() {
+                STATUS_PR_OPEN => pr_ref(&ts.pr),
+                STATUS_MERGED => "merged".to_string(),
+                _ if ts.round > 0 => format!("{} {}", ts.stage, ts.round),
+                _ => ts.stage.clone(),
             });
             rows.push(Row::new(vec![
                 Cell::from(Span::styled(ind, bold(ic))),
