@@ -10,3 +10,4 @@
 /harness
 .harness/
 .claude/worktrees/
+/target/
