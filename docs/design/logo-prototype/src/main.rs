@@ -72,15 +72,7 @@ impl Logo {
     fn width(&self) -> u16 { self.rows[0].len() as u16 }
     fn height(&self) -> u16 { self.rows.len().div_ceil(2) as u16 }
 
-    fn color(&self, (r, g, b): (u8, u8, u8)) -> Color {
-        if self.truecolor {
-            Color::Rgb(r, g, b)
-        } else {
-            // Nearest colour in the xterm 256 cube when the terminal has no 24-bit colour.
-            let q = |v: u8| ((v as u16 * 5 + 127) / 255) as u8;
-            Color::Indexed(16 + 36 * q(r) + 6 * q(g) + q(b))
-        }
-    }
+    fn color(&self, p: (u8, u8, u8)) -> Color { paint(p, self.truecolor) }
 
     /// Draw shifted down by `dy` pixels (half cells), so a hop can step one pixel at a time.
     fn render_at(&self, area: Rect, dy: usize, buf: &mut Buffer) {
@@ -106,6 +98,59 @@ impl Logo {
     }
 }
 
+fn paint((r, g, b): (u8, u8, u8), truecolor: bool) -> Color {
+    if truecolor {
+        Color::Rgb(r, g, b)
+    } else {
+        // Nearest colour in the xterm 256 cube when the terminal has no 24-bit colour.
+        let q = |v: u8| ((v as u16 * 5 + 127) / 255) as u8;
+        Color::Indexed(16 + 36 * q(r) + 6 * q(g) + q(b))
+    }
+}
+
+/// 5x5 block font, only the letters the banner needs.
+const FONT: &[(char, [&str; 5])] = &[
+    ('T', ["#####", "..#..", "..#..", "..#..", "..#.."]),
+    ('H', ["#...#", "#...#", "#####", "#...#", "#...#"]),
+    ('E', ["#####", "#....", "####.", "#....", "#####"]),
+    ('A', [".###.", "#...#", "#####", "#...#", "#...#"]),
+    ('R', ["####.", "#...#", "####.", "#..#.", "#...#"]),
+    ('N', ["#...#", "##..#", "#.#.#", "#..##", "#...#"]),
+    ('S', [".####", "#....", ".###.", "....#", "####."]),
+    (' ', [".....", ".....", ".....", ".....", "....."]),
+];
+
+fn hsv((h, s, v): (f32, f32, f32)) -> (u8, u8, u8) {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let (r, g, b) = match (h / 60.0) as u32 % 6 {
+        0 => (c, x, 0.0), 1 => (x, c, 0.0), 2 => (0.0, c, x),
+        3 => (0.0, x, c), 4 => (x, 0.0, c), _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
+}
+
+/// Block-letter banner, hue drifting along the text and brightness pulsing with the ticks.
+fn banner(text: &str, area: Rect, ticks: usize, truecolor: bool, buf: &mut Buffer) {
+    let area = area.intersection(*buf.area());
+    let t = ticks as f32;
+    let pulse = 0.7 + 0.3 * (t / 25.0).sin();
+    for (i, ch) in text.chars().enumerate() {
+        let Some((_, glyph)) = FONT.iter().find(|(k, _)| *k == ch) else { continue };
+        for (row, line) in glyph.iter().enumerate() {
+            let y = area.y + row as u16;
+            if y >= area.bottom() { break; }
+            for (col, bit) in line.chars().enumerate() {
+                let x = area.x + (i * 6 + col) as u16;
+                if bit != '#' || x >= area.right() { continue; }
+                let hue = ((i * 6 + col) as f32 * 4.0 + t * 1.2) % 360.0;
+                buf[(x, y)].set_char('█').set_fg(paint(hsv((hue, 0.85, pulse)), truecolor));
+            }
+        }
+    }
+}
+
 impl Widget for &Logo {
     fn render(self, area: Rect, buf: &mut Buffer) { self.render_at(area, 0, buf) }
 }
@@ -114,6 +159,11 @@ fn main() -> std::io::Result<()> {
     let truecolor = std::env::var("COLORTERM").map(|v| v == "truecolor" || v == "24bit").unwrap_or(false);
     let source = Logo::parse(SOURCE, truecolor);
     let logos: Vec<Logo> = WIDTHS.iter().map(|&w| source.scaled(w)).collect();
+    let folder = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
+    let folder = match std::env::var("HOME") {
+        Ok(h) if folder.starts_with(&h) => folder.replacen(&h, "~", 1),
+        _ => folder,
+    };
     let mut terminal = ratatui::init();
     let (mut running, mut ticks, mut which) = (true, 0usize, 2usize);
     let mut last = Instant::now();
@@ -123,10 +173,12 @@ fn main() -> std::io::Result<()> {
         terminal.draw(|f| {
             let a = f.area();
             logo.render_at(Rect::new(2, 1, logo.width(), logo.height() + 1), dy, f.buffer_mut());
-            // Header text beside the logo, to judge the size in context.
+            // Header beside the logo: banner, version in light gray, then the folder.
             let x = 2 + logo.width() + 3;
-            f.render_widget(Line::from("Harness".bold()), Rect::new(x, 2, a.width.saturating_sub(x), 1));
-            f.render_widget(Line::from("v0.1.0".dim()), Rect::new(x, 3, a.width.saturating_sub(x), 1));
+            let w = a.width.saturating_sub(x);
+            banner("THE HARNESS", Rect::new(x, 2, w, 5), ticks, truecolor, f.buffer_mut());
+            f.render_widget(Line::from("v0.1.0".fg(Color::Rgb(160, 160, 160))), Rect::new(x, 8, w, 1));
+            f.render_widget(Line::from(folder.as_str()), Rect::new(x, 9, w, 1));
             let status = format!(
                 "{}  |  {} px wide = {}x{} cells  |  terminal {}x{}  |  {}  |  left/right: size, space: toggle, q: quit",
                 if running { "RUNNING (hopping)" } else { "STILL" },
