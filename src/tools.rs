@@ -23,6 +23,18 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+/// The space-joined command line of a failure, with the TypeSafe key redacted:
+/// the Debate pane takes it as --env, and a failed spawn lands in the log.
+fn command_line(argv: &[&str]) -> String {
+    argv.iter()
+        .map(|arg| match arg.strip_prefix("TYPESAFE_API_KEY=") {
+            Some(_) => "TYPESAFE_API_KEY=***",
+            None => arg,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Runs argv in dir and returns stdout; a failure carries stderr.
 pub trait Tools: Send + Sync {
     fn run(&self, dir: &Path, argv: &[&str]) -> Result<String, RunError>;
@@ -40,7 +52,7 @@ impl Tools for Exec {
                 stderr: String::new(),
             });
         };
-        let command = format!("{name} {}", args.join(" "));
+        let command = command_line(argv);
         let output = Command::new(name)
             .args(args)
             .current_dir(dir)
@@ -116,12 +128,11 @@ pub(crate) mod fake {
 
     impl Tools for Fake {
         fn run(&self, dir: &Path, argv: &[&str]) -> Result<String, RunError> {
-            let command = argv.join(" ");
-            self.calls.lock().unwrap().push(command.clone());
+            self.calls.lock().unwrap().push(argv.join(" "));
             match &self.handle {
                 None => Ok(String::new()),
                 Some(handle) => handle(dir, argv).map_err(|stderr| RunError {
-                    command,
+                    command: super::command_line(argv),
                     status: "exit status 1".to_string(),
                     stderr,
                 }),

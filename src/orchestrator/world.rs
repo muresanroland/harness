@@ -161,7 +161,8 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
         &repo,
         false,
         &mut std::io::sink(),
-        Some(&mut std::io::empty()),
+        &mut std::io::empty(),
+        false,
     )
     .unwrap();
     let home_dir = trust_home(&repo);
