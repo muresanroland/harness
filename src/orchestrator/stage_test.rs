@@ -1,28 +1,11 @@
 use super::stage::{result_name, Config, Orchestrator, DEBATE, FIX, IMPLEMENT};
 use super::state::load_state;
+use super::world::LogBuf;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
-use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
-
-/// A log the test can read back.
-struct Buf(Arc<Mutex<String>>);
-
-impl Write for Buf {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap()
-            .push_str(std::str::from_utf8(buf).unwrap());
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 /// Every event goes through emit: a timestamped log line with the bd id (none
 /// for a run-level line), the same words to the launching pane unless it is
@@ -37,13 +20,19 @@ fn emit_writes_the_log_line_the_pane_line_and_the_event() {
         Default::default(),
     );
     let log = Arc::new(Mutex::new(String::new()));
-    o.cfg.log = Mutex::new(Box::new(Buf(log.clone())));
+    o.cfg.log = Mutex::new(Box::new(LogBuf(log.clone())));
     let (events, received) = channel();
     o.cfg.events = events;
 
     o.report("hx-1", "implemented");
     o.log("hx-1", "implement prompted, waiting for implement.md");
     o.report("", "stopped, panes left running, /continue resumes");
+    o.emit(
+        "hx-1",
+        "PR #7 opened after 1 round",
+        true,
+        "https://example.test/pr/7",
+    );
 
     let log = log.lock().unwrap();
     let lines: Vec<&str> = log.lines().collect();
@@ -60,6 +49,7 @@ fn emit_writes_the_log_line_the_pane_line_and_the_event() {
             "hx-1 implemented",
             "hx-1 implement prompted, waiting for implement.md",
             "stopped, panes left running, /continue resumes",
+            "hx-1 PR #7 opened after 1 round (https://example.test/pr/7)",
         ],
         "log:\n{log}"
     );
@@ -68,8 +58,9 @@ fn emit_writes_the_log_line_the_pane_line_and_the_event() {
         [
             "herdr agent prompt main hx-1 implemented",
             "herdr agent prompt main stopped, panes left running, /continue resumes",
+            "herdr agent prompt main hx-1 PR #7 opened after 1 round",
         ],
-        "the pane gets the panel lines only"
+        "the pane gets the panel lines only, without the detail"
     );
     let events: Vec<_> = received.try_iter().collect();
     assert!(
@@ -92,6 +83,11 @@ fn emit_writes_the_log_line_the_pane_line_and_the_event() {
             (
                 None,
                 "stopped, panes left running, /continue resumes".to_string(),
+                true
+            ),
+            (
+                Some("hx-1".to_string()),
+                "PR #7 opened after 1 round".to_string(),
                 true
             ),
         ]

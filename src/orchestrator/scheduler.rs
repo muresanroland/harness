@@ -54,6 +54,17 @@ impl Orchestrator {
             .collect())
     }
 
+    /// The Epic's child Tickets, every status; None says "bd list failed".
+    fn children(&self, epic: &str) -> Option<Vec<BdIssue>> {
+        match self.bd_issues(&["list", "--parent", epic, "--all", "--json"]) {
+            Ok(children) => Some(children),
+            Err(err) => {
+                self.report("", &format!("bd list failed: {err}"));
+                None
+            }
+        }
+    }
+
     /// Drives an Epic: it starts ready Tickets, at most max at once, resumes
     /// the ones a killed run left behind, polls PRs for merges, obeys control
     /// commands, and returns when every child Ticket is closed or on 'stop'.
@@ -104,18 +115,18 @@ impl Orchestrator {
                 last_poll = Some(Instant::now());
             }
 
-            match self.bd_issues(&["list", "--parent", epic, "--all", "--json"]) {
-                Err(err) => self.report("", &format!("bd list failed: {err}")),
-                Ok(children) if children.is_empty() => {
+            match self.children(epic) {
+                None => {}
+                Some(children) if children.is_empty() => {
                     return Err(format!(
                         "{epic} has no Tickets: is it the id of a beads Epic in this repo?"
                     ))
                 }
-                Ok(children) if all_closed(&children) => {
+                Some(children) if all_closed(&children) => {
                     self.report("", "Epic done, every Ticket closed");
                     return Ok(());
                 }
-                Ok(_) => {}
+                Some(_) => {}
             }
 
             for ticket in self.resumable() {
@@ -157,9 +168,8 @@ impl Orchestrator {
         if epic.is_empty() {
             return;
         }
-        let children = match self.bd_issues(&["list", "--parent", &epic, "--all", "--json"]) {
-            Ok(children) => children,
-            Err(err) => return self.report("", &format!("bd list failed: {err}")),
+        let Some(children) = self.children(&epic) else {
+            return;
         };
         let suffix = ticket.rsplit('.').next().unwrap_or(ticket);
         for child in children {

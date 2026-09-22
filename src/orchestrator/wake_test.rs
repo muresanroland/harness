@@ -77,6 +77,11 @@ fn each_wake_trigger_sends_a_wake_line_and_retry_restarts_the_stage() {
 
         w.lock().wait_err = None;
         w.control("retry-hx-1");
+        let dropped = w.await_event("dropped a leftover pane (pane 1-1)");
+        assert!(
+            !dropped.panel,
+            "housekeeping showed on the panel: {dropped:?}"
+        );
         w.await_line("hx-1 retrying implement with a fresh session (pane 1-1)");
         run.wait();
         assert_eq!(

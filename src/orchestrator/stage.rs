@@ -179,17 +179,27 @@ impl Orchestrator {
     /// The one way an event is said: a log line 'YYYY-MM-DD HH:MM:SS <bd id>
     /// <event>' in local time (no id for a run-level line, ticket ""), the
     /// same words into the launching pane when it shows on the panel, and the
-    /// Event to whoever holds the receiver.
-    pub(crate) fn emit(&self, ticket: &str, text: &str, panel: bool) {
+    /// Event to whoever holds the receiver. A `detail` (a PR's url) goes on
+    /// the log line alone, in parentheses.
+    pub(crate) fn emit(&self, ticket: &str, text: &str, panel: bool, detail: &str) {
         let time = chrono::Local::now();
         let id = if ticket.is_empty() {
             String::new()
         } else {
             format!("{ticket} ")
         };
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" ({detail})")
+        };
         {
             let mut log = self.cfg.log.lock().unwrap();
-            let _ = writeln!(log, "{} {id}{text}", time.format("%Y-%m-%d %H:%M:%S"));
+            let _ = writeln!(
+                log,
+                "{} {id}{text}{detail}",
+                time.format("%Y-%m-%d %H:%M:%S")
+            );
         }
         if panel {
             self.unsent
@@ -209,17 +219,19 @@ impl Orchestrator {
 
     /// An event that shows on the panel.
     pub(crate) fn report(&self, ticket: &str, text: &str) {
-        self.emit(ticket, text, true);
+        self.emit(ticket, text, true, "");
     }
 
     /// Housekeeping: in the log only.
     pub(crate) fn log(&self, ticket: &str, text: &str) {
-        self.emit(ticket, text, false);
+        self.emit(ticket, text, false, "");
     }
 
     /// Sends the panel lines into the launching pane. herdr refuses a prompt
     /// while the agent there is blocked on a prompt of its own, so a line
     /// that cannot be delivered is kept and sent, in order, once it can be.
+    /// It logs (panel=false) while holding `unsent`: a panel emit here would
+    /// deadlock on that lock.
     pub(crate) fn flush(&self) {
         let mut unsent = self.unsent.lock().unwrap();
         if self.cfg.main_pane.is_empty() || unsent.no_main {
@@ -377,7 +389,7 @@ impl Orchestrator {
 
         let mut retry = false;
         loop {
-            let (result, reason) = self.attempt(ticket, st, round, retry, &file, &all, want);
+            let (result, reason) = self.attempt(ticket, st, &label, retry, &file, &all, want);
             if self.stopping() {
                 return Err(StageError::Stopped);
             }
@@ -418,14 +430,13 @@ impl Orchestrator {
         &self,
         ticket: &str,
         st: &Stage,
-        round: usize,
+        label: &str,
         retry: bool,
         file: &Path,
         inputs: &[(&str, &str)],
         want: ResultRequirements,
     ) -> (StageResult, String) {
         let none = StageResult::default();
-        let label = stage_label(st, round);
         let skill_path = self
             .cfg
             .repo
@@ -456,17 +467,23 @@ impl Orchestrator {
                 &format!("retrying {label} with a fresh session {at}"),
             );
         }
-        // ponytail: the user accepts trust in that very pane, so start_agent's
-        // agent_pane_busy patience (six ticks) is how long they have to exit it.
-        let reason = self.await_trust(ticket, st, &at);
-        if !reason.is_empty() {
-            return (none, reason);
-        }
+        let waited = match self.await_trust(ticket, st, &at) {
+            Ok(waited) => waited,
+            Err(reason) => return (none, reason),
+        };
         // The previous session can still write while its pane is closing.
         // Clear its result only after fresh_pane has replaced it, before the
         // new writer.
         let _ = fs::remove_file(file);
         let deadline = Instant::now() + self.timeout(st);
+        // The user accepts trust in that very pane, and trust flips while
+        // their own session still holds it: after a trust wait the pane may
+        // stay busy until they exit, as long as the Stage's deadline allows.
+        let patience = if waited {
+            deadline
+        } else {
+            Instant::now() + 6 * self.cfg.tick
+        };
 
         let run_dir = self.run_dir(ticket).display().to_string();
         let agent_args: &[&str] = if st.kind == "codex" {
@@ -481,7 +498,7 @@ impl Orchestrator {
             "agent", "start", &name, "--kind", st.kind, "--pane", &pane, "--",
         ];
         start.extend_from_slice(agent_args);
-        let start_err = self.start_agent(&start).err();
+        let start_err = self.start_agent(&start, patience).err();
         if let Some(err) = &start_err {
             if !err.to_string().contains("agent_not_ready") {
                 return (none, format!("session did not start: {err}"));
@@ -490,7 +507,7 @@ impl Orchestrator {
         self.report(ticket, &format!("{label} started: {} {at}", st.kind));
         if start_err.is_some() {
             // blocked at startup: nothing can be prompted yet
-            let reason = self.wait_unblocked(ticket, st, round, &pane, deadline);
+            let reason = self.wait_unblocked(ticket, st, label, &pane, deadline);
             if !reason.is_empty() {
                 return (none, reason);
             }
@@ -523,7 +540,7 @@ impl Orchestrator {
             match self.agent_status(&pane).as_deref() {
                 None => return (none, "session died".to_string()),
                 Some("blocked") => {
-                    let reason = self.wait_unblocked(ticket, st, round, &pane, deadline);
+                    let reason = self.wait_unblocked(ticket, st, label, &pane, deadline);
                     if !reason.is_empty() {
                         return (none, reason);
                     }
@@ -554,14 +571,15 @@ impl Orchestrator {
     /// in. Only the user can accept a trust dialog, so the Orchestrator names
     /// the pane, already in that directory, and waits instead of prompting
     /// into one.
-    fn await_trust(&self, ticket: &str, st: &Stage, at: &str) -> String {
+    /// Ok(true) when it had to wait.
+    fn await_trust(&self, ticket: &str, st: &Stage, at: &str) -> Result<bool, String> {
         if self.cfg.home.as_os_str().is_empty() {
-            return String::new(); // no home, no trust stores to read: let the Stage try
+            return Ok(false); // no home, no trust stores to read: let the Stage try
         }
         let dir = self.stage_cwd(ticket, st);
         let trusted = || trusts(st.kind, &self.cfg.home, &dir, &self.cfg.repo);
         if trusted() {
-            return String::new();
+            return Ok(false);
         }
         self.report(
             ticket,
@@ -573,14 +591,14 @@ impl Orchestrator {
         );
         while !trusted() {
             if !self.sleep() {
-                return "stopped".to_string();
+                return Err("stopped".to_string());
             }
         }
         self.report(
             ticket,
             &format!("{} trusts {} now, carrying on", st.kind, dir.display()),
         );
-        String::new()
+        Ok(true)
     }
 
     /// The directory a Stage's pane starts in: the Ticket's worktree, or the
@@ -595,9 +613,9 @@ impl Orchestrator {
 
     /// Starts the Stage's session, giving a pane that has just been created
     /// the moment it needs to get a shell: until it has one herdr refuses with
-    /// agent_pane_busy, which is not the pane being unusable.
-    fn start_agent(&self, argv: &[&str]) -> Result<(), RunError> {
-        let give_up = Instant::now() + 6 * self.cfg.tick;
+    /// agent_pane_busy, which is not the pane being unusable. `give_up` bounds
+    /// that patience; stop ends it.
+    fn start_agent(&self, argv: &[&str], give_up: Instant) -> Result<(), RunError> {
         loop {
             let err = match self.herdr(argv) {
                 Ok(_) => return Ok(()),
@@ -618,17 +636,13 @@ impl Orchestrator {
         &self,
         ticket: &str,
         st: &Stage,
-        round: usize,
+        label: &str,
         pane: &str,
         deadline: Instant,
     ) -> String {
         self.report(
             ticket,
-            &format!(
-                "waiting at a prompt in {} {}",
-                stage_label(st, round),
-                self.locate(pane)
-            ),
+            &format!("waiting at a prompt in {label} {}", self.locate(pane)),
         );
         loop {
             match self.agent_status(pane).as_deref() {
@@ -695,7 +709,11 @@ impl Orchestrator {
     fn fresh_pane(&self, ticket: &str, st: &Stage) -> Result<String, RunError> {
         let ts = self.ticket(ticket);
         if let Some(old) = ts.panes.get(st.name) {
-            let _ = self.herdr(&["pane", "close", old]); // already gone is fine
+            let at = self.locate(old);
+            if self.herdr(&["pane", "close", old]).is_ok() {
+                // already gone is fine
+                self.log(ticket, &format!("dropped a leftover pane {at}"));
+            }
         }
         let cwd = self.stage_cwd(ticket, st).display().to_string();
         let env = format!("TYPESAFE_API_KEY={}", self.cfg.api_key);

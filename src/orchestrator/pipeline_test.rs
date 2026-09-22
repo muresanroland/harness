@@ -54,6 +54,18 @@ fn implement_stage_runs_in_a_ticket_tab_and_reports_to_main() {
     // The launching pane is told where the session is and that it finished.
     w.await_line("hx-12 implement started: claude (pane 2-1)");
     w.await_line("hx-12 implemented");
+    w.await_line("hx-12 review 1 started: codex (pane 2-2)");
+    assert!(
+        !w.main_lines().iter().any(|l| l.contains("prompted")),
+        "'prompted' is for the log alone: {:?}",
+        w.main_lines()
+    );
+    assert!(
+        w.log()
+            .contains(" hx-12 implement prompted, waiting for implement.md\n"),
+        "log:\n{}",
+        w.log()
+    );
 }
 
 #[test]
@@ -71,7 +83,17 @@ fn clean_first_verdict_opens_pr_after_one_round() {
     w.await_line("hx-1 review 1 found 0 findings");
     w.await_line("hx-1 debate 1 settled: 0 to fix, 0 skipped");
     w.await_line("hx-1 fix 1 done");
-    w.await_line("hx-1 PR #hx-1 opened after 1 round (https://example.test/pr/hx-1)");
+    assert_eq!(
+        w.await_line("hx-1 PR #hx-1 opened"),
+        "hx-1 PR #hx-1 opened after 1 round",
+        "the panel line carries no url"
+    );
+    assert!(
+        w.log()
+            .contains(" hx-1 PR #hx-1 opened after 1 round (https://example.test/pr/hx-1)\n"),
+        "the log line adds the url:\n{}",
+        w.log()
+    );
     assert_eq!(
         w.called("herdr tab close").len(),
         1,
