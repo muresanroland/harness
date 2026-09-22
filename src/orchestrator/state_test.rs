@@ -4,6 +4,16 @@ use std::fs;
 
 /// state.json as the Go binary saved it after a real run on test-harness-repo.
 const GO_STATE: &str = include_str!("testdata/state.json");
+/// A run in flight, written by Go's encoder from state.go's structs: every
+/// field of TicketState set somewhere.
+const GO_RUNNING_STATE: &str = include_str!("testdata/state-running.json");
+
+fn repo_with(state: &str) -> TempDir {
+    let repo = TempDir::new();
+    fs::create_dir_all(repo.path().join(".harness")).unwrap();
+    fs::write(repo.path().join(".harness/state.json"), state).unwrap();
+    repo
+}
 
 #[test]
 fn go_written_state_loads_intact_and_round_trips() {
@@ -55,9 +65,54 @@ fn go_written_state_loads_intact_and_round_trips() {
 }
 
 #[test]
+fn go_written_running_state_round_trips_every_field() {
+    let repo = repo_with(GO_RUNNING_STATE);
+    let state = load_state(repo.path()).unwrap();
+    assert_eq!(state.epic, "hx");
+    assert_eq!(
+        state.tickets["hx-1"],
+        TicketState {
+            status: "running".to_string(),
+            stage: "review".to_string(),
+            round: 2,
+            tab: "w1:t2".to_string(),
+            panes: [("implement", "w1:p3"), ("review", "w1:p5")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into(),
+            retried: true,
+            ..Default::default()
+        }
+    );
+    let parked = &state.tickets["hx-2"];
+    assert!(
+        parked.status == "parked"
+            && parked.tab == "w1:t3"
+            && parked.panes["fix"] == "w1:p7"
+            && parked.reason == "fix reported STATUS: failed again after a retry"
+            && !parked.retried,
+        "{parked:?}"
+    );
+    let open = &state.tickets["hx-3"];
+    assert!(
+        open.status == "pr-open" && open.pr == "https://github.com/o/r/pull/9" && open.conflict,
+        "{open:?}"
+    );
+    state.save(repo.path()).unwrap();
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".harness/state.json")).unwrap(),
+        GO_RUNNING_STATE
+    );
+}
+
+#[test]
 fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
     let repo = TempDir::new();
     assert_eq!(load_state(repo.path()).unwrap(), State::default());
+    // Go's nil map: a null tickets field is no Tickets.
+    assert_eq!(
+        load_state(repo_with("{\"tickets\": null}").path()).unwrap(),
+        State::default()
+    );
     let mut state = State::default();
     state.tickets.insert(
         "hx-1".to_string(),
@@ -147,10 +202,6 @@ fn a_second_lock_on_the_same_repo_fails_and_names_the_holder() {
         lock_holder(repo.path()),
         0,
         "released lock still reads as held"
-    );
-    assert!(
-        !repo.path().join(".harness/lock").exists(),
-        "release left the lock file"
     );
 
     // A lock file left by a killed Orchestrator holds no flock: stale, taken over.

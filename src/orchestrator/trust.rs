@@ -51,12 +51,10 @@ fn claude_records(home: &Path, dir: &Path) -> Option<bool> {
     let raw = fs::read(home.join(".claude.json")).ok()?;
     let doc: serde_json::Value = serde_json::from_slice(&raw).ok()?;
     let entry = doc.get("projects")?.get(dir.to_str()?)?;
-    Some(
-        entry
-            .get("hasTrustDialogAccepted")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-    )
+    match entry.get("hasTrustDialogAccepted") {
+        None => Some(false),
+        Some(value) => value.as_bool(), // not a bool: Go's unmarshal fails, unknown
+    }
 }
 
 /// Reads ~/.codex/config.toml, where a trusted project is a [projects."<dir>"]

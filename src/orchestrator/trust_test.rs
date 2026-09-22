@@ -68,6 +68,19 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
             "{kind}: an unknown directory read as trusted"
         );
     }
+    // A record that is not a bool is no record: the ancestors answer instead.
+    let odd = TempDir::new();
+    write_file(
+        &odd.path().join(".claude.json"),
+        &format!(
+            r#"{{"projects": {{"{0}": {{"hasTrustDialogAccepted": true}}, "{0}/untrusted": {{"hasTrustDialogAccepted": "no"}}}}}}"#,
+            repo.display()
+        ),
+    );
+    assert!(
+        trusts("claude", odd.path(), &repo.join("untrusted"), repo),
+        "claude: a non-bool record hid the trusted repo above it"
+    );
     let empty = TempDir::new();
     assert!(
         !trusts("claude", empty.path(), repo, repo),

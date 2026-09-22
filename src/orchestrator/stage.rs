@@ -16,7 +16,7 @@ pub(crate) struct Config {
     pub(crate) tools: Arc<dyn Tools>,
     /// The Target repo's root.
     pub(crate) repo: PathBuf,
-    /// HERDR_PANE_ID of the Main session.
+    /// HERDR_PANE_ID of the launching pane, which every event line is sent to.
     pub(crate) main_pane: String,
     /// HERDR_WORKSPACE_ID.
     pub(crate) workspace: String,
@@ -41,13 +41,13 @@ pub(crate) struct Orchestrator {
     state: Mutex<State>,
     /// 'harness stop' arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
-    /// One line at a time into the Main session.
+    /// One line at a time into the launching pane.
     pub(crate) unsent: Mutex<Unsent>,
 }
 
 #[derive(Default)]
 pub(crate) struct Unsent {
-    /// Lines the Main session has not taken yet, oldest first.
+    /// Lines the launching pane has not taken yet, oldest first.
     pub(crate) lines: Vec<String>,
     /// The launching pane hosts no agent: events go to the log alone.
     no_main: bool,
@@ -94,9 +94,9 @@ impl Orchestrator {
         let _ = writeln!(log, "{line}");
     }
 
-    /// Sends one event line into the Main session's pane. herdr refuses a
-    /// prompt while the Main session is blocked on a prompt of its own, so a
-    /// line that cannot be delivered is kept and sent, in order, once it can be.
+    /// Sends one event line into the launching pane. herdr refuses a prompt
+    /// while the agent there is blocked on a prompt of its own, so a line
+    /// that cannot be delivered is kept and sent, in order, once it can be.
     pub(crate) fn report(&self, event: &str) {
         let line = format!("[harness] {event}");
         self.log(&line);
@@ -127,7 +127,7 @@ impl Orchestrator {
                 }
                 Err(err) => {
                     self.log(&format!(
-                        "the Main session did not take {line:?}, will retry: {err}"
+                        "the launching pane did not take {line:?}, will retry: {err}"
                     ));
                     return;
                 }

@@ -3,13 +3,16 @@
 use serde::Deserialize;
 
 use super::stage::Orchestrator;
+use crate::tools::RunError;
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct TabInfo {
     pub(crate) tab_id: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct PaneInfo {
     pub(crate) pane_id: String,
     pub(crate) tab_id: String,
@@ -17,12 +20,14 @@ pub(crate) struct PaneInfo {
 
 /// One pane's place in its tab, in terminal cells.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct PaneRect {
     pub(crate) pane_id: String,
     pub(crate) rect: Rect,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct Rect {
     pub(crate) width: usize,
     pub(crate) height: usize,
@@ -66,16 +71,17 @@ pub(crate) struct Agent {
 }
 
 impl Orchestrator {
-    pub(crate) fn herdr(&self, args: &[&str]) -> Result<HerdrReply, String> {
+    /// A failed command's RunError comes back whole, so a caller can read
+    /// herdr's stderr (agent_pane_busy, agent_not_ready, ...).
+    pub(crate) fn herdr(&self, args: &[&str]) -> Result<HerdrReply, RunError> {
         let mut argv = vec!["herdr"];
         argv.extend_from_slice(args);
-        let out = self
-            .cfg
-            .tools
-            .run(&self.cfg.repo, &argv)
-            .map_err(|err| err.to_string())?;
-        serde_json::from_str(&out)
-            .map_err(|err| format!("herdr {}: unreadable reply: {err}", args[0]))
+        let out = self.cfg.tools.run(&self.cfg.repo, &argv)?;
+        serde_json::from_str(&out).map_err(|err| RunError {
+            command: format!("herdr {}", args[0]),
+            status: "unreadable reply".to_string(),
+            stderr: err.to_string(),
+        })
     }
 
     pub(crate) fn locate(&self, pane_id: &str) -> String {

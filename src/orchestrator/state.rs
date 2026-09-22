@@ -43,8 +43,15 @@ pub(crate) struct TicketState {
 pub(crate) struct State {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) epic: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_is_empty")]
     pub(crate) tickets: BTreeMap<String, TicketState>,
+}
+
+/// Go's nil map: "tickets": null loads as no Tickets.
+fn null_is_empty<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<String, TicketState>, D::Error> {
+    Option::deserialize(d).map(Option::unwrap_or_default)
 }
 
 fn state_path(repo: &Path) -> PathBuf {
@@ -114,18 +121,10 @@ fn lock_path(repo: &Path) -> PathBuf {
 
 /// The lock on a Target repo: an advisory flock the kernel releases when the
 /// holder dies, with the pid inside for messages (ADR 0003). Dropping it
-/// releases the lock and removes the file.
+/// releases the lock; the file stays, since unlinking it would let two later
+/// starts lock two different inodes. An unflocked file reads as stale.
 #[derive(Debug)]
-pub(crate) struct Lock {
-    _file: File,
-    path: PathBuf,
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
+pub(crate) struct Lock(File);
 
 /// The pid of the live Orchestrator holding this Target repo's lock, or 0.
 pub(crate) fn lock_holder(repo: &Path) -> u32 {
@@ -160,5 +159,5 @@ pub(crate) fn acquire_lock(repo: &Path) -> io::Result<Lock> {
     }
     file.set_len(0)?;
     write!(file, "{}", std::process::id())?;
-    Ok(Lock { _file: file, path })
+    Ok(Lock(file))
 }

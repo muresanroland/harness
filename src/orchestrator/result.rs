@@ -45,7 +45,12 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
     }
 
     let mut result = StageResult::default();
+    let mut pr_pending = false; // "PR:" seen with nothing after it on its line
     for line in body.lines() {
+        if pr_pending && !line.trim().is_empty() {
+            result.pr = line.split_whitespace().next().unwrap_or("").to_string();
+            pr_pending = false;
+        }
         if line.starts_with("- (") {
             result.findings += 1;
         }
@@ -55,12 +60,11 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         } else if lower.starts_with("- [skip]") {
             result.skips += 1;
         }
-        if result.pr.is_empty() {
-            if let Some(pr) = line
-                .strip_prefix("PR:")
-                .and_then(|rest| rest.split_whitespace().next())
-            {
-                result.pr = pr.to_string();
+        // Go's ^PR:\s*(\S+): the whitespace may cross blank lines.
+        if let Some(rest) = line.strip_prefix("PR:").filter(|_| result.pr.is_empty()) {
+            match rest.split_whitespace().next() {
+                Some(pr) => result.pr = pr.to_string(),
+                None => pr_pending = true,
             }
         }
     }
