@@ -109,6 +109,21 @@ pub(crate) fn lock_holder(repo: &Path) -> u32 {
     }
 }
 
+/// Tests only: whether the lock can be taken within a second. A process
+/// spawned on another test thread holds a copy of every open descriptor until
+/// it execs, so a lock closed during a parallel test's spawn stays held that long.
+#[cfg(test)]
+pub(crate) fn lock_frees(repo: &Path) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while acquire_lock(repo).is_err() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
+}
+
 /// Enforces one run per Target repo.
 pub(crate) fn acquire_lock(repo: &Path) -> io::Result<Lock> {
     let path = lock_path(repo);

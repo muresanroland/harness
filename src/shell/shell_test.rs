@@ -4,8 +4,8 @@ use super::{Epic, Launch, Screen};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Event;
 use crate::orchestrator::state::{
-    acquire_lock, load_state, State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
-    STATUS_RUNNING,
+    acquire_lock, load_state, lock_frees, State, TicketState, STATUS_MERGED, STATUS_PARKED,
+    STATUS_PR_OPEN, STATUS_RUNNING,
 };
 use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
@@ -610,7 +610,7 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     await_line(&mut s, "Epic done, every Ticket closed");
     await_end(&mut s);
     assert!(!s.running, "still running after the Epic is done");
-    assert!(acquire_lock(&w.repo).is_ok(), "the lock outlived the run");
+    assert!(lock_frees(&w.repo), "the lock outlived the run");
     assert_eq!(s.state, State::default(), "a done Epic is still saved");
     assert_eq!(load_state(&w.repo).unwrap(), State::default());
     assert_eq!(w.lock().peak, 1, "--max 1 was not obeyed");
@@ -669,10 +669,7 @@ fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
     await_line(&mut s, "stopped, panes left running, /continue resumes");
     await_end(&mut s);
     assert!(!s.running);
-    assert!(
-        acquire_lock(&w.repo).is_ok(),
-        "the lock outlived /stop-work"
-    );
+    assert!(lock_frees(&w.repo), "the lock outlived /stop-work");
     assert_eq!(
         w.called("herdr pane close").len() + w.called("herdr tab close").len(),
         0,
@@ -971,7 +968,7 @@ fn stop_work_keeps_the_run_and_the_lock_until_every_ticket_thread_has_left() {
     release_tx.send(()).unwrap();
     await_line(&mut s, "stopped, panes left running, /continue resumes");
     await_end(&mut s);
-    assert!(acquire_lock(&w.repo).is_ok(), "the lock outlived the run");
+    assert!(lock_frees(&w.repo), "the lock outlived the run");
     assert!(
         log(&w).contains(" stopped, panes left running, /continue resumes\n"),
         "log:\n{}",

@@ -2,8 +2,8 @@ use super::result::stage_prompt;
 use super::scheduler::address_inputs;
 use super::stage::{Config, Orchestrator};
 use super::state::{
-    acquire_lock, load_state, lock_holder, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
-    STATUS_RUNNING,
+    acquire_lock, load_state, lock_frees, lock_holder, STATUS_MERGED, STATUS_PARKED,
+    STATUS_PR_OPEN, STATUS_RUNNING,
 };
 use super::world::{new_world, spawn_epic, succeed, BdTicket, Prompt};
 use std::fs;
@@ -145,7 +145,7 @@ fn one_run_per_target_repo_but_a_stale_lock_does_not_block_a_restart() {
     drop(release);
     fs::write(repo.path().join(".harness/lock"), "999999").unwrap(); // a killed Orchestrator's stale lock
     assert!(
-        acquire_lock(repo.path()).is_ok(),
+        lock_frees(repo.path()),
         "a stale lock must not block a restart"
     );
 }
