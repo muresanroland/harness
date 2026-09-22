@@ -7,6 +7,7 @@ pub(crate) mod orchestrator;
 pub(crate) mod setup;
 pub(crate) mod skills;
 pub mod tools;
+pub mod version;
 
 /// A scratch directory that is removed on Drop, the port of Go's t.TempDir().
 #[cfg(test)]
