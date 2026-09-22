@@ -71,6 +71,10 @@ _Avoid_: Stuck, paused, failed
 **Ticket tab**:
 The herdr tab belonging to one running Ticket, holding one pane per Stage.
 
+**Tools**:
+The one seam every external command (herdr, bd, gh, git) goes through; a test double stands behind it so tests never start a process.
+_Avoid_: Runner, exec, shell
+
 **Orchestrator**:
 The deterministic process that owns ticket state, pane placement, and stage transitions. It makes no judgment calls.
 _Avoid_: Script, runner, daemon
