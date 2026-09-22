@@ -166,7 +166,7 @@ fn compact(area: Rect) -> bool { area.width < 64 || area.height < 18 }
 fn header_height(area: Rect) -> u16 { if compact(area) { 3 } else { 8 } }
 
 fn header(f: &mut Frame, area: Rect, app: &App) {
-    if compact(area) {
+    if area.height < 8 || area.width < 64 { // given the compact slot by header_height
         f.render_widget(status_line(app), Rect::new(area.x, area.y, area.width, 1));
         let l = Line::from(vec!["HARNESS ".fg(TEXT).bold(), VERSION.fg(Color::Rgb(160, 160, 160)), "  ".into(), app.folder.as_str().fg(MUTED)]);
         f.render_widget(l, Rect::new(area.x, area.y + 1, area.width, 1));
