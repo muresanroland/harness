@@ -61,11 +61,19 @@ The Debate's result: every Finding marked fix or skip, with a severity and the r
 _Avoid_: Synthesis, summary, report
 
 **Wake**:
-The Orchestrator's request for the Main session's judgment about a Stage that cannot advance by rule.
+The Orchestrator's request for judgment about a Stage that cannot advance by rule, answered by a Judgment or, failing that, by the user through a Question.
 _Avoid_: Alert, escalation
 
+**Judgment**:
+The Orchestrator's answer to a Wake, taken from a typed model over the Wake's evidence: one of a fixed set of actions, with a score per action, shown on the Shell.
+_Avoid_: LLM call, Main session
+
+**Question**:
+What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, or a confirmation.
+_Avoid_: Prompt, dialog, alert
+
 **Parked**:
-A Ticket taken out of the Pipeline to wait for the user, after a Wake the Main session could not resolve. Other Tickets keep running.
+A Ticket taken out of the Pipeline to wait for the user, after a Wake that a Judgment or the user settled as park. Other Tickets keep running.
 _Avoid_: Stuck, paused, failed
 
 **Ticket tab**:
@@ -79,6 +87,6 @@ _Avoid_: Runner, exec, shell
 The deterministic process that owns ticket state, pane placement, and stage transitions. It makes no judgment calls.
 _Avoid_: Script, runner, daemon
 
-**Main session**:
-The Claude session the user talks to, in the first herdr tab. It launches the Orchestrator, shows its progress, and is woken for judgment calls the Orchestrator cannot make.
-_Avoid_: Parent session, controller
+**Shell**:
+The full-terminal screen that `harness` alone opens: it lists the Epics, takes slash commands, runs the Orchestrator inside its own process, and is where every event and Question appears.
+_Avoid_: TUI, dashboard, Main session, attach
