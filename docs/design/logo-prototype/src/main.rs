@@ -9,7 +9,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{buffer::Buffer, layout::Rect, style::{Color, Stylize}, text::Line, widgets::Widget};
 
 const SOURCE: &str = include_str!("../../logo.txt");
-const WIDTHS: [usize; 3] = [30, 60, 90];
+const WIDTHS: [usize; 2] = [34, 68];
 const TICK: Duration = Duration::from_millis(50);
 /// Vertical pixel offset per tick over one hop cycle: rest is 2 pixels (one cell) down.
 const HOP: [usize; 24] = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 1, 2];
@@ -213,8 +213,8 @@ fn main() -> std::io::Result<()> {
 #[test]
 fn asset_parses_and_scales() {
     let logo = Logo::parse(SOURCE, true);
-    assert_eq!((logo.width(), logo.height()), (30, 18));
-    let small = logo.scaled(60);
-    assert_eq!((small.width(), small.height()), (60, 35));
+    assert_eq!((logo.width(), logo.height()), (34, 19));
+    let small = logo.scaled(68);
+    assert_eq!((small.width(), small.height()), (68, 38));
     assert!(small.rows.iter().flatten().any(|p| p.is_some()));
 }
