@@ -1,0 +1,15 @@
+⏺ Bash(go test -race ./...)
+  ⎿  ok  	testharness/words	0.412s
+
+⏺ Bash(git add words/ && git commit -q -m "words: add Count" -m "Refs: test-harness-repo-6fs.1" && git log --oneline -1)
+  ⎿  f4b6868 words: add Count
+
+⏺ Added words/count.go with Count(text) = len(strings.Fields(text)) and a table test
+  covering "", "  ", "one" and " one  two\tthree\n". strings.Fields over a hand-rolled
+  split: stdlib, correct on repeated and Unicode whitespace. main.go untouched per the
+  Ticket. Committed as f4b6868 on branch test-harness-repo-6fs.1.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

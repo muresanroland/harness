@@ -1,0 +1,14 @@
+⏺ Bash(go test ./words/)
+  ⎿  --- FAIL: TestCount/blank (0.00s)
+         count_test.go:14: Count("  ") = 1, want 0
+     FAIL
+
+⏺ Cases 2 and 5 cannot both hold. Writing STATUS: failed with the reason.
+
+⏺ Write(.harness/runs/test-harness-repo-6fs.1/implement.md)
+  ⎿  Wrote 6 lines
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

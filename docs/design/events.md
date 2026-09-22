@@ -36,9 +36,10 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | parked | parked: `reason` |
 | Wake | stuck in fix 1: `reason` (pane 2-1) |
 | blocked session | waiting at a prompt in fix 1 (pane 2-1) |
-| Judgment, line 1 | judged: nudge 0.84, retry 0.10, park 0.06 |
-| Judgment, line 2 | nudged: write the result file · retrying fix 1 with a fresh session (pane 2-3) · parked: `reason` |
+| Judgment, line 1 | judged: nudge 0.84, retry 0.10, park 0.06 *(only the actions offered: a spent nudge or retry is left out, wait after a timeout)* |
+| Judgment, line 2 | nudged: write the result file · nudged: carry on, the Ticket is the spec · retrying fix 1 with a fresh session (pane 2-3) · parked: `reason` · waiting: still working (pane 2-2) |
 | below the floor, or no TypeSafe | asking you: stuck in fix 1 |
+| only park left (nudge and retry spent) | parked: fix 1 `reason` again after a retry *(no Judgment asked)* |
 | retry command | retrying fix 1 with a fresh session (pane 2-3) |
 | address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR |
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
@@ -48,7 +49,9 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 ## Wake reasons
 
-session reported failure · went idle without a result · timed out after 30m · session died · finished without a PR link · never took the Stage skill
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill
+
+The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 
 ## Questions and answers
 
@@ -57,7 +60,7 @@ Decided on the map ticket "The Shell's Question panel" (harness-7bj.7). A Questi
 | Moment | Wording |
 |---|---|
 | Question raised | asking you: stuck in fix 1 · asking you: waiting at a prompt in fix 1 (pane 2-1) · asking you: plan ready in implement (pane 2-1) |
-| answer, line 1 | you answered: nudge · retry · park · your prompt · approve · feedback · I answered it |
+| answer, line 1 | you answered: nudge · retry · park · wait · your prompt · approve · feedback · I answered it |
 | answer, line 2 | the Judgment's line 2 wording where it has one: nudged: write the result file · retrying fix 1 with a fresh session (pane 2-3) · parked: `reason` |
 | answer, line 2, no Judgment equivalent | nudged with your prompt · plan approved · plan sent back with your feedback · carrying on |
 | blocked session cleared in the pane | carrying on |

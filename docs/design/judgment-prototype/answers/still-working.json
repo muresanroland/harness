@@ -1,0 +1,35 @@
+{
+ "offered": [
+  "nudge_write_result",
+  "nudge_proceed",
+  "retry",
+  "park",
+  "wait"
+ ],
+ "answers": {
+  "action": {
+   "type": "choice",
+   "choice": "wait",
+   "confidence": 0.86,
+   "probabilities": {
+    "nudge_write_result": 0.05,
+    "retry": 0.06,
+    "wait": 0.88,
+    "park": 0.0,
+    "nudge_proceed": 0.01
+   }
+  },
+  "finished": {
+   "type": "noul",
+   "noul": 0.1
+  },
+  "asking": {
+   "type": "noul",
+   "noul": 0.18
+  }
+ },
+ "usage": {
+  "input_tokens": 1099,
+  "output_tokens": 91
+ }
+}

@@ -1,0 +1,29 @@
+{
+ "offered": [
+  "park",
+  "wait"
+ ],
+ "answers": {
+  "action": {
+   "type": "choice",
+   "choice": "park",
+   "confidence": 0.96,
+   "probabilities": {
+    "wait": 0.02,
+    "park": 0.98
+   }
+  },
+  "finished": {
+   "type": "noul",
+   "noul": 0.14
+  },
+  "asking": {
+   "type": "noul",
+   "noul": 0.29
+  }
+ },
+ "usage": {
+  "input_tokens": 1197,
+  "output_tokens": 64
+ }
+}
