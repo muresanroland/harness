@@ -1,4 +1,4 @@
-use super::stage::{result_name, Config, Orchestrator};
+use super::stage::{result_name, Config, Orchestrator, DEBATE, FIX, IMPLEMENT};
 use super::state::load_state;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
@@ -32,9 +32,9 @@ fn update_saves_the_state_file_and_ticket_snapshots_it() {
     assert!(!o.stopping());
     o.stop.store(true, Ordering::SeqCst);
     assert!(o.stopping());
-    assert_eq!(result_name("debate", 2), "verdict-2.md");
-    assert_eq!(result_name("fix", 1), "fix-1.md");
-    assert_eq!(result_name("implement", 1), "implement.md");
+    assert_eq!(result_name(&DEBATE, 2), "verdict-2.md");
+    assert_eq!(result_name(&FIX, 1), "fix-1.md");
+    assert_eq!(result_name(&IMPLEMENT, 1), "implement.md");
 }
 
 #[test]
