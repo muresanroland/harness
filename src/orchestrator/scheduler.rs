@@ -1,5 +1,5 @@
 //! The scheduler: starts ready Tickets, at most max at once, each on a thread
-//! of its own that is never joined (ADR 0003), resumes the ones a killed run
+//! of its own that is never joined (ADR 0003), resumes the ones a stopped run
 //! left behind, polls PRs for merges (ADR 0002) and obeys the Shell's commands.
 
 use serde::Deserialize;
@@ -162,6 +162,22 @@ impl Orchestrator {
         self.ticket(ticket).status == STATUS_PARKED
     }
 
+    /// Runs several Tickets' Pipelines at once, without scheduling or merge
+    /// polling, and returns when the last has ended: /continue over the
+    /// Tickets saved by single-Ticket runs.
+    pub(crate) fn run_tickets(self: &Arc<Self>, tickets: &[String]) {
+        let threads: Vec<_> = tickets
+            .iter()
+            .map(|ticket| {
+                let (o, ticket) = (Arc::clone(self), ticket.clone());
+                thread::spawn(move || o.run_ticket(&ticket))
+            })
+            .collect();
+        for thread in threads {
+            let _ = thread.join();
+        }
+    }
+
     /// Tells each open Ticket that depends on `ticket` that it now waits on
     /// the PR's merge (ADR 0002). A single-Ticket run has no Epic and nothing
     /// waiting.
@@ -189,7 +205,7 @@ impl Orchestrator {
     }
 
     /// The Tickets the state file says are in the Pipeline.
-    fn resumable(&self) -> Vec<String> {
+    pub(crate) fn resumable(&self) -> Vec<String> {
         self.state
             .lock()
             .unwrap()

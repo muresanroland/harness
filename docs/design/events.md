@@ -13,7 +13,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 - Every Ticket event shows on the panel, except `prompted` (log only).
 - Run-level errors show: state not saved, bd list failed, bd ready failed, Epic done, stopped.
-- Housekeeping stays in the log only: dropped a leftover pane, dropped a leftover command from an earlier run, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file.
+- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file.
 
 ## Vocabulary
 
@@ -41,10 +41,11 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | below the floor, or no TypeSafe | asking you: stuck in fix 1 |
 | only park left (nudge and retry spent) | parked: fix 1 `reason` again after a retry *(no Judgment asked)* |
 | retry command | retrying fix 1 with a fresh session (pane 2-3) |
-| address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR |
+| address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR · address refused: not an Epic run |
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
+| Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
 | Epic done | *(harness)* Epic done, every Ticket closed |
-| stopped | *(harness)* stopped, panes left running, /continue resumes |
+| stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
 | errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
 
 ## Wake reasons

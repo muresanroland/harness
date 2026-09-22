@@ -172,7 +172,8 @@ fn status(s: &Screen, t: &BdIssue) -> Status {
     }
 }
 
-/// Live: the spinner, RUNNING and the counts over the run's Tickets. Idle:
+/// Live: the spinner, RUNNING (STOPPING while Ticket threads leave) and the
+/// counts over the run's Tickets. Idle:
 /// IDLE, the open Epics and their Tickets, and the saved run when there is one.
 fn status_line(s: &Screen) -> Line<'static> {
     if s.running {
@@ -183,12 +184,14 @@ fn status_line(s: &Screen) -> Line<'static> {
                 .filter(|t| s.state.tickets.contains_key(&t.id) && status(s, t) == want)
                 .count()
         };
+        let (word, c) = if s.stopping() {
+            (" STOPPING", ORANGE)
+        } else {
+            (" RUNNING", PURPLE)
+        };
         let mut spans = vec![
-            Span::styled(
-                SPINNER[(s.ticks / 4) as usize % SPINNER.len()],
-                bold(PURPLE),
-            ),
-            Span::styled(" RUNNING", bold(PURPLE)),
+            Span::styled(SPINNER[(s.ticks / 4) as usize % SPINNER.len()], bold(c)),
+            Span::styled(word, bold(c)),
             Span::styled(format!("    {} active", count(Status::Active)), fg(TEXT)),
             dot(),
             Span::styled(format!("{} blocked", count(Status::Blocked)), fg(ORANGE)),

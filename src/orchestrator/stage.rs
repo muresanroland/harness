@@ -214,11 +214,10 @@ impl Orchestrator {
     }
 
     /// /stop-work: scheduling ends at the next sleep, live panes stay, and
-    /// the state file already holds every Ticket as saved. Said once.
+    /// the state file already holds every Ticket as saved. The Shell says
+    /// "stopped" once every Ticket thread has left.
     pub(crate) fn stop(&self) {
-        if !self.stop.swap(true, Ordering::SeqCst) {
-            self.report("", "stopped, panes left running, /continue resumes");
-        }
+        self.stop.store(true, Ordering::SeqCst);
     }
 
     /// A command from the Shell: retry-<ticket>, park-<ticket> or

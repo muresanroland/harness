@@ -18,7 +18,8 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::Terminal;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -722,6 +723,16 @@ fn retry_and_park_reach_the_ticket_and_refusals_are_logged() {
         notice(&s),
         "refused: no run is live, /start-epic or /continue starts one"
     );
+    // A refusal of the Shell's own is a run-level line on RECENT and in the log.
+    assert!(
+        s.events
+            .last()
+            .is_some_and(|e| e.ticket.is_none() && e.text == notice(&s))
+            && log(&w).contains(" refused: no run is live, /start-epic or /continue starts one\n"),
+        "{:?}\n{}",
+        s.events,
+        log(&w)
+    );
     s.command("/start-epic hx");
     await_line(
         &mut s,
@@ -798,7 +809,26 @@ fn start_epic_resolves_its_argument_from_the_bd_cache_and_asks_before_discarding
     assert_eq!(notice(&s), "discard the saved run on old? (y/n)");
     assert!(s.run.is_none(), "started before the answer");
     type_line(&mut s, "n");
-    assert!(s.run.is_none(), "started on no");
+    assert!(s.run.is_none() && s.pending.is_none(), "started on no");
+    assert_eq!(notice(&s), "cancelled");
+    // Enter keeps the question; any other line cancels it; so does the
+    // notice expiring.
+    type_line(&mut s, "/start-epic hx");
+    type_line(&mut s, "");
+    assert!(s.pending.is_some(), "Enter answered the question");
+    type_line(&mut s, "/bogus");
+    assert!(s.pending.is_none() && s.run.is_none());
+    assert_eq!(notice(&s), "cancelled");
+    type_line(&mut s, "/start-epic hx");
+    s.notice = Some((
+        "discard the saved run on old? (y/n)".to_string(),
+        Instant::now(),
+    ));
+    s.tick();
+    assert!(
+        s.pending.is_none() && s.notice.is_none(),
+        "the expired y/n stayed pending"
+    );
     type_line(&mut s, "/start-epic hx");
     type_line(&mut s, "y");
     assert!(s.run.is_some(), "did not start on yes: {:?}", s.notice);
@@ -813,10 +843,11 @@ fn start_epic_resolves_its_argument_from_the_bd_cache_and_asks_before_discarding
     let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
     let mut s = shell(&w);
     s.command("/start-ticket");
-    assert_eq!(notice(&s), "no Ticket matches \"\"");
-    s.reload_epics();
+    assert_eq!(notice(&s), "matches: hx-1 Ticket hx-1  ·  hx-2 Ticket hx-2");
     s.command("/start-ticket hx-2");
     assert!(s.run.is_some(), "{:?}", s.notice);
+    s.command("/address hx-2");
+    await_line(&mut s, "hx-2 address refused: not an Epic run");
     await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
     await_end(&mut s);
     assert!(
@@ -826,6 +857,130 @@ fn start_epic_resolves_its_argument_from_the_bd_cache_and_asks_before_discarding
     assert!(w.called("herdr agent start h-hx-1-implement").is_empty());
     assert!(s.state.epic.is_empty());
     assert_eq!(s.state.tickets["hx-2"].status, STATUS_PR_OPEN);
+}
+
+#[test]
+fn start_ticket_keeps_a_saved_epic_run_and_asks_over_a_different_one() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    let mut s = shell(&w);
+    let mut saved = State {
+        epic: "hx".to_string(),
+        ..Default::default()
+    };
+    saved
+        .tickets
+        .insert("hx-1".to_string(), ticket(STATUS_RUNNING));
+    saved.save(&w.repo).unwrap();
+    s.state = saved.clone();
+
+    // A Ticket of the saved Epic: no question, and the saved run stays.
+    s.command("/start-ticket hx-2");
+    assert!(s.run.is_some(), "{:?}", s.notice);
+    await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
+    await_end(&mut s);
+    let after = load_state(&w.repo).unwrap();
+    assert!(
+        after.epic == "hx"
+            && after.tickets["hx-1"] == saved.tickets["hx-1"]
+            && after.tickets["hx-2"].status == STATUS_PR_OPEN,
+        "a single-Ticket run touched the saved Epic run: {after:?}"
+    );
+    assert_eq!(s.state, after);
+
+    // A Ticket of another Epic asks, as /start-epic does.
+    s.state.epic = "old".to_string();
+    s.command("/start-ticket hx-1");
+    assert_eq!(notice(&s), "discard the saved run on old? (y/n)");
+    assert!(s.run.is_none());
+    s.command("y");
+    assert!(s.run.is_some(), "{:?}", s.notice);
+    await_end(&mut s);
+    assert!(s.state.epic.is_empty(), "{:?}", s.state);
+}
+
+#[test]
+fn continue_resumes_a_saved_single_ticket_run() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    w.session(|_| (String::new(), "working".to_string()));
+    let mut s = shell(&w);
+    s.command("/continue");
+    assert_eq!(notice(&s), "refused: no saved Ticket to continue");
+    s.command("/start-ticket hx-2");
+    await_line(&mut s, "hx-2 implement started: claude (pane 1-1)");
+    s.command("/stop-work");
+    await_end(&mut s);
+    assert!(s.state.epic.is_empty() && s.state.tickets["hx-2"].status == STATUS_RUNNING);
+
+    w.session(succeed);
+    s.command("/continue");
+    assert!(s.run.is_some(), "{:?}", s.notice);
+    await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
+    await_end(&mut s);
+    assert!(w.called("herdr agent start h-hx-1-implement").is_empty());
+    assert_eq!(w.called("herdr agent start h-hx-2-implement").len(), 2);
+    assert_eq!(
+        load_state(&w.repo).unwrap().tickets["hx-2"].status,
+        STATUS_PR_OPEN
+    );
+}
+
+/// A Ticket thread sees stop only at its next sleep, after its current Tools
+/// call: the run is stopping, and the lock held, until it has left.
+#[test]
+fn stop_work_keeps_the_run_and_the_lock_until_every_ticket_thread_has_left() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    let (entered_tx, entered) = channel::<()>();
+    let (release_tx, release) = channel::<()>();
+    let release = Mutex::new(release);
+    w.session(move |p| {
+        let _ = entered_tx.send(());
+        let _ = release.lock().unwrap().recv_timeout(Duration::from_secs(5));
+        succeed(p)
+    });
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the session was never prompted");
+    s.command("/stop-work");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !s.stopping() {
+        assert!(Instant::now() < deadline, "the scheduler never returned");
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(s.run.is_some() && s.running);
+    assert!(
+        acquire_lock(&w.repo).is_err(),
+        "the lock went while a Ticket thread was live"
+    );
+    s.command("/continue");
+    assert_eq!(notice(&s), "refused: a run is stopping");
+    s.command("/start-epic hx");
+    assert_eq!(notice(&s), "refused: a run is stopping");
+    assert!(
+        !s.events.iter().any(|e| e.text.starts_with("stopped")),
+        "said stopped before the run ended"
+    );
+    assert!(
+        row(&render(&s, 120, 40), 8).contains("STOPPING"),
+        "{:?}",
+        row(&render(&s, 120, 40), 8)
+    );
+
+    release_tx.send(()).unwrap();
+    await_line(&mut s, "stopped, panes left running, /continue resumes");
+    await_end(&mut s);
+    assert!(acquire_lock(&w.repo).is_ok(), "the lock outlived the run");
+    assert!(
+        log(&w).contains(" stopped, panes left running, /continue resumes\n"),
+        "log:\n{}",
+        log(&w)
+    );
+    assert_eq!(
+        load_state(&w.repo).unwrap().tickets["hx-1"].status,
+        STATUS_RUNNING
+    );
 }
 
 #[test]

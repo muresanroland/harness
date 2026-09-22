@@ -67,7 +67,6 @@ fn stop_ends_a_single_ticket_run_in_every_wait_state() {
             run.finished_within(Duration::from_secs(1)),
             "{phase}: stop did not end the run while waiting"
         );
-        w.await_event("stopped, panes left running, /continue resumes");
         let saved = load_state(&w.repo).unwrap();
         let ts = saved.tickets.get("hx-1");
         assert!(

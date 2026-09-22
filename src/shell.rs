@@ -5,8 +5,8 @@
 //! Events come over a channel into RECENT and the log, and the TICKETS rows
 //! are a snapshot of its State.
 
-use std::fs::File;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use ratatui::DefaultTerminal;
 
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Config, Event, Orchestrator};
-use crate::orchestrator::state::{acquire_lock, load_state, Lock, State};
+use crate::orchestrator::state::{acquire_lock, load_state, Lock, State, STATUS_RUNNING};
 use crate::setup;
 use crate::tools::Tools;
 
@@ -57,17 +57,22 @@ pub(crate) struct Launch {
 }
 
 /// The live run: the Orchestrator, its scheduler thread and the lock, held
-/// exactly as long as the run is.
+/// until the scheduler has returned and every Ticket thread has left.
 struct Run {
     o: Arc<Orchestrator>,
-    scheduler: JoinHandle<Result<(), String>>,
+    /// None once joined: the run is stopping, its Ticket threads leaving.
+    scheduler: Option<JoinHandle<Result<(), String>>>,
+    /// An Epic run, which a finished Epic clears from the state file.
+    epic: bool,
+    /// The scheduler returned an error: the state file is read back.
+    failed: bool,
     _lock: Lock,
 }
 
 /// A y/n question above the input line, and what yes does.
 enum Pending {
-    /// Discard the saved run and start this Epic.
-    Start { epic: String, max: usize },
+    /// Discard the saved run and start this Epic or Ticket.
+    Start { id: String, max: usize, epic: bool },
     /// Stop the run and exit.
     Exit,
 }
@@ -177,37 +182,58 @@ impl Screen {
         }
     }
 
-    /// Takes the Events, snapshots the live run's State and notices when the
-    /// scheduler thread has returned: the run is over, the lock goes, and a
-    /// done Epic clears the saved run.
+    /// Takes the Events and snapshots the live run's State. Once the
+    /// scheduler thread has returned the run is stopping until every Ticket
+    /// thread has left (each sees stop at its next sleep, and still saves
+    /// state after its current Tools call); then the run is over, the lock
+    /// goes, a stopped run says so, and a done Epic clears the saved run.
     pub(crate) fn poll(&mut self) {
         while let Ok(event) = self.receiver.try_recv() {
             self.push(event);
         }
-        let Some(run) = &self.run else {
+        let Some(run) = &mut self.run else {
             return;
         };
         self.state = run.o.state.lock().unwrap().clone();
-        if !run.scheduler.is_finished() {
+        if run.scheduler.as_ref().is_some_and(JoinHandle::is_finished) {
+            let outcome = run.scheduler.take().unwrap().join();
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    run.failed = true;
+                    self.notice(&err, NOTICE_WINDOW);
+                }
+                Err(_) => {
+                    run.o.stop();
+                    self.notice("the scheduler thread died", NOTICE_WINDOW);
+                }
+            }
+        }
+        let over = self
+            .run
+            .as_ref()
+            .is_some_and(|r| r.scheduler.is_none() && r.o.active.lock().unwrap().is_empty());
+        if !over {
             return;
         }
         let run = self.run.take().unwrap();
         self.running = false;
-        match run.scheduler.join() {
-            Ok(Ok(())) if !run.o.stopping() && !self.state.epic.is_empty() => {
-                self.state = State::default(); // Epic done: nothing to resume
-                if let Err(err) = self.state.save(&self.launch.repo) {
-                    self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
-                }
+        if run.o.stopping() {
+            self.say("stopped, panes left running, /continue resumes");
+        } else if run.failed {
+            self.state = load_state(&self.launch.repo).unwrap_or_default();
+        } else if run.epic {
+            self.state = State::default(); // Epic done: nothing to resume
+            if let Err(err) = self.state.save(&self.launch.repo) {
+                self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                self.state = load_state(&self.launch.repo).unwrap_or_default();
-                self.notice(&err, NOTICE_WINDOW);
-            }
-            Err(_) => self.notice("the scheduler thread died", NOTICE_WINDOW),
         }
         self.reload_epics();
+    }
+
+    /// The scheduler has returned and Ticket threads are still leaving.
+    pub(crate) fn stopping(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.scheduler.is_none())
     }
 
     pub(crate) fn tick(&mut self) {
@@ -221,22 +247,61 @@ impl Screen {
             .is_some_and(|(_, until)| Instant::now() >= *until)
         {
             self.notice = None;
+            self.pending = None; // a y/n unanswered for as long as it showed
         }
     }
 
-    /// An Event from the Orchestrator; only panel lines show. A closed
-    /// Ticket refreshes the tree.
+    /// An Event from the Orchestrator; only panel lines show.
     pub(crate) fn push(&mut self, event: Event) {
         if !event.panel {
             return;
         }
-        let closed = event.text == "merged, Ticket closed";
         self.events.push(event);
         if self.events.len() > KEPT_EVENTS {
             self.events.drain(..self.events.len() - KEPT_EVENTS);
         }
-        if closed {
-            self.reload_epics();
+    }
+
+    /// A run-level line of the Shell's own, on RECENT and in the log as the
+    /// Orchestrator's are.
+    fn say(&mut self, text: &str) {
+        let time = chrono::Local::now();
+        let dir = self.launch.repo.join(".harness");
+        let log = fs::create_dir_all(&dir).and_then(|()| {
+            File::options()
+                .create(true)
+                .append(true)
+                .open(dir.join("orchestrator.log"))
+        });
+        if let Ok(mut log) = log {
+            let _ = writeln!(log, "{} {text}", time.format("%Y-%m-%d %H:%M:%S"));
+        }
+        self.push(Event {
+            time,
+            ticket: None,
+            text: text.to_string(),
+            panel: true,
+        });
+    }
+
+    /// A refused command: said, and a notice above the input line.
+    fn refuse(&mut self, text: &str) {
+        self.say(text);
+        self.notice(text, NOTICE_WINDOW);
+    }
+
+    /// Whether a run is live or stopping, which refuses a start; said so.
+    fn busy(&mut self) -> bool {
+        match &self.run {
+            None => false,
+            Some(run) if run.scheduler.is_none() => {
+                self.refuse("refused: a run is stopping");
+                true
+            }
+            Some(_) => {
+                self.refuse("refused: a run is live, /stop-work first");
+                true
+            }
         }
     }
 
@@ -293,44 +358,58 @@ impl Screen {
         }
     }
 
-    /// One input line: a slash command, or the answer to a pending y/n.
+    /// One input line: a slash command, or the answer to a pending y/n
+    /// (Enter keeps the question, anything but y or n cancels it).
     pub(crate) fn command(&mut self, line: &str) {
+        if line.is_empty() {
+            return;
+        }
         if let Some(pending) = self.pending.take() {
-            if matches!(line, "y" | "yes") {
-                match pending {
-                    Pending::Start { epic, max } => self.start_epic(&epic, max, true),
-                    Pending::Exit => self.quit(),
-                }
+            match (line, pending) {
+                ("y" | "yes", Pending::Start { id, max, epic }) => self.start(&id, max, epic, true),
+                ("y" | "yes", Pending::Exit) => self.quit(),
+                _ => self.notice("cancelled", NOTICE_WINDOW),
             }
             return;
         }
         let (name, rest) = line.split_once(' ').unwrap_or((line, ""));
-        let (query, max) = match parse_args(rest) {
-            Ok(parsed) => parsed,
-            Err(err) => return self.notice(&err, NOTICE_WINDOW),
-        };
+        let query = rest.trim();
         match name {
-            "" => {}
-            "/start-epic" => {
-                self.reload_epics();
-                if let Some(id) = self.resolve(&query, true) {
-                    self.start_epic(&id, max, false);
+            "/start-epic" | "/start-ticket" => {
+                if self.busy() {
+                    return;
                 }
-            }
-            "/start-ticket" => {
-                if let Some(id) = self.resolve(&query, false) {
-                    self.launch(max, move |o| {
-                        o.run_single(&id);
-                        Ok(())
-                    });
+                let epic = name == "/start-epic";
+                let (query, max) = match parse_args(query) {
+                    Ok(parsed) => parsed,
+                    Err(err) => return self.notice(&err, NOTICE_WINDOW),
+                };
+                self.reload_epics();
+                if let Some(id) = self.resolve(&query, epic) {
+                    self.start(&id, max, epic, false);
                 }
             }
             "/continue" => {
+                if self.busy() {
+                    return;
+                }
                 let epic = self.state.epic.clone();
-                if epic.is_empty() {
-                    self.notice("no saved run to continue", NOTICE_WINDOW);
+                let tickets: Vec<String> = self
+                    .state
+                    .tickets
+                    .iter()
+                    .filter(|(_, ts)| ts.status == STATUS_RUNNING)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                if !epic.is_empty() {
+                    self.launch(DEFAULT_MAX, true, move |o| o.run(&epic));
+                } else if tickets.is_empty() {
+                    self.refuse("refused: no saved Ticket to continue");
                 } else {
-                    self.launch(max, move |o| o.run(&epic));
+                    self.launch(DEFAULT_MAX, false, move |o| {
+                        o.run_tickets(&o.resumable());
+                        Ok(())
+                    });
                 }
             }
             "/stop-work" => self.stop_work(),
@@ -338,10 +417,11 @@ impl Screen {
                 _ if query.is_empty() => {
                     self.notice(&format!("usage: {name} <ticket>"), NOTICE_WINDOW)
                 }
-                None => self.notice(
-                    "refused: no run is live, /start-epic or /continue starts one",
-                    NOTICE_WINDOW,
-                ),
+                None => self.refuse("refused: no run is live, /start-epic or /continue starts one"),
+                Some(run) if name == "/address" && !run.epic => {
+                    // ponytail: a single-Ticket run has no scheduler to consume it
+                    run.o.report(query, "address refused: not an Epic run");
+                }
                 Some(run) => run.o.command(&format!("{}-{query}", &name[1..])),
             },
             "/exit" => match &self.run {
@@ -412,17 +492,25 @@ impl Screen {
         }
     }
 
-    /// /start-epic: over a different saved Epic it asks before discarding.
-    fn start_epic(&mut self, epic: &str, max: usize, discard: bool) {
-        if self.run.is_some() {
-            return self.notice("refused: a run is live, /stop-work first", NOTICE_WINDOW);
-        }
+    /// /start-epic and /start-ticket: over a different saved Epic (the
+    /// Ticket's parent on the tree) it asks before discarding the saved run.
+    fn start(&mut self, id: &str, max: usize, epic: bool, discard: bool) {
         let saved = self.state.epic.clone();
-        if !saved.is_empty() && saved != epic {
+        let mine = if epic {
+            id.to_string()
+        } else {
+            self.epics
+                .iter()
+                .find(|e| e.tickets.iter().any(|t| t.id == id))
+                .map(|e| e.id.clone())
+                .unwrap_or_default()
+        };
+        if !saved.is_empty() && saved != mine {
             if !discard {
                 self.pending = Some(Pending::Start {
-                    epic: epic.to_string(),
+                    id: id.to_string(),
                     max,
+                    epic,
                 });
                 return self.notice(
                     &format!("discard the saved run on {saved}? (y/n)"),
@@ -434,20 +522,26 @@ impl Screen {
                 return self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
         }
-        let epic = epic.to_string();
-        self.launch(max, move |o| o.run(&epic));
+        let id = id.to_string();
+        if epic {
+            self.launch(max, true, move |o| o.run(&id));
+        } else {
+            self.launch(max, false, move |o| {
+                o.run_single(&id);
+                Ok(())
+            });
+        }
     }
 
     /// Takes the lock and runs `work` over a fresh Orchestrator on the
-    /// scheduler thread; it returns when the run ends and poll sees it.
+    /// scheduler thread; it returns when the run ends and poll sees it. The
+    /// callers have checked that no run is live.
     fn launch(
         &mut self,
         max: usize,
+        epic: bool,
         work: impl FnOnce(&Arc<Orchestrator>) -> Result<(), String> + Send + 'static,
     ) {
-        if self.run.is_some() {
-            return self.notice("refused: a run is live, /stop-work first", NOTICE_WINDOW);
-        }
         if let Some(missing) = self.missing.first() {
             return self.notice(&format!("refused: {missing}"), NOTICE_WINDOW);
         }
@@ -487,14 +581,16 @@ impl Screen {
         };
         self.run = Some(Run {
             o,
-            scheduler,
+            scheduler: Some(scheduler),
+            epic,
+            failed: false,
             _lock: lock,
         });
         self.running = true;
     }
 
     /// /stop-work: scheduling ends, live panes stay, the state file holds
-    /// every Ticket as saved, and the lock goes when the scheduler returns.
+    /// every Ticket as saved, and the lock goes once every thread has left.
     fn stop_work(&mut self) {
         match &self.run {
             Some(run) => run.o.stop(),

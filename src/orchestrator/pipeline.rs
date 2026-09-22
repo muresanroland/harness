@@ -19,7 +19,7 @@ impl Orchestrator {
     /// Moves one Ticket through the Pipeline: Implement, then Rounds of
     /// Review, Debate and Fix until a Verdict has no fix items or the cap is
     /// reached, ending with an open pull request. Finished Stages are skipped
-    /// by their result files, so calling it again resumes where a killed run
+    /// by their result files, so calling it again resumes where a stopped run
     /// stopped.
     pub(crate) fn run_ticket(&self, ticket: &str) {
         match self.pipeline(ticket) {
