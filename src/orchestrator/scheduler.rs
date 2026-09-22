@@ -59,11 +59,11 @@ impl Orchestrator {
                 return;
             }
             self.active.lock().unwrap().insert(ticket.to_string());
-            let (o, ticket) = (Arc::clone(self), ticket.to_string());
-            let handle = thread::spawn(move || {
-                work(&o, &ticket);
-                o.active.lock().unwrap().remove(&ticket);
-            });
+            let slot = Slot {
+                o: Arc::clone(self),
+                ticket: ticket.to_string(),
+            };
+            let handle = thread::spawn(move || work(&slot.o, &slot.ticket));
             #[cfg(test)]
             self.threads.lock().unwrap().push(handle);
             #[cfg(not(test))]
@@ -289,6 +289,19 @@ impl Orchestrator {
             }
             Err(StageError::Stopped) => {}
         }
+    }
+}
+
+/// A Ticket's place in the Pipeline, given back when its thread ends, also
+/// by a panic: Go's `defer active.Delete`.
+struct Slot {
+    o: Arc<Orchestrator>,
+    ticket: String,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.o.active.lock().unwrap().remove(&self.ticket);
     }
 }
 

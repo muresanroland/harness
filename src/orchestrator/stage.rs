@@ -76,8 +76,10 @@ pub(crate) struct Config {
     pub(crate) max: usize,
     /// Where every event line goes.
     pub(crate) log: Mutex<Box<dyn Write + Send>>,
-    /// Every Stage's deadline in the tests, where Go's set
-    /// stageImplement.Timeout; None is the Stage table's.
+    /// Every Stage's deadline in the tests; None is the Stage table's. Go's
+    /// tests shortened only stageImplement.Timeout, but the one test that
+    /// sets it never gets past Implement, so shortening every Stage is the
+    /// same test and keeps the table const.
     #[cfg(test)]
     pub(crate) timeout: Option<Duration>,
 }
@@ -158,11 +160,14 @@ impl Orchestrator {
             .join(ticket)
     }
 
-    // ponytail: no timestamp yet; the log line format is harness-kqe.8's
-    // (events), which brings chrono for the local time.
+    /// One log line, prefixed with the local time as Go's log.LstdFlags did.
     pub(crate) fn log(&self, line: &str) {
         let mut log = self.cfg.log.lock().unwrap();
-        let _ = writeln!(log, "{line}");
+        let _ = writeln!(
+            log,
+            "{} {line}",
+            chrono::Local::now().format("%Y/%m/%d %H:%M:%S")
+        );
     }
 
     /// Sends one event line into the launching pane. herdr refuses a prompt

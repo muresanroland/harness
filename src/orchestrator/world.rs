@@ -571,11 +571,15 @@ impl Orchestrator {
     /// started, and a panic on one (a fake-world failure) fails the test.
     pub(crate) fn wait_in_flight(&self) {
         let threads: Vec<_> = self.threads.lock().unwrap().drain(..).collect();
+        let mut failed = None; // every thread is waited for before the first failure is raised
         for handle in threads {
             if let Err(panic) = handle.join() {
-                if !thread::panicking() {
-                    std::panic::resume_unwind(panic);
-                }
+                failed.get_or_insert(panic);
+            }
+        }
+        if let Some(panic) = failed {
+            if !thread::panicking() {
+                std::panic::resume_unwind(panic);
             }
         }
     }

@@ -56,6 +56,46 @@ fn scheduler_runs_every_ready_ticket_but_never_more_than_max_at_once() {
     }
 }
 
+/// A Ticket thread that dies gives its --max slot back, so the Ticket is
+/// resumed on the next tick instead of holding the Pipeline forever.
+#[test]
+fn a_ticket_thread_that_panics_frees_its_slot() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    let died = AtomicBool::new(false);
+    w.session(move |p| {
+        if p.stage == "implement" && !died.swap(true, Ordering::SeqCst) {
+            panic!("the fake world failed inside the Ticket thread");
+        }
+        succeed(p)
+    });
+    let o = Arc::new(o);
+
+    let mut run = spawn_epic(o.clone(), "hx");
+    assert!(
+        run.finished_within(Duration::from_secs(10)),
+        "the Epic never finished: the dead Ticket's slot was not given back"
+    );
+    run.wait();
+    let joined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| o.wait_in_flight()));
+    assert!(joined.is_err(), "the Ticket thread's panic was lost");
+
+    assert!(
+        o.active.lock().unwrap().is_empty(),
+        "a dead Ticket still holds a slot"
+    );
+    assert_eq!(
+        o.ticket("hx-1").status,
+        STATUS_MERGED,
+        "the Ticket was not resumed"
+    );
+    assert_eq!(
+        w.called("herdr agent start h-hx-1-implement").len(),
+        2,
+        "want a fresh Implement session after the thread died"
+    );
+}
+
 #[test]
 fn blocked_ticket_starts_only_after_its_dependency_is_merged_and_closed() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1"), with_deps("hx-2", &["hx-1"])]);
