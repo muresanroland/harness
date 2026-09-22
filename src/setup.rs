@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{symlink, OpenOptionsExt};
 use std::path::Path;
 
@@ -16,6 +16,7 @@ use crate::tools::Tools;
 const RECORD: &str = ".harness/installed-skills.json";
 const KEY_FILE: &str = ".harness/typesafe-key";
 
+#[derive(Clone, Copy)]
 enum Mode {
     Fresh,
     Refresh,
@@ -24,18 +25,19 @@ enum Mode {
 
 /// Writes the Harness's skills to <repo>/.agents/skills and links them from
 /// <repo>/.claude/skills. When the shipped skills are already installed the
-/// gate asks first: cancel, refresh only the files unedited since install (by
-/// the record), or overwrite everything; force is overwrite unasked. A Target
-/// repo that already has a create-pr skill of its own is asked what to do
-/// with the shipped one, since the Fix Stage runs whichever /create-pr the
-/// repo ends up with. `input` answers the questions; None is the terminal's
-/// stdin, put in raw mode for the menu.
+/// gate asks first: cancel (false: nothing touched), refresh only the files
+/// unedited since install (by the record), or overwrite everything; force is
+/// overwrite unasked. A Target repo that already has a create-pr skill of its
+/// own is asked what to do with the shipped one, since the Fix Stage runs
+/// whichever /create-pr the repo ends up with; later inits keep that answer
+/// from the record. `input` answers the questions, in raw mode when `tty`.
 pub(crate) fn install_skills(
     repo: &Path,
     force: bool,
     out: &mut dyn Write,
-    mut input: Option<&mut dyn Read>,
-) -> io::Result<()> {
+    input: &mut dyn Read,
+    tty: bool,
+) -> io::Result<bool> {
     let mut record: BTreeMap<String, String> = fs::read_to_string(repo.join(RECORD))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -49,14 +51,15 @@ pub(crate) fn install_skills(
         )?;
         match menu(
             out,
-            reborrow(&mut input),
+            &mut *input,
+            tty,
             &[
                 "cancel, leave them as they are",
                 "refresh only the skills not edited since install",
                 "overwrite everything with the shipped skills",
             ],
         )? {
-            0 => return Ok(()),
+            0 => return Ok(false),
             1 => Mode::Refresh,
             _ => Mode::Overwrite,
         }
@@ -64,14 +67,14 @@ pub(crate) fn install_skills(
         Mode::Fresh
     };
     // The name the shipped create-pr is installed under; "" keeps the repo's own.
-    let pr = match mode {
-        Mode::Fresh if has_skill(repo, "create-pr") => ask_about_create_pr(out, input)?,
-        Mode::Fresh | Mode::Overwrite => "create-pr",
-        // Whichever name the first init chose; none recorded means the repo's own.
-        Mode::Refresh => ["create-pr", "harness-create-pr"]
-            .into_iter()
-            .find(|name| record.contains_key(&skill_path(name)))
-            .unwrap_or(""),
+    let recorded = ["create-pr", "harness-create-pr"]
+        .into_iter()
+        .find(|name| record.contains_key(&skill_path(name)));
+    let pr = match (recorded, mode) {
+        (Some(name), _) => name,
+        (None, _) if !has_skill(repo, "create-pr") => "create-pr",
+        (None, Mode::Fresh) => ask_about_create_pr(out, input, tty)?,
+        (None, _) => "", // the repo's own, kept on the first init
     };
     for &(skill, body) in SKILLS {
         let name = match skill {
@@ -81,12 +84,20 @@ pub(crate) fn install_skills(
         };
         let rel = skill_path(name);
         let dest = repo.join(&rel);
+        let existing = fs::symlink_metadata(&dest).ok();
+        // A link is the repo's own arrangement: never written through.
+        if existing
+            .as_ref()
+            .is_some_and(|meta| meta.file_type().is_symlink())
+        {
+            continue;
+        }
         let write = match mode {
             Mode::Overwrite => true,
             Mode::Refresh => record
                 .get(&rel)
                 .is_some_and(|hash| fs::read(&dest).is_ok_and(|now| sha256(&now) == *hash)),
-            Mode::Fresh => skill == "create-pr" || fs::symlink_metadata(&dest).is_err(),
+            Mode::Fresh => skill == "create-pr" || existing.is_none(),
         };
         if !write {
             continue;
@@ -124,15 +135,8 @@ pub(crate) fn install_skills(
         repo.join(RECORD),
         serde_json::to_string_pretty(&record)? + "\n",
     )?;
-    ignore_run_dir(repo)
-}
-
-/// Lends the answering stdin to one question, so the next can have it too.
-// `as_deref_mut` cannot do this: it keeps the trait object's own lifetime,
-// which pins the borrow to the whole function.
-#[allow(clippy::option_as_ref_deref)]
-pub(crate) fn reborrow<'a>(input: &'a mut Option<&mut dyn Read>) -> Option<&'a mut dyn Read> {
-    input.as_mut().map(|r| -> &mut dyn Read { &mut **r })
+    ignore_run_dir(repo)?;
+    Ok(true)
 }
 
 fn skill_path(name: &str) -> String {
@@ -151,17 +155,15 @@ fn installed(repo: &Path) -> bool {
 
 /// Asks for the TypeSafe API key with echo off and keeps it, readable only by
 /// the user, when TYPESAFE_API_KEY (`env_key`) is unset and no key is stored.
-/// A stdin that is not the terminal skips the question; so does an empty answer.
+/// An empty answer, Ctrl-C, Ctrl-D or a silent stdin skips the question.
 pub(crate) fn ask_typesafe_key(
     repo: &Path,
     env_key: &str,
     out: &mut dyn Write,
-    input: Option<&mut dyn Read>,
+    input: &mut dyn Read,
+    tty: bool,
 ) -> io::Result<()> {
     if !env_key.trim().is_empty() || repo.join(KEY_FILE).exists() {
-        return Ok(());
-    }
-    if input.is_none() && !io::stdin().is_terminal() {
         return Ok(());
     }
     write!(
@@ -169,26 +171,40 @@ pub(crate) fn ask_typesafe_key(
         "init: TypeSafe API key, kept in {KEY_FILE} (enter to skip): "
     )?;
     out.flush()?;
-    let key = with_stdin(input, |input| {
+    let key = raw(tty, || {
         let mut key = Vec::new();
         let mut byte = [0u8; 1];
         while let Ok(1) = input.read(&mut byte) {
             match byte[0] {
                 b'\r' | b'\n' => break,
-                3 => key.clear(), // Ctrl-C in raw mode: skip
+                3 | 4 => {
+                    // Ctrl-C or Ctrl-D: skip
+                    key.clear();
+                    break;
+                }
                 0x7f | 0x08 => {
                     key.pop();
                 }
+                0x1b => {
+                    // An escape sequence, an arrow key say: skipped whole.
+                    if let Ok(1) = input.read(&mut byte) {
+                        if byte[0] == b'[' {
+                            while let Ok(1) = input.read(&mut byte) {
+                                if (0x40..=0x7e).contains(&byte[0]) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                b if b < 0x20 => {}
                 b => key.push(b),
             }
         }
         Ok(String::from_utf8_lossy(&key).trim().to_string())
     })?;
+    write!(out, "\r\n")?;
     if key.is_empty() {
-        write!(
-            out,
-            "\r\ninit: no TypeSafe key: every Wake will be a Question\r\n"
-        )?;
         return Ok(());
     }
     fs::create_dir_all(repo.join(".harness"))?;
@@ -199,7 +215,7 @@ pub(crate) fn ask_typesafe_key(
         .mode(0o600)
         .open(repo.join(KEY_FILE))?
         .write_all(format!("{key}\n").as_bytes())?;
-    write!(out, "\r\ninit: TypeSafe key kept in {KEY_FILE}\r\n")?;
+    write!(out, "init: TypeSafe key kept in {KEY_FILE}\r\n")?;
     Ok(())
 }
 
@@ -216,19 +232,11 @@ pub(crate) fn typesafe_key(repo: &Path, env: &dyn Fn(&str) -> String) -> Option<
     (!key.is_empty()).then(|| key.to_string())
 }
 
-/// Runs `f` over the answering stdin: the scripted one, or the terminal's in
-/// raw mode, so keys arrive one at a time and nothing typed is echoed.
-fn with_stdin<T>(
-    input: Option<&mut dyn Read>,
-    f: impl FnOnce(&mut dyn Read) -> io::Result<T>,
-) -> io::Result<T> {
-    let mut stdin = io::stdin();
-    let (input, tty): (&mut dyn Read, bool) = match input {
-        Some(scripted) => (scripted, false),
-        None => (&mut stdin, io::stdin().is_terminal()),
-    };
+/// Runs `f` with the terminal in raw mode when stdin is one, so keys arrive
+/// one at a time and nothing typed is echoed.
+fn raw<T>(tty: bool, f: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let raw = tty && crossterm::terminal::enable_raw_mode().is_ok();
-    let result = f(input);
+    let result = f();
     if raw {
         let _ = crossterm::terminal::disable_raw_mode();
     }
@@ -236,17 +244,23 @@ fn with_stdin<T>(
 }
 
 /// Puts a `choose` menu to the answering stdin.
-fn menu(out: &mut dyn Write, input: Option<&mut dyn Read>, options: &[&str]) -> io::Result<usize> {
-    with_stdin(input, |input| choose(out, input, options))
+fn menu(
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+    options: &[&str],
+) -> io::Result<usize> {
+    raw(tty, || choose(out, input, options))
 }
 
 /// Asks what to do with the shipped create-pr when the Target repo already has
 /// one, and returns the name to install it under: "" keeps the repo's own and
-/// installs nothing. A stdin that is not the terminal, or is closed, keeps the
-/// repo's own, so a non-interactive init never overwrites it.
+/// installs nothing. A silent stdin keeps the repo's own, so a
+/// non-interactive init never overwrites it.
 fn ask_about_create_pr(
     out: &mut dyn Write,
-    input: Option<&mut dyn Read>,
+    input: &mut dyn Read,
+    tty: bool,
 ) -> io::Result<&'static str> {
     write!(
         out,
@@ -255,6 +269,7 @@ fn ask_about_create_pr(
     let choice = menu(
         out,
         input,
+        tty,
         &[
             "keep this repo's, install nothing",
             "replace it with the shipped one",

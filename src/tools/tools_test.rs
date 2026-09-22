@@ -38,3 +38,22 @@ fn exec_returns_stdout_and_stderr_in_error() {
         "sh -c echo hi; echo oops >&2; exit 3: exit status 3: oops"
     );
 }
+
+#[test]
+fn a_failure_redacts_the_typesafe_key_from_its_command_line() {
+    let argv = ["sh", "-c", "exit 1", "--env", "TYPESAFE_API_KEY=sk-secret"];
+    let err = Exec.run(Path::new("/"), &argv).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "sh -c exit 1 --env TYPESAFE_API_KEY=***: exit status 1: "
+    );
+
+    let fake = Fake::new(|_, _| Err("boom".to_string()));
+    let err = fake.run(Path::new("/"), &argv).unwrap_err();
+    assert!(!err.to_string().contains("sk-secret"), "{err}");
+    assert_eq!(
+        fake.calls(),
+        [argv.join(" ")],
+        "the recorded call keeps the argv"
+    );
+}

@@ -20,7 +20,7 @@ fn repo_with_own_pr() -> TempDir {
 
 fn install(repo: &Path, answer: &str) -> String {
     let mut out = Vec::new();
-    install_skills(repo, false, &mut out, Some(&mut answer.as_bytes())).unwrap();
+    install_skills(repo, false, &mut out, &mut answer.as_bytes(), false).unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -97,16 +97,42 @@ fn install_skills_does_not_ask_when_the_repo_has_no_create_pr() {
 }
 
 #[test]
-fn install_skills_force_skips_the_question() {
+fn install_skills_force_skips_the_questions_and_keeps_the_repos_own_create_pr() {
     let repo = repo_with_own_pr();
     let mut out = Vec::new();
-    install_skills(repo.path(), true, &mut out, Some(&mut "1\n".as_bytes())).unwrap();
+    install_skills(repo.path(), true, &mut out, &mut "2\n".as_bytes(), false).unwrap();
     let out = String::from_utf8(out).unwrap();
-    assert!(!out.contains("already has"), "--force still asked:\n{out}");
-    let got = read(repo.path(), ".agents/skills/create-pr/SKILL.md");
+    assert!(!out.contains("already"), "--force still asked:\n{out}");
+    assert_eq!(
+        read(repo.path(), ".agents/skills/create-pr/SKILL.md"),
+        "the repo's own"
+    );
+    assert!(read(repo.path(), STAGE_FIX).contains("name: stage-fix"));
+}
+
+#[test]
+fn install_skills_overwrite_keeps_the_repos_own_create_pr_beside_the_recorded_one() {
+    let repo = repo_with_own_pr();
+    install(repo.path(), "3"); // beside it, as harness-create-pr
+    let beside = repo
+        .path()
+        .join(".agents/skills/harness-create-pr/SKILL.md");
+    fs::write(&beside, "edited").unwrap();
+    let out = install(repo.path(), "3"); // the gate: overwrite everything
+    assert!(out.contains("already installed"), "no gate:\n{out}");
     assert!(
-        got.contains("name: create-pr"),
-        "--force did not install the shipped create-pr: {got:?}"
+        !out.contains("already has"),
+        "asked about create-pr again:\n{out}"
+    );
+    assert_eq!(
+        read(repo.path(), ".agents/skills/create-pr/SKILL.md"),
+        "the repo's own"
+    );
+    assert!(
+        fs::read_to_string(&beside)
+            .unwrap()
+            .contains("name: harness-create-pr"),
+        "overwrite left the edited harness-create-pr"
     );
 }
 
@@ -234,7 +260,7 @@ fn install_skills_cancel_and_a_closed_stdin_touch_nothing() {
 
 fn ask_key(repo: &Path, env: &str, typed: &str) -> String {
     let mut out = Vec::new();
-    ask_typesafe_key(repo, env, &mut out, Some(&mut typed.as_bytes())).unwrap();
+    ask_typesafe_key(repo, env, &mut out, &mut typed.as_bytes(), false).unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -273,13 +299,21 @@ fn ask_typesafe_key_skips_when_the_variable_is_set_or_stdin_is_silent() {
     );
     assert!(!repo.path().join(".harness/typesafe-key").exists());
 
-    let out = ask_key(repo.path(), "", "");
-    assert!(out.contains("TypeSafe API key"), "not asked:\n{out}");
-    assert!(
-        !repo.path().join(".harness/typesafe-key").exists(),
-        "an empty answer was stored"
-    );
+    for typed in ["", "\n", "sk-a\x03", "sk-b\x04sk-c\n", "\x1b[A\t\n"] {
+        let out = ask_key(repo.path(), "", typed);
+        assert!(
+            out.contains("TypeSafe API key"),
+            "{typed:?}: not asked:\n{out}"
+        );
+        assert!(
+            !repo.path().join(".harness/typesafe-key").exists(),
+            "{typed:?}: stored anyway"
+        );
+    }
     assert_eq!(typesafe_key(repo.path(), &|_| String::new()), None);
+    // Control bytes and an arrow key never reach the key.
+    ask_key(repo.path(), "", "\x1b[Ask-\x01d\x7f\n");
+    assert_eq!(read(repo.path(), ".harness/typesafe-key").trim(), "sk-");
 }
 
 #[test]

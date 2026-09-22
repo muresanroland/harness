@@ -1,7 +1,7 @@
 //! The harness command line.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -40,11 +40,23 @@ pub fn run(
     match name.as_str() {
         "init" => {
             let force = args.get(1).is_some_and(|a| a == "--force");
-            let mut input = input;
-            let installed = setup::install_skills(repo, force, out, setup::reborrow(&mut input));
-            if let Err(err) = installed
-                .and_then(|()| setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input))
-            {
+            // The questions read the terminal, a scripted input, or, when
+            // stdin is neither, nothing: a non-interactive init cancels and skips.
+            let (mut stdin, mut silent) = (io::stdin(), io::empty());
+            let tty = input.is_none() && stdin.is_terminal();
+            let input: &mut dyn Read = match input {
+                Some(scripted) => scripted,
+                None if tty => &mut stdin,
+                None => &mut silent,
+            };
+            let asked = match setup::install_skills(repo, force, out, &mut *input, tty) {
+                Ok(false) => return 0, // cancelled at the gate: nothing else runs
+                Ok(true) => {
+                    setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input, tty)
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = asked {
                 let _ = writeln!(out, "init: {err}");
                 return 1;
             }

@@ -216,7 +216,7 @@ fn init_asks_for_the_typesafe_key_and_preflight_warns_without_one() {
     // terminal delivers it), the key is kept in the repo.
     let args = ["init".to_string()];
     let mut out = Vec::new();
-    let mut keys = b"1".chain(&b"sk-typed\n"[..]);
+    let mut keys = b"2".chain(&b"sk-typed\n"[..]);
     let code = run(
         &args,
         &mut out,
