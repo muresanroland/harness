@@ -161,8 +161,8 @@ fn status_line(app: &App) -> Line<'static> {
 }
 
 /// Logo left, hopping while running; beside it the status line, the banner, the version and the folder.
-/// On a small terminal (under 64 columns or 28 rows) the logo and banner go, leaving two plain lines.
-fn compact(area: Rect) -> bool { area.width < 64 || area.height < 28 }
+/// Only a tiny terminal (under 64 columns or 18 rows) drops the logo and banner for two plain lines.
+fn compact(area: Rect) -> bool { area.width < 64 || area.height < 18 }
 fn header_height(area: Rect) -> u16 { if compact(area) { 3 } else { 8 } }
 
 fn header(f: &mut Frame, area: Rect, app: &App) {
