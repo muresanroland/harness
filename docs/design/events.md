@@ -53,6 +53,19 @@ session reported failure · went idle without a result · wrote a result file wh
 
 The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 
+## Plans
+
+Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks when unsure" (harness-7bj.9). Implement starts in plan mode; a hook copies the plan into the run directory as `plan.md`, and the Judgment is a TypeSafe Noul over the plan, the Ticket and any earlier feedback, floor 0.8.
+
+| Moment | Wording |
+|---|---|
+| plan ready | plan ready in implement (pane 2-1) |
+| Judgment, line 1 | judged: plan follows the Ticket 0.93 · judged: plan strays from the Ticket 0.88 |
+| Judgment, line 2 | plan approved · asking you: plan ready in implement (pane 2-1) |
+| below the floor, or no TypeSafe | asking you: plan ready in implement (pane 2-1) |
+| user feedback delivered | plan sent back with your feedback |
+| plan dialog without plan.md in the run directory | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
+
 ## Questions and answers
 
 Decided on the map ticket "The Shell's Question panel" (harness-7bj.7). A Question is a form above the input line; answering it logs two lines, the first naming the user, the second the outcome in the Judgment's own words.
