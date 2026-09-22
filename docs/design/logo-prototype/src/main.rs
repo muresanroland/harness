@@ -1,6 +1,6 @@
 //! PROTOTYPE (harness-7bj.5): renders docs/design/logo.txt as half-block cells,
 //! downscaled live to pick a size, and hops it while "running".
-//! Keys: left/right cycle widths, space toggles running/still, q quits.
+//! Keys: left/right cycle widths, n toggles nearest/box scaling, space toggles running/still, q quits.
 //! Throwaway; the Logo widget is the part worth folding into the port. The
 //! scaler is not: the chosen size gets baked into the asset offline.
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{buffer::Buffer, layout::Rect, style::{Color, Stylize}, text::Line, widgets::Widget};
 
 const SOURCE: &str = include_str!("../../logo.txt");
-const WIDTHS: [usize; 2] = [34, 68];
+const WIDTHS: [usize; 3] = [17, 34, 68];
 const TICK: Duration = Duration::from_millis(50);
 /// Vertical pixel offset per tick over one hop cycle: rest is 2 pixels (one cell) down.
 const HOP: [usize; 24] = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 1, 2];
@@ -41,7 +41,7 @@ impl Logo {
     }
 
     /// Box-filter rescale to `w` pixels wide (prototype only; the port embeds the final size).
-    fn scaled(&self, w: usize) -> Self {
+    fn scaled(&self, w: usize, nearest: bool) -> Self {
         let (sw, sh) = (self.rows[0].len(), self.rows.len());
         let h = (sh * w / sw + 1) & !1; // even, so it fills whole cells
         let (fx, fy) = (sw as f64 / w as f64, sh as f64 / h as f64);
@@ -49,8 +49,9 @@ impl Logo {
             .map(|ty| {
                 (0..w)
                     .map(|tx| {
-                        let (x0, x1) = ((tx as f64 * fx) as usize, (((tx + 1) as f64 * fx).ceil() as usize).min(sw));
-                        let (y0, y1) = ((ty as f64 * fy) as usize, (((ty + 1) as f64 * fy).ceil() as usize).min(sh));
+                        let (x0, y0) = ((tx as f64 * fx) as usize, (ty as f64 * fy) as usize);
+                        if nearest { return self.rows[y0][x0]; }
+                        let (x1, y1) = ((((tx + 1) as f64 * fx).ceil() as usize).min(sw), (((ty + 1) as f64 * fy).ceil() as usize).min(sh));
                         let (mut n, mut opaque, mut sum) = (0u32, 0u32, (0u32, 0u32, 0u32));
                         for y in y0..y1 {
                             for x in x0..x1 {
@@ -161,7 +162,9 @@ impl Widget for &Logo {
 fn main() -> std::io::Result<()> {
     let truecolor = std::env::var("COLORTERM").map(|v| v == "truecolor" || v == "24bit").unwrap_or(false);
     let source = Logo::parse(SOURCE, truecolor);
-    let logos: Vec<Logo> = WIDTHS.iter().map(|&w| source.scaled(w)).collect();
+    let mut nearest = true;
+    let build = |nearest: bool| -> Vec<Logo> { WIDTHS.iter().map(|&w| source.scaled(w, nearest)).collect() };
+    let mut logos = build(nearest);
     let folder = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
     let folder = match std::env::var("HOME") {
         Ok(h) if folder.starts_with(&h) => folder.replacen(&h, "~", 1),
@@ -183,9 +186,9 @@ fn main() -> std::io::Result<()> {
             f.render_widget(Line::from("v0.1.0".fg(Color::Rgb(160, 160, 160))), Rect::new(x, 6, w, 1));
             f.render_widget(Line::from(folder.as_str()), Rect::new(x, 7, w, 1));
             let status = format!(
-                "{}  |  {} px wide = {}x{} cells  |  terminal {}x{}  |  {}  |  left/right: size, space: toggle, q: quit",
+                "{}  |  {} px wide = {}x{} cells, {} scaling  |  terminal {}x{}  |  {}  |  left/right: size, n: scaling, space: toggle, q: quit",
                 if running { "RUNNING (hopping)" } else { "STILL" },
-                WIDTHS[which], logo.width(), logo.height(), a.width, a.height,
+                WIDTHS[which], logo.width(), logo.height(), if nearest { "nearest" } else { "box" }, a.width, a.height,
                 if truecolor { "24-bit" } else { "256-colour fallback (COLORTERM unset)" },
             );
             f.render_widget(Line::from(status), Rect::new(0, a.height.saturating_sub(1), a.width, 1));
@@ -200,6 +203,7 @@ fn main() -> std::io::Result<()> {
             match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Char(' ') => running = !running,
+                KeyCode::Char('n') => { nearest = !nearest; logos = build(nearest); }
                 KeyCode::Right => which = (which + 1) % WIDTHS.len(),
                 KeyCode::Left => which = (which + WIDTHS.len() - 1) % WIDTHS.len(),
                 _ => {}
@@ -214,7 +218,8 @@ fn main() -> std::io::Result<()> {
 fn asset_parses_and_scales() {
     let logo = Logo::parse(SOURCE, true);
     assert_eq!((logo.width(), logo.height()), (34, 19));
-    let small = logo.scaled(68);
+    let small = logo.scaled(68, false);
+    assert_eq!(logo.scaled(17, true).height(), 10);
     assert_eq!((small.width(), small.height()), (68, 38));
     assert!(small.rows.iter().flatten().any(|p| p.is_some()));
 }
