@@ -50,4 +50,18 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 session reported failure · went idle without a result · timed out after 30m · session died · finished without a PR link · never took the Stage skill
 
-What the panel logs when the user answers a Question is decided on the Question panel ticket.
+## Questions and answers
+
+Decided on the map ticket "The Shell's Question panel" (harness-7bj.7). A Question is a form above the input line; answering it logs two lines, the first naming the user, the second the outcome in the Judgment's own words.
+
+| Moment | Wording |
+|---|---|
+| Question raised | asking you: stuck in fix 1 · asking you: waiting at a prompt in fix 1 (pane 2-1) · asking you: plan ready in implement (pane 2-1) |
+| answer, line 1 | you answered: nudge · retry · park · your prompt · approve · feedback · I answered it |
+| answer, line 2 | the Judgment's line 2 wording where it has one: nudged: write the result file · retrying fix 1 with a fresh session (pane 2-3) · parked: `reason` |
+| answer, line 2, no Judgment equivalent | nudged with your prompt · plan approved · plan sent back with your feedback · carrying on |
+| blocked session cleared in the pane | carrying on |
+| open the pane, Esc, /questions | nothing |
+| /park on a running Ticket | parked: by you at fix 1 |
+| command refused by a waiting Question | refused: Ticket 5 has a Question waiting |
+| confirmations, /continue checklist | nothing beyond the command's own lines (stopped, started) |

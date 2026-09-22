@@ -69,8 +69,8 @@ The Orchestrator's answer to a Wake, taken from a typed model over the Wake's ev
 _Avoid_: LLM call, Main session
 
 **Question**:
-What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, or a confirmation.
-_Avoid_: Prompt, dialog, alert
+What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, or a confirmation. It holds only its Ticket, is answered from a fixed set of options or a line of the user's own text, and is never saved: on resume it is derived again from the live session.
+_Avoid_: Prompt, dialog, alert, form, popup
 
 **Parked**:
 A Ticket taken out of the Pipeline to wait for the user, after a Wake that a Judgment or the user settled as park. Other Tickets keep running.
