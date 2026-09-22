@@ -1,0 +1,18 @@
+⏺ Read(main.go)
+  ⎿  Read 41 lines
+
+⏺ Read(words/count.go)
+  ⎿  Read 9 lines
+
+⏺ Before I change main.go: it already parses a --name flag and prints a greeting, and the
+  Ticket does not say whether --text replaces that or sits beside it. Two readings:
+
+  1. Keep --name and add --text; both may be given, --text wins.
+  2. Replace the greeting entirely; main.go becomes a word counter.
+
+  Which do you want? I'll wait for your answer before editing.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

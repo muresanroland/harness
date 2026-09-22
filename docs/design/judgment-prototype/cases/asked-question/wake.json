@@ -1,0 +1,1 @@
+{"ticket":{"id":"test-harness-repo-6fs.4","title":"--text CLI using words.Count","spec":"Add a --text flag to main.go that prints words.Count of its value. Help exits 0, a bad flag exits 2."},"stage":"implement","round":1,"reason":"went idle without a result","result_file":".harness/runs/test-harness-repo-6fs.4/implement.md","expect":"nudge_proceed"}
