@@ -106,7 +106,6 @@ pub(crate) mod fake {
         }
 
         /// The calls that start with prefix.
-        #[allow(dead_code)] // the Orchestrator tests from harness-kqe.2 use it
         pub(crate) fn called(&self, prefix: &str) -> Vec<String> {
             self.calls()
                 .into_iter()

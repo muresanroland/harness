@@ -1,5 +1,8 @@
 use super::init_test::{herdr_env, ok_tools, prepared_repo, run_with};
 use super::{parse_start, StartArgs};
+use crate::orchestrator::state::{acquire_lock, lock_holder};
+use crate::tempdir::TempDir;
+use crate::tools::fake::Fake;
 
 fn parse(args: &[&str]) -> Result<StartArgs, String> {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -50,29 +53,56 @@ fn start_arguments_parse_in_any_order() {
     );
 }
 
-// ponytail: second_start_in_the_same_repo_refuses and
-// control_commands_reach_only_a_running_orchestrator need the lock and the
-// control files, which harness-kqe.2 ports; until then the commands stop here.
 #[test]
-fn orchestrator_commands_are_not_ported_yet() {
+fn second_start_in_the_same_repo_refuses() {
     let repo = prepared_repo();
+    let _lock = acquire_lock(repo.path()).unwrap(); // a live Orchestrator: this process
+    let (code, out) = run_with(&["start", "hx"], repo.path(), ok_tools(), &herdr_env);
+    assert!(
+        code != 0 && out.contains("already running"),
+        "second start: exit {code}, output {out:?}"
+    );
+}
+
+#[test]
+fn control_commands_reach_only_a_running_orchestrator() {
+    let repo = TempDir::new();
+    let (code, out) = run_with(&["stop"], repo.path(), Fake::quiet(), &herdr_env);
+    assert!(
+        code != 0 && out.contains("no Orchestrator is running"),
+        "stop with nothing running: exit {code}, {out:?}"
+    );
+
+    let _lock = acquire_lock(repo.path()).unwrap();
+    // ponytail: with an Orchestrator running, Go left a control file (stop,
+    // retry-hx-1, ...) for it to drain; that wiring is harness-kqe.4's, so for
+    // now the commands get past the lock check and stop at "not ported yet".
     for args in [
-        &["start", "hx"][..],
-        &["status"],
-        &["stop"],
+        &["stop"][..],
         &["retry", "hx-1"],
         &["park", "hx-1"],
         &["address", "hx-1"],
     ] {
-        let (code, out) = run_with(args, repo.path(), ok_tools(), &herdr_env);
+        let (code, out) = run_with(args, repo.path(), Fake::quiet(), &herdr_env);
         assert!(
-            code == 2 && out.ends_with(&format!("harness {}: not ported yet\n", args[0])),
+            !out.contains("no Orchestrator is running")
+                && out.ends_with(&format!("harness {}: not ported yet\n", args[0])),
             "{args:?}: exit {code}, output {out:?}"
         );
     }
-    let (code, out) = run_with(&["retry"], repo.path(), ok_tools(), &herdr_env);
+    let (code, _) = run_with(&["retry"], repo.path(), Fake::quiet(), &herdr_env);
+    assert_ne!(code, 0, "retry without a Ticket accepted");
+}
+
+// ponytail: 'start' holds the lock and then stops, until harness-kqe.3 and .4
+// bring the Pipeline and the scheduler it would run.
+#[test]
+fn start_is_not_ported_yet() {
+    let repo = prepared_repo();
+    let (code, out) = run_with(&["start", "hx"], repo.path(), ok_tools(), &herdr_env);
     assert!(
-        code != 0 && out.contains("usage: harness retry <ticket>"),
-        "retry without a Ticket accepted: {code} {out:?}"
+        code == 2 && out.ends_with("harness start: not ported yet\n"),
+        "start: exit {code}, output {out:?}"
     );
+    assert_eq!(lock_holder(repo.path()), 0, "start left the lock behind");
 }

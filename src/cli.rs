@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::orchestrator::state::{acquire_lock, lock_holder, print_status};
 use crate::setup;
 use crate::tools::Tools;
 
@@ -43,8 +44,8 @@ pub fn run(
             setup::report_missing(out, &setup::preflight(repo, &*tools, env))
         }
         "start" => start(&args[1..], out, repo, &*tools, env),
-        "status" => not_ported("status", out),
-        "stop" | "retry" | "park" | "address" => command(args, out),
+        "status" => print_status(out, repo),
+        "stop" | "retry" | "park" | "address" => command(args, out, repo),
         _ => {
             let _ = out.write_all(USAGE.as_bytes());
             2
@@ -59,14 +60,23 @@ fn not_ported(name: &str, out: &mut dyn Write) -> i32 {
     2
 }
 
-/// The control commands for a running Orchestrator: for now only their
-/// argument check is here.
-fn command(args: &[String], out: &mut dyn Write) -> i32 {
+/// The control commands for a running Orchestrator, which owns the state
+/// file and is the only process that acts on them.
+fn command(args: &[String], out: &mut dyn Write, repo: &Path) -> i32 {
     let name = &args[0];
     if name != "stop" && args.len() != 2 {
         let _ = writeln!(out, "usage: harness {name} <ticket>");
         return 2;
     }
+    if lock_holder(repo) == 0 {
+        let _ = writeln!(
+            out,
+            "no Orchestrator is running in this repo; 'harness start <epic>' starts or resumes one"
+        );
+        return 1;
+    }
+    // ponytail: the control file (stop, retry-<ticket>, ...) that the running
+    // Orchestrator drains is harness-kqe.4's; until then the command stops here.
     not_ported(name, out)
 }
 
@@ -140,6 +150,13 @@ fn start(
         let _ = writeln!(out, "start: {err}");
         return 1;
     }
+    let _lock = match acquire_lock(repo) {
+        Ok(lock) => lock,
+        Err(err) => {
+            let _ = writeln!(out, "start: {err}");
+            return 1;
+        }
+    };
     not_ported("start", out)
 }
 

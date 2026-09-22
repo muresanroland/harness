@@ -1,0 +1,29 @@
+{
+  "epic": "test-harness-repo-6fs",
+  "tickets": {
+    "test-harness-repo-6fs.1": {
+      "status": "merged",
+      "stage": "fix",
+      "round": 1,
+      "pr": "https://github.com/muresanroland/test-harness-repo/pull/2"
+    },
+    "test-harness-repo-6fs.2": {
+      "status": "pr-open",
+      "stage": "fix",
+      "round": 1,
+      "pr": "https://github.com/muresanroland/test-harness-repo/pull/3"
+    },
+    "test-harness-repo-6fs.3": {
+      "status": "pr-open",
+      "stage": "fix",
+      "round": 1,
+      "pr": "https://github.com/muresanroland/test-harness-repo/pull/4"
+    },
+    "test-harness-repo-6fs.4": {
+      "status": "pr-open",
+      "stage": "fix",
+      "round": 2,
+      "pr": "https://github.com/muresanroland/test-harness-repo/pull/5"
+    }
+  }
+}
