@@ -1,6 +1,7 @@
 # Agent Instructions
 
-CLAUDE.md is a symlink to this file. The Beads block below is managed by
+There is no CLAUDE.md: Claude Code reads this file. `bd setup claude` would
+write one back, so don't run it here. The Beads block below is managed by
 `bd setup`; edit the sections above it.
 
 ## Non-Interactive Shell Commands

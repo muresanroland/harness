@@ -105,4 +105,4 @@ Cargo.toml's `version` is the source of truth. After the merge, push the matchin
 
 ## Build
 
-See the build and test commands in [CLAUDE.md](CLAUDE.md).
+See the build and test commands in [AGENTS.md](AGENTS.md).
