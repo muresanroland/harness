@@ -7,11 +7,10 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{symlink, OpenOptionsExt};
 use std::path::Path;
 
-use crate::sha256::sha256;
 use crate::skills::SKILLS;
 use crate::tools::Tools;
 
-/// The record of every skill file init wrote, path to sha256 of its content:
+/// The record of every skill file init wrote, path to the text it wrote:
 /// under refresh, a file that still matches is unedited and is rewritten.
 const RECORD: &str = ".harness/installed-skills.json";
 const KEY_FILE: &str = ".harness/typesafe-key";
@@ -49,16 +48,12 @@ pub(crate) fn install_skills(
             out,
             "init: the shipped skills are already installed here.\r\n"
         )?;
-        match menu(
-            out,
-            &mut *input,
-            tty,
-            &[
-                "cancel, leave them as they are",
-                "refresh only the skills not edited since install",
-                "overwrite everything with the shipped skills",
-            ],
-        )? {
+        let options = [
+            "cancel, leave them as they are",
+            "refresh only the skills not edited since install",
+            "overwrite everything with the shipped skills",
+        ];
+        match raw(tty, || choose(out, &mut *input, &options))? {
             0 => return Ok(false),
             1 => Mode::Refresh,
             _ => Mode::Overwrite,
@@ -76,12 +71,13 @@ pub(crate) fn install_skills(
         (None, Mode::Fresh) => ask_about_create_pr(out, input, tty)?,
         (None, _) => "", // the repo's own, kept on the first init
     };
-    for &(skill, body) in SKILLS {
-        let name = match skill {
-            "create-pr" if pr.is_empty() => continue,
-            "create-pr" => pr,
-            _ => skill,
-        };
+    // (shipped name, installed name, body); the repo's own create-pr is left out.
+    let skills: Vec<(&str, &str, &str)> = SKILLS
+        .iter()
+        .filter(|&&(skill, _)| skill != "create-pr" || !pr.is_empty())
+        .map(|&(skill, body)| (skill, if skill == "create-pr" { pr } else { skill }, body))
+        .collect();
+    for &(skill, name, body) in &skills {
         let rel = skill_path(name);
         let dest = repo.join(&rel);
         let existing = fs::symlink_metadata(&dest).ok();
@@ -96,7 +92,7 @@ pub(crate) fn install_skills(
             Mode::Overwrite => true,
             Mode::Refresh => record
                 .get(&rel)
-                .is_some_and(|hash| fs::read(&dest).is_ok_and(|now| sha256(&now) == *hash)),
+                .is_some_and(|wrote| fs::read_to_string(&dest).is_ok_and(|now| now == *wrote)),
             Mode::Fresh => skill == "create-pr" || existing.is_none(),
         };
         if !write {
@@ -110,17 +106,10 @@ pub(crate) fn install_skills(
         };
         fs::create_dir_all(dest.parent().unwrap())?;
         fs::write(&dest, &body)?;
-        record.insert(rel, sha256(body.as_bytes()));
+        record.insert(rel, body);
     }
     fs::create_dir_all(repo.join(".claude/skills"))?;
-    for &(skill, _) in SKILLS {
-        let mut name = skill;
-        if skill == "create-pr" {
-            if pr.is_empty() {
-                continue;
-            }
-            name = pr;
-        }
+    for &(_, name, _) in &skills {
         let link = repo.join(".claude/skills").join(name);
         if let Ok(meta) = fs::symlink_metadata(&link) {
             if name == pr && !meta.file_type().is_symlink() {
@@ -243,16 +232,6 @@ fn raw<T>(tty: bool, f: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     result
 }
 
-/// Puts a `choose` menu to the answering stdin.
-fn menu(
-    out: &mut dyn Write,
-    input: &mut dyn Read,
-    tty: bool,
-    options: &[&str],
-) -> io::Result<usize> {
-    raw(tty, || choose(out, input, options))
-}
-
 /// Asks what to do with the shipped create-pr when the Target repo already has
 /// one, and returns the name to install it under: "" keeps the repo's own and
 /// installs nothing. A silent stdin keeps the repo's own, so a
@@ -266,16 +245,12 @@ fn ask_about_create_pr(
         out,
         "init: this repo already has a create-pr skill, and the Harness ships its own.\r\n"
     )?;
-    let choice = menu(
-        out,
-        input,
-        tty,
-        &[
-            "keep this repo's, install nothing",
-            "replace it with the shipped one",
-            "install the shipped one beside it, as harness-create-pr",
-        ],
-    )?;
+    let options = [
+        "keep this repo's, install nothing",
+        "replace it with the shipped one",
+        "install the shipped one beside it, as harness-create-pr",
+    ];
+    let choice = raw(tty, || choose(out, input, &options))?;
     Ok(["", "create-pr", "harness-create-pr"][choice])
 }
 
@@ -384,11 +359,7 @@ pub(crate) fn report_missing(out: &mut dyn Write, missing: &[String]) -> i32 {
     for m in missing {
         let _ = writeln!(out, "preflight: {m}");
     }
-    if missing.is_empty() {
-        0
-    } else {
-        1
-    }
+    i32::from(!missing.is_empty())
 }
 
 #[cfg(test)]

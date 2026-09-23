@@ -140,7 +140,9 @@ pub(crate) struct Event {
     pub(crate) ask: Option<Ask>,
 }
 
-/// What the Shell knows when it starts a run.
+/// What the Shell knows when it starts a run: kept whole by the Shell and
+/// cloned for each run, which sets exe, max, log and events.
+#[derive(Clone)]
 pub(crate) struct Config {
     /// The seam to every external tool.
     pub(crate) tools: Arc<dyn Tools>,
@@ -165,13 +167,10 @@ pub(crate) struct Config {
     /// Tickets in the Pipeline at once.
     pub(crate) max: usize,
     /// Where every event line goes.
-    pub(crate) log: Mutex<Box<dyn Write + Send>>,
+    pub(crate) log: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Every Event, for the Shell's RECENT panel; a dropped receiver is tolerated.
     pub(crate) events: Sender<Event>,
-    /// Every Stage's deadline in the tests; None is the Stage table's. Go's
-    /// tests shortened only stageImplement.Timeout, but the one test that
-    /// sets it never gets past Implement, so shortening every Stage is the
-    /// same test and keeps the table const.
+    /// Every Stage's deadline in the tests; None is the Stage table's.
     #[cfg(test)]
     pub(crate) timeout: Option<Duration>,
     /// How long a wait holds in the tests; None is WAIT.
@@ -202,20 +201,15 @@ pub(crate) struct Orchestrator {
     /// the plan on screen again.
     pub(super) plans: Mutex<BTreeMap<String, String>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
-    /// failure on one fails the test as Go's t.Errorf did.
+    /// failure on one fails the test.
     #[cfg(test)]
     pub(crate) threads: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 impl Orchestrator {
     /// Loads the Target repo's state file, so a restarted Orchestrator resumes.
-    pub(crate) fn new(mut cfg: Config) -> io::Result<Arc<Self>> {
+    pub(crate) fn new(cfg: Config) -> io::Result<Arc<Self>> {
         let state = load_state(&cfg.repo)?;
-        if cfg.home.as_os_str().is_empty() {
-            cfg.home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-        }
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
 
@@ -311,18 +305,13 @@ impl Orchestrator {
 
     fn event(&self, ticket: &str, text: &str, panel: bool, detail: &str, ask: Option<Ask>) {
         let time = chrono::Local::now();
-        let id = if ticket.is_empty() {
-            String::new()
-        } else {
-            format!("{ticket} ")
-        };
         let detail = if detail.is_empty() {
             String::new()
         } else {
             format!(" ({detail})")
         };
         // one write: the Shell appends its own lines to the same file
-        let line = format!("{} {id}{text}{detail}\n", time.format("%Y-%m-%d %H:%M:%S"));
+        let line = log_line(time, ticket, &format!("{text}{detail}"));
         let _ = self.cfg.log.lock().unwrap().write_all(line.as_bytes());
         let _ = self.cfg.events.send(Event {
             time,
@@ -456,6 +445,16 @@ impl Orchestrator {
             .cloned()
             .unwrap_or_default()
     }
+}
+
+/// A log line: 'YYYY-MM-DD HH:MM:SS <bd id> <text>', no id for ticket "".
+pub(crate) fn log_line(time: chrono::DateTime<chrono::Local>, ticket: &str, text: &str) -> String {
+    let id = if ticket.is_empty() {
+        String::new()
+    } else {
+        format!("{ticket} ")
+    };
+    format!("{} {id}{text}\n", time.format("%Y-%m-%d %H:%M:%S"))
 }
 
 /// How a Stage is named in an event: "implement", "review 1", "fix 2".
@@ -1139,7 +1138,7 @@ impl Config {
             tick: Duration::from_millis(1),
             poll_prs: Duration::from_millis(1),
             max: 3,
-            log: Mutex::new(Box::new(io::sink())),
+            log: Arc::new(Mutex::new(Box::new(io::sink()))),
             events: std::sync::mpsc::channel().0,
             timeout: None,
             wait: None,

@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 
-use crate::orchestrator::judgment::{self, Action, TypeSafe};
+use crate::orchestrator::judgment::{self, Action};
 use crate::orchestrator::scheduler::BdIssue;
-use crate::orchestrator::stage::{Answer, Ask, Config, Event, Orchestrator};
+use crate::orchestrator::stage::{log_line, Answer, Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
     acquire_lock, load_state, Lock, State, TicketState, STATUS_PARKED, STATUS_RUNNING,
 };
@@ -51,19 +51,6 @@ pub(crate) struct Epic {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) tickets: Vec<BdIssue>,
-}
-
-/// What a run needs besides its Epic: the Target repo, the Tools, the herdr
-/// workspace, the TypeSafe key and the clocks.
-pub(crate) struct Launch {
-    pub(crate) tools: Arc<dyn Tools>,
-    pub(crate) repo: PathBuf,
-    pub(crate) workspace: String,
-    pub(crate) api_key: String,
-    pub(crate) typesafe: Arc<dyn TypeSafe>,
-    pub(crate) home: PathBuf,
-    pub(crate) tick: Duration,
-    pub(crate) poll_prs: Duration,
 }
 
 /// The live run: the Orchestrator, its scheduler thread and the lock, held
@@ -142,7 +129,10 @@ pub(crate) struct Screen {
     /// A run is live: the logo hops, the status row spins.
     pub(crate) running: bool,
     pub(crate) quit: bool,
-    launch: Launch,
+    /// Every run's Config, cloned for the run. Its exe is the running
+    /// binary's real path, resolved once at open: an update renames over it,
+    /// and every run's plan hook runs it. Tests point it at a scratch file.
+    pub(crate) cfg: Config,
     /// What the preflight found missing at open; a run is refused while
     /// anything is.
     missing: Vec<String>,
@@ -157,10 +147,6 @@ pub(crate) struct Screen {
     pub(crate) hidden: bool,
     /// The input line is a prompt of the user's own for the front Question.
     pub(crate) composing: bool,
-    /// The running binary's real path, resolved once at open: an update
-    /// renames over it, and every run's plan hook runs it. Tests point it at
-    /// a scratch file.
-    pub(crate) exe: PathBuf,
     /// The updater thread's checks, applied between commands in poll().
     update_sender: Sender<Checked>,
     update_receiver: Receiver<Checked>,
@@ -174,7 +160,7 @@ pub(crate) struct Screen {
 
 impl Screen {
     pub(crate) fn new(
-        launch: Launch,
+        cfg: Config,
         folder: String,
         truecolor: bool,
         epics: Vec<Epic>,
@@ -197,7 +183,7 @@ impl Screen {
             ticks: 0,
             running: false,
             quit: false,
-            launch,
+            cfg,
             missing: Vec::new(),
             sender,
             receiver,
@@ -205,7 +191,6 @@ impl Screen {
             questions: Vec::new(),
             hidden: false,
             composing: false,
-            exe: PathBuf::new(),
             update_sender,
             update_receiver,
             update: None,
@@ -226,22 +211,30 @@ impl Screen {
         let truecolor = colorterm == "truecolor" || colorterm == "24bit";
         let state = load_state(repo).unwrap_or_default();
         let missing = setup::preflight(repo, &*tools, env);
-        let launch = Launch {
+        let cfg = Config {
             tools,
             repo: repo.to_path_buf(),
             workspace: env("HERDR_WORKSPACE_ID"),
             api_key: setup::typesafe_key(repo, env).unwrap_or_default(),
+            exe: PathBuf::new(),
             typesafe: Arc::new(judgment::Api),
-            home: PathBuf::new(), // the Orchestrator reads HOME
+            home: PathBuf::from(&home),
             tick: Duration::from_secs(5),
             poll_prs: Duration::from_secs(30),
+            max: DEFAULT_MAX,
+            log: Arc::new(Mutex::new(Box::new(io::sink()))),
+            events: mpsc::channel().0,
+            #[cfg(test)]
+            timeout: None,
+            #[cfg(test)]
+            wait: None,
         };
-        let mut screen = Screen::new(launch, folder, truecolor, Vec::new(), state);
+        let mut screen = Screen::new(cfg, folder, truecolor, Vec::new(), state);
         screen.missing = missing;
         screen.reload_epics();
         match update::exe_path() {
             Ok(exe) => {
-                screen.exe = exe;
+                screen.cfg.exe = exe;
                 screen.check_updates(Arc::new(update::GitHub), update::EVERY);
             }
             Err(err) => screen.say(&format!("update check failed: {err}")),
@@ -255,7 +248,7 @@ impl Screen {
     pub(crate) fn check_updates(&self, releases: Arc<dyn Releases>, every: Duration) {
         let (version, exe, tx) = (
             self.version.clone(),
-            self.exe.clone(),
+            self.cfg.exe.clone(),
             self.update_sender.clone(),
         );
         thread::spawn(move || loop {
@@ -297,7 +290,7 @@ impl Screen {
             return;
         };
         let tag = ready.tag.clone();
-        let installed = match acquire_lock(&self.launch.repo) {
+        let installed = match acquire_lock(&self.cfg.repo) {
             Ok(_lock) => ready.install(),
             Err(_) => {
                 self.update = Some(ready);
@@ -338,7 +331,7 @@ impl Screen {
     /// The bd cache again: on open, on every /start-epic, after a Ticket
     /// closes and when a run ends.
     fn reload_epics(&mut self) {
-        match load_epics(&self.launch.repo, &*self.launch.tools) {
+        match load_epics(&self.cfg.repo, &*self.cfg.tools) {
             Ok(epics) => self.epics = epics,
             Err(err) => self.notice(&format!("bd list failed: {err}"), NOTICE_WINDOW),
         }
@@ -388,10 +381,10 @@ impl Screen {
         if run.o.stopping() {
             self.say("stopped, panes left running, /continue resumes");
         } else if run.failed {
-            self.state = load_state(&self.launch.repo).unwrap_or_default();
+            self.state = load_state(&self.cfg.repo).unwrap_or_default();
         } else if run.epic {
             self.state = State::default(); // Epic done: nothing to resume
-            if let Err(err) = self.state.save(&self.launch.repo) {
+            if let Err(err) = self.state.save(&self.cfg.repo) {
                 self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
         }
@@ -487,7 +480,7 @@ impl Screen {
     /// Orchestrator's are; None is a run-level line.
     fn tell(&mut self, ticket: Option<&str>, text: &str) {
         let time = chrono::Local::now();
-        let dir = self.launch.repo.join(".harness");
+        let dir = self.cfg.repo.join(".harness");
         let log = fs::create_dir_all(&dir).and_then(|()| {
             File::options()
                 .create(true)
@@ -496,9 +489,7 @@ impl Screen {
         });
         if let Ok(mut log) = log {
             // one write: Ticket threads append to the same file
-            let id = ticket.map_or(String::new(), |id| format!("{id} "));
-            let line = format!("{} {id}{text}\n", time.format("%Y-%m-%d %H:%M:%S"));
-            let _ = log.write_all(line.as_bytes());
+            let _ = log.write_all(log_line(time, ticket.unwrap_or(""), text).as_bytes());
         }
         self.show(Event {
             time,
@@ -795,9 +786,9 @@ impl Screen {
     /// Focuses the pane a Question is about; the Question stays.
     fn open_pane(&mut self, pane: String) {
         let focus = self
-            .launch
+            .cfg
             .tools
-            .run(&self.launch.repo, &["herdr", "pane", "focus", &pane]);
+            .run(&self.cfg.repo, &["herdr", "pane", "focus", &pane]);
         if let Err(err) = focus {
             self.notice(&err.to_string(), NOTICE_WINDOW);
         }
@@ -1047,7 +1038,7 @@ impl Screen {
             return;
         };
         if other {
-            if let Err(err) = State::default().save(&self.launch.repo) {
+            if let Err(err) = State::default().save(&self.cfg.repo) {
                 return self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
             *prepared.1.state.lock().unwrap() = State::default();
@@ -1057,7 +1048,7 @@ impl Screen {
             self.spawn(prepared, true, move |o| o.run(&id));
         } else {
             self.spawn(prepared, false, move |o| {
-                o.run_single(&id);
+                o.run_ticket(&id);
                 Ok(())
             });
         }
@@ -1071,7 +1062,7 @@ impl Screen {
             self.notice(&format!("refused: {missing}"), NOTICE_WINDOW);
             return None;
         }
-        let repo = &self.launch.repo;
+        let repo = &self.cfg.repo;
         let lock = match setup::ignore_run_dir(repo).and_then(|()| acquire_lock(repo)) {
             Ok(lock) => lock,
             Err(err) => {
@@ -1088,22 +1079,10 @@ impl Screen {
             Err(_) => Box::new(io::sink()),
         };
         match Orchestrator::new(Config {
-            tools: self.launch.tools.clone(),
-            repo: repo.clone(),
-            workspace: self.launch.workspace.clone(),
-            api_key: self.launch.api_key.clone(),
-            exe: self.exe.clone(),
-            typesafe: self.launch.typesafe.clone(),
-            home: self.launch.home.clone(),
-            tick: self.launch.tick,
-            poll_prs: self.launch.poll_prs,
             max,
-            log: Mutex::new(log),
+            log: Arc::new(Mutex::new(log)),
             events: self.sender.clone(),
-            #[cfg(test)]
-            timeout: None,
-            #[cfg(test)]
-            wait: None,
+            ..self.cfg.clone()
         }) {
             Ok(o) => Some((lock, o)),
             Err(err) => {
@@ -1278,7 +1257,7 @@ pub(crate) fn open(
     screen.close();
     if screen.reexec {
         // An idle-Shell update: the same argv comes back under the new version.
-        eprintln!("harness: {}", update::reexec(&screen.exe));
+        eprintln!("harness: {}", update::reexec(&screen.cfg.exe));
     }
     result
 }
@@ -1306,23 +1285,6 @@ fn run(terminal: &mut DefaultTerminal, screen: &mut Screen) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-impl Launch {
-    /// A Launch over the fake world: every duration a millisecond.
-    #[cfg(test)]
-    pub(crate) fn for_tests(tools: Arc<dyn Tools>, repo: &Path, home: &Path) -> Self {
-        Launch {
-            tools,
-            repo: repo.to_path_buf(),
-            workspace: "w1".to_string(),
-            api_key: "sk-test".to_string(),
-            typesafe: judgment::fake::Fake::down(),
-            home: home.to_path_buf(),
-            tick: Duration::from_millis(1),
-            poll_prs: Duration::from_millis(1),
-        }
-    }
 }
 
 #[cfg(test)]

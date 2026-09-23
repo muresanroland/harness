@@ -62,7 +62,7 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         } else if lower.starts_with("- [skip]") {
             result.skips += 1;
         }
-        // Go's ^PR:\s*(\S+): the whitespace may cross blank lines.
+        // As ^PR:\s*(\S+): the whitespace may cross blank lines.
         if let Some(rest) = line.strip_prefix("PR:").filter(|_| result.pr.is_empty()) {
             match rest.split_whitespace().next() {
                 Some(pr) => result.pr = pr.to_string(),

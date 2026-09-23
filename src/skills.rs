@@ -1,7 +1,7 @@
 //! The skills the Harness ships: one Stage skill per Stage, plus create-pr. 'harness init' copies them into a Target repo. A new skill
 //! is one more line here.
 
-/// (name, body of skills/<name>/SKILL.md), in the order Go's embed.FS listed them.
+/// (name, body of skills/<name>/SKILL.md), sorted by name.
 pub(crate) const SKILLS: &[(&str, &str)] = &[
     ("create-pr", include_str!("../skills/create-pr/SKILL.md")),
     (

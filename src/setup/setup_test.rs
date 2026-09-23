@@ -1,5 +1,4 @@
 use super::{ask_typesafe_key, install_skills, typesafe_key};
-use crate::sha256::sha256;
 use crate::tempdir::TempDir;
 use std::collections::BTreeMap;
 use std::fs;
@@ -161,7 +160,7 @@ fn snapshot(repo: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
-fn install_skills_records_the_hash_of_every_file_it_writes_without_a_gate() {
+fn install_skills_records_every_file_it_writes_without_a_gate() {
     let repo = TempDir::new();
     let out = install(repo.path(), "");
     assert!(
@@ -170,10 +169,10 @@ fn install_skills_records_the_hash_of_every_file_it_writes_without_a_gate() {
     );
     let record = record(repo.path());
     assert_eq!(record.len(), 6, "record: {record:?}");
-    for (rel, hash) in &record {
+    for (rel, wrote) in &record {
         assert_eq!(
-            sha256(&fs::read(repo.path().join(rel)).unwrap()),
-            *hash,
+            fs::read_to_string(repo.path().join(rel)).unwrap(),
+            *wrote,
             "{rel}: record does not match the file"
         );
     }
@@ -189,7 +188,7 @@ fn install_skills_refresh_rewrites_only_files_unedited_since_install() {
     let stale = repo.path().join(STAGE_FIX);
     fs::write(&stale, "older shipped text").unwrap();
     let mut rec = record(repo.path());
-    rec.insert(STAGE_FIX.to_string(), sha256(b"older shipped text"));
+    rec.insert(STAGE_FIX.to_string(), "older shipped text".to_string());
     fs::write(
         repo.path().join(RECORD),
         serde_json::to_string(&rec).unwrap(),
@@ -208,7 +207,7 @@ fn install_skills_refresh_rewrites_only_files_unedited_since_install() {
     );
     assert_eq!(
         record(repo.path())[STAGE_FIX],
-        sha256(shipped.as_bytes()),
+        shipped,
         "refresh did not update the record"
     );
     assert_eq!(

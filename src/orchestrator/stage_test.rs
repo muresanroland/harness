@@ -19,7 +19,7 @@ fn emit_writes_the_log_line_and_the_event() {
         Default::default(),
     );
     let log = Arc::new(Mutex::new(String::new()));
-    o.cfg.log = Mutex::new(Box::new(LogBuf(log.clone())));
+    o.cfg.log = Arc::new(Mutex::new(Box::new(LogBuf(log.clone()))));
     let (events, received) = channel();
     o.cfg.events = events;
 

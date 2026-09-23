@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
-/// A failed command: `Display` is the Go message, "<command>: <status>: <stderr>".
+/// A failed command: `Display` is "<command>: <status>: <stderr>".
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunError {
     /// The command line, space-joined.
@@ -78,7 +78,7 @@ impl Tools for Exec {
     }
 }
 
-/// The test double for the Tools seam, the port of runnertest.Fake.
+/// The test double for the Tools seam.
 #[cfg(test)]
 pub(crate) mod fake {
     use super::{RunError, Tools};

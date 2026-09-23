@@ -1,18 +1,15 @@
-//! The Harness: drives a beads Epic through the Pipeline. The Go tree beside
-//! this crate is the spec until the cutover removes it; `pub(crate)` stands in
-//! for Go's `internal/`.
+//! The Harness: drives a beads Epic through the Pipeline.
 
 pub mod cli;
 pub(crate) mod orchestrator;
 pub(crate) mod setup;
-pub(crate) mod sha256;
 pub(crate) mod shell;
 pub(crate) mod skills;
 pub mod tools;
 pub(crate) mod update;
 pub mod version;
 
-/// A scratch directory that is removed on Drop, the port of Go's t.TempDir().
+/// A scratch directory that is removed on Drop.
 #[cfg(test)]
 pub(crate) mod tempdir {
     use std::path::{Path, PathBuf};

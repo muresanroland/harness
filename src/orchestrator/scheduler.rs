@@ -134,7 +134,7 @@ impl Orchestrator {
                         "{epic} has no Tickets: is it the id of a beads Epic in this repo?"
                     ))
                 }
-                Some(children) if all_closed(&children) => {
+                Some(children) if children.iter().all(|c| c.status == "closed") => {
                     self.report("", "Epic done, every Ticket closed");
                     return Ok(());
                 }
@@ -162,13 +162,6 @@ impl Orchestrator {
                 return Ok(()); // /stop-work is a clean end, not a failure
             }
         }
-    }
-
-    /// Runs a single Ticket's Pipeline, without scheduling or merge polling,
-    /// and reports whether the Ticket ended Parked.
-    pub(crate) fn run_single(&self, ticket: &str) -> bool {
-        self.run_ticket(ticket);
-        self.ticket(ticket).status == STATUS_PARKED
     }
 
     /// Runs several Tickets' Pipelines at once, without scheduling or merge
@@ -366,7 +359,7 @@ impl Orchestrator {
 }
 
 /// A Ticket's place in the Pipeline, given back when its thread ends, also
-/// by a panic: Go's `defer active.Delete`.
+/// by a panic.
 struct Slot {
     o: Arc<Orchestrator>,
     ticket: String,
@@ -376,10 +369,6 @@ impl Drop for Slot {
     fn drop(&mut self) {
         self.o.active.lock().unwrap().remove(&self.ticket);
     }
-}
-
-fn all_closed(children: &[BdIssue]) -> bool {
-    children.iter().all(|child| child.status == "closed")
 }
 
 /// The address Stage's inputs, from gh's view of the PR.
