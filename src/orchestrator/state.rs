@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub(crate) const STATUS_RUNNING: &str = "running";
 pub(crate) const STATUS_PARKED: &str = "parked";
@@ -120,37 +122,40 @@ pub(crate) fn lock_holder(repo: &Path) -> u32 {
     }
 }
 
-/// Tests only: whether the lock can be taken within a second. A process
-/// spawned on another test thread holds a copy of every open descriptor until
-/// it execs, so a lock closed during a parallel test's spawn stays held that long.
+/// Tests only: whether the lock can be taken now it should be free.
 #[cfg(test)]
 pub(crate) fn lock_frees(repo: &Path) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while acquire_lock(repo).is_err() {
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    true
+    acquire_lock(repo).is_ok()
 }
+
+/// How long a lock held elsewhere is waited for before a run is refused. A
+/// process spawned on another thread of this one holds a copy of every open
+/// descriptor until it execs, so a lock just released here (a run ending,
+/// then the update install at /stop-work) can stay held that long.
+const LOCK_PATIENCE: Duration = Duration::from_millis(500);
 
 /// Enforces one run per Target repo.
 pub(crate) fn acquire_lock(repo: &Path) -> io::Result<Lock> {
     let path = lock_path(repo);
     fs::create_dir_all(path.parent().unwrap())?;
     let mut file = File::options().create(true).append(true).open(&path)?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            // ponytail: the holder writes its pid right after locking, so a
-            // start in that same instant names pid 0; it still refuses.
-            let pid = lock_holder(repo);
-            return Err(io::Error::other(format!(
-                "a run is live in this repo (pid {pid}); /stop-work there ends it"
-            )));
+    let patience = Instant::now() + LOCK_PATIENCE;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) if Instant::now() < patience => {
+                thread::sleep(Duration::from_millis(5))
+            }
+            Err(TryLockError::WouldBlock) => {
+                // ponytail: the holder writes its pid right after locking, so a
+                // start in that same instant names pid 0; it still refuses.
+                let pid = lock_holder(repo);
+                return Err(io::Error::other(format!(
+                    "a run is live in this repo (pid {pid}); /stop-work there ends it"
+                )));
+            }
+            Err(TryLockError::Error(err)) => return Err(err),
         }
-        Err(TryLockError::Error(err)) => return Err(err),
     }
     file.set_len(0)?;
     write!(file, "{}", std::process::id())?;
