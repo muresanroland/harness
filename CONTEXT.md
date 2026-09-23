@@ -5,7 +5,7 @@ Drives a beads epic through a fixed multi-agent pipeline, from tickets to open p
 ## Language
 
 **Harness**:
-The globally installed tool as a whole: the Orchestrator plus the skill that launches it.
+The globally installed tool as a whole: the Orchestrator and the Shell.
 
 **Target repo**:
 The repository whose epic is being worked on. The Harness is run from inside it; it scaffolds the repo's agent setup once, and the repo owns its conventions from then on.
@@ -87,7 +87,7 @@ The one seam every external command (herdr, bd, gh, git) goes through; a test do
 _Avoid_: Runner, exec, shell
 
 **Orchestrator**:
-The deterministic process that owns ticket state, pane placement, and stage transitions. It makes no judgment calls.
+The deterministic process that owns ticket state, pane placement, and stage transitions. Its only judgment calls are bounded, logged Judgments through a typed model, and it never composes text.
 _Avoid_: Script, runner, daemon
 
 **Shell**:

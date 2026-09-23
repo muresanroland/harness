@@ -7,6 +7,10 @@ description: Harness Implement Stage. Implements one beads Ticket in its worktre
 
 You are one Stage of the Harness Pipeline, in a fresh session inside the Ticket's git worktree. Nobody is watching this pane: do not ask questions, decide and note the decision. The Orchestrator only reads your result file. Your inputs are under **Inputs** at the end.
 
+## Plan first
+
+You start in plan mode. Your plan lists what you will change, the tests you will write, and every decision the Ticket left to you; it covers each acceptance criterion and nothing beyond the Ticket. Then exit plan mode. An approver reads the plan against the Ticket; if feedback comes back instead of approval, revise the same plan and present it again. Steps 1 to 3 below are your planning; step 4 starts once the plan is approved.
+
 ## Do
 
 1. `bd show <Ticket>`: the description and acceptance criteria are your whole scope. Do not start on other Tickets.

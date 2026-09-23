@@ -12,8 +12,9 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 ## What shows
 
 - Every Ticket event shows on the panel, except `prompted` (log only).
-- Run-level errors show: state not saved, bd list failed, Epic done, stopped.
-- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file.
+- Run-level errors show: state not saved, bd list failed, bd ready failed, Epic done, stopped.
+- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file, an answer that came after its session moved on (dropped your park: that session has moved on), a Judgment that could not be had (no Judgment: `err`, the key never in it).
+- A Judgment below the floor logs its judged line only: its scores show in the Wake's Question, and a panel line would close that Question.
 
 ## Vocabulary
 
@@ -36,20 +37,23 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | parked | parked: `reason` |
 | Wake | stuck in fix 1: `reason` (pane 2-1) |
 | blocked session | waiting at a prompt in fix 1 (pane 2-1) |
-| Judgment, line 1 | judged: nudge 0.84, retry 0.10, park 0.06 *(only the actions offered: a spent nudge or retry is left out, wait after a timeout)* |
+| Judgment, line 1 | judged: nudge to write the result 0.84, nudge to carry on 0.07, retry 0.05, park 0.03, wait 0.01 *(the actions offered, highest score first: a spent nudge or retry is left out, and wait after a timeout, for a dead session or after three waits)* |
 | Judgment, line 2 | nudged: write the result file · nudged: carry on, the Ticket is the spec · retrying fix 1 with a fresh session (pane 2-3) · parked: `reason` · waiting: still working (pane 2-2) |
-| below the floor, or no TypeSafe | asking you: stuck in fix 1 |
+| below the floor, or no TypeSafe | asking you: stuck in fix 1 *(below the floor the judged line goes to the log alone)* |
 | only park left (nudge and retry spent) | parked: fix 1 `reason` again after a retry *(no Judgment asked)* |
 | retry command | retrying fix 1 with a fresh session (pane 2-3) |
-| address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR |
+| address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR · address refused: not an Epic run |
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
+| Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
 | Epic done | *(harness)* Epic done, every Ticket closed |
-| stopped | *(harness)* stopped, panes left running, /continue resumes |
-| errors | *(harness)* state not saved: `err` · bd list failed: `err` |
+| stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
+| errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why`
+
+The last four are plan failures: a Question for the user, no Judgment asked.
 
 The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 
@@ -64,7 +68,9 @@ Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks wh
 | Judgment, line 2 | plan approved · asking you: plan ready in implement (pane 2-1) |
 | below the floor, or no TypeSafe | asking you: plan ready in implement (pane 2-1) |
 | user feedback delivered | plan sent back with your feedback |
-| plan dialog without plan.md in the run directory | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
+| feedback not delivered, no Enter sent | feedback not sent: the plan dialog is not on screen (pane 2-1) · feedback not sent: the cursor never reached Tell Claude what to change (pane 2-1) *(then the plan Question again, the feedback kept to resend)* |
+| a plan failure | stuck in implement: `reason` (pane 2-1) *(a Question for you, no Judgment asked: open the pane, park, retry, resend the feedback)* |
+| blocked at another prompt, or at the plan dialog with no new plan.md | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
 
 ## Questions and answers
 

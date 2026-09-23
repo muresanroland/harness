@@ -1,0 +1,50 @@
+# Builds the release binaries for a v* tag and attaches them to a GitHub
+# Release. The tag must equal Cargo.toml's version; the human pushes the tag
+# after the merge.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag must equal Cargo.toml's version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "${GITHUB_REF_NAME#v}" = "$version" || { echo "tag $GITHUB_REF_NAME != Cargo.toml version $version"; exit 1; }
+      - name: build
+        env:
+          HARNESS_RELEASE: '1'
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }}
+          cp -f target/${{ matrix.target }}/release/harness harness-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harness-${{ matrix.target }}
+          path: harness-${{ matrix.target }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: create the release with both assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harness-aarch64-apple-darwin harness-x86_64-unknown-linux-gnu

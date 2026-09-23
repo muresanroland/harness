@@ -1,0 +1,33 @@
+{
+  "epic": "hx",
+  "tickets": {
+    "hx-1": {
+      "status": "running",
+      "stage": "review",
+      "round": 2,
+      "tab": "w1:t2",
+      "panes": {
+        "implement": "w1:p3",
+        "review": "w1:p5"
+      },
+      "retried": true
+    },
+    "hx-2": {
+      "status": "parked",
+      "stage": "fix",
+      "round": 1,
+      "tab": "w1:t3",
+      "panes": {
+        "fix": "w1:p7"
+      },
+      "reason": "fix reported STATUS: failed again after a retry"
+    },
+    "hx-3": {
+      "status": "pr-open",
+      "stage": "fix",
+      "round": 1,
+      "pr": "https://github.com/o/r/pull/9",
+      "conflict_reported": true
+    }
+  }
+}
