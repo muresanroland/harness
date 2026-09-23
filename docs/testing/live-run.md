@@ -1,170 +1,348 @@
 # Controlled live Harness test
 
-This run uses `~/Documents/Projects/test-harness-repo`, prepared on `main`
-at `26c39551072069ae62ad2fcd300324a9ee9fd60e`. The human starts Harness and
-merges PRs. The automation has prepared the tickets but has not launched agents.
+The live run on the Rust binary, driven through the Shell. It is the merge gate
+for the Rust port (harness-kqe.5) and the Shell running the Orchestrator
+(harness-kqe.10), and it gives plan mode (harness-kqe.13) its one real
+plan-mode Implement. A green `cargo test` does not establish any of this: the
+fake world never starts a real session.
 
-Build the Rust binary first, then use it from inside the target repo:
+It runs in `~/Documents/Projects/test-harness-repo`. The human launches the
+Shell, answers its Questions and merges PRs. The preparation in step 0 launches
+no agent; an agent may run it.
+
+The run has two phases:
+
+- **With the TypeSafe key**, Tickets A, B and C: each plan goes to the plan Judgment,
+  and Wakes go to the Wake Judgment. This is the configuration users run.
+- **Without the key**, from the resume onward (D and whatever is still running):
+  every plan and Wake becomes a Question. This is the only reliable way to use
+  the plan Question's feedback path, because a Judgment that approves every plan
+  never asks.
+
+## 0. Prepare
+
+### 0.1 Build the binary
 
 ```bash
 cd ~/Documents/Projects/harness
-cargo build --release
+cargo build --release     # target/release/harness
+cargo test
 ```
 
-The binary is `../harness/target/release/harness` relative to the target repo.
-The globally installed `harness` may be an older build (the Go one carried no
-version and no updater); reinstall it by hand with `cargo install --path .`
-from the harness checkout, or with the release binary once it ships.
-`.harness/state.json` keeps its format, so a target repo mid-run resumes under
-the new binary with `/continue`.
+The binary is `../harness/target/release/harness` from inside the target repo.
+It reports `v1.0.0-dev` and a dev build never self-updates. The globally
+installed `harness` may be the old Go build, which has no version and no
+updater: do not use it for this run.
 
-Everything is driven from the Shell: `harness` alone opens it, and its input
-line takes the slash commands (ADR 0004). There is no `harness start`,
-`status`, `stop` or `retry`; the TICKETS box is the status, the RECENT box
-and `.harness/orchestrator.log` are the events.
+### 0.2 Archive the earlier run in the target repo
 
-## Prepared epic
+The Go binary ran Epic `test-harness-repo-6fs`. Its PRs #3, #4 and #5 are still
+open and are not part of this run: leave them alone, and do not merge them
+during the run. Bring `main` up to date (A of that run merged as PR #2), then
+move that run's files aside so the new Epic starts from clean state:
 
-Epic: **test-harness-repo-6fs**. Maximum concurrent tickets: **2**.
+```bash
+cd ~/Documents/Projects/test-harness-repo
+git pull --ff-only
+a=.harness/archive/2026-09-23-go-regression-run
+mkdir -p "$a"
+mv -f .harness/state.json .harness/orchestrator.log .harness/runs .harness/control .harness/live-test.json "$a"/
+```
 
-| Role | Ticket | Work | Initially |
-| --- | --- | --- | --- |
-| A | test-harness-repo-6fs.1 | `words.Count` and tests | Ready |
-| B | test-harness-repo-6fs.2 | `label.Format` and tests | Ready |
-| C | test-harness-repo-6fs.3 | `bounds.Clamp` and tests | Ready |
-| D | test-harness-repo-6fs.4 | `--text` CLI using A | Blocked by A |
+The old worktrees under `.harness/worktrees` stay, and so do their branches.
+They belong to the earlier run, not to this cleanup.
 
-The previous epic, PR #1, branch, and worktree are preserved. This run uses new
-ticket IDs. Old orchestrator state and log are archived under
-`.harness/archive/2026-09-21-before-regression-run/`; old stage results must not
-be copied into the new run. There is no need to reset Beads or run `harness init`
-again: the installed stage skills match this checkout. The documented build's
-`testharness` binary is ignored locally through Git's shared `info/exclude`.
+### 0.3 Refresh the Stage skills
 
-`.harness/live-test.json` records preparation inputs and ticket IDs; it is a
-snapshot, not the current run status. The Shell's TICKETS box is the live
-state, `.harness/state.json` the machine record.
+The installed `stage-implement` skill predates plan mode: it lacks the "Plan
+first" section. The other shipped skills already match. From a Herdr shell pane
+(the preflight wants `HERDR_ENV=1`), in the target repo:
+
+```bash
+../harness/target/release/harness init
+```
+
+- At the gate ("the shipped skills are already installed here"), choose
+  **overwrite everything with the shipped skills**.
+- If asked about create-pr, keep the shipped one; it is identical.
+- If asked for a TypeSafe key, press Enter when `TYPESAFE_API_KEY` is exported
+  in the shell you will launch from. Otherwise paste it; init keeps it in
+  `.harness/typesafe-key`.
+
+The preflight should report nothing missing. Check the refresh landed:
+
+```bash
+grep -c "Plan first" .agents/skills/stage-implement/SKILL.md   # 1
+```
+
+The leftover `start-work` skill is unused by the Shell. Leave it.
+
+### 0.4 Prepare the Epic
+
+Four Tickets, with D blocked by A. Run this in the target repo, then note the
+printed ids: the Shell takes them.
+
+```bash
+rules='This ticket is part of the approved controlled live Harness test. Keep changes limited to the named files, with Go standard library only. Read AGENTS.md and run its build, vet, and race-test gates. The run authorizes commits and pushing/opening one PR on this ticket branch. Never merge a PR or close a ticket yourself; the human merges and the orchestrator closes. Do not work on other epics or the open PRs #1, #3, #4 and #5. Do not add unrelated improvements or alter agent/skill configuration.'
+label=harness-live-20260923
+
+epic=$(bd create --silent --type=epic --priority=2 --labels=$label \
+  --title="Controlled live run on the Rust binary: plan mode, Questions, recovery, merge dependency" \
+  --description="Four small tickets for the Rust Harness live run (docs/testing/live-run.md in the harness repo). D waits for A to merge.")
+
+a=$(bd create --silent --parent "$epic" --type=task --priority=1 --labels=$label \
+  --title="slug.Make turns text into a lowercase hyphenated slug" \
+  --description="Add slug/slug.go and slug/slug_test.go. Export Make(text string) string: ASCII letters are lowercased, ASCII letters and digits are kept, and every run of other characters becomes one hyphen, with none leading or trailing. Do not change main.go.
+
+$rules" \
+  --acceptance='Make("")=""; Make("Hello, World!")="hello-world"; Make("  a--b  ")="a-b"; Make("Go 1.23")="go-1-23". Tests cover all cases. main.go unchanged.')
+
+b=$(bd create --silent --parent "$epic" --type=task --priority=2 --labels=$label \
+  --title="reverse.String reverses text by rune" \
+  --description="Add reverse/reverse.go and reverse/reverse_test.go. Export String(text string) string: the text's runes in reverse order. Do not change main.go.
+
+$rules" \
+  --acceptance='String("")=""; String("abc")="cba"; String("héllo")="olléh". Tests cover all cases. main.go unchanged.')
+
+c=$(bd create --silent --parent "$epic" --type=task --priority=2 --labels=$label \
+  --title="vowels.Count counts the vowels in text" \
+  --description="Add vowels/vowels.go and vowels/vowels_test.go. Export Count(text string) int: how many of a, e, i, o and u the text holds, in either case. Do not change main.go.
+
+$rules" \
+  --acceptance='Count("")=0; Count("Harness")=2; Count("AEIOU xyz")=5. Tests cover all cases. main.go unchanged.')
+
+d=$(bd create --silent --parent "$epic" --type=task --priority=1 --labels=$label --deps "$a" \
+  --title="The command prints slug.Make of an explicit --slug flag" \
+  --description="Change main.go and add main_test.go: move the logic into run(args []string, out io.Writer) error, using the flag package. With --slug <text> it prints slug.Make(text) and a newline; without the flag it still prints hello, world. Uses slug from $a, which must be merged first.
+
+$rules" \
+  --acceptance='No flag prints "hello, world"; --slug "Hello, World!" prints "hello-world"; --slug "" prints an empty line. main_test.go covers all three through run.')
+
+echo "epic=$epic A=$a B=$b C=$c D=$d"
+bd show "$d"    # DEPENDS ON lists A
+```
 
 ## Steps for the human
 
-### 1. Open the Shell in a normal Herdr terminal pane
+### 1. Open the Shell with the key
 
-Use a shell pane in the workspace where the ticket tabs should appear. The
-following checks only report missing environment variables; they do not print
-the TypeSafe API key.
+Open a shell pane in the Herdr workspace where the Ticket tabs should appear.
+The checks below report missing variables without printing the key.
+`TYPESAFE_API_KEY` may instead come from `.harness/typesafe-key` (step 0.3);
+drop that line if it does.
 
 ```bash
 cd ~/Documents/Projects/test-harness-repo
 (
   : "${HERDR_ENV:?Open a Herdr terminal pane first}"
   : "${HERDR_WORKSPACE_ID:?This shell needs a Herdr workspace ID}"
-  : "${TYPESAFE_API_KEY:?Load your existing TypeSafe API key into this shell}"
+  : "${TYPESAFE_API_KEY:?Load your TypeSafe API key into this shell}"
   ../harness/target/release/harness
 )
 ```
 
-The Shell opens with the open Epics and their Tickets in the TICKETS box. If
-a check reports a missing variable, fix that environment condition before
-launching. Then, on the input line:
+The Shell shows the open Epics and their Tickets in TICKETS. On the input line:
 
 ```
-/start-epic test-harness-repo-6fs --max 2
+/start-epic <epic> --max 2
 ```
 
-Tab completes the Epic's id from its id or title. The status row turns to
-RUNNING with the active, blocked and complete counts; every event shows in
-RECENT and in `.harness/orchestrator.log`. Leave the Shell open.
+Tab completes the Epic from its id or a title substring. The status row reads
+RUNNING, and RECENT (and `.harness/orchestrator.log`) shows
+`implement started: claude (pane 2-1)` for A and B. C waits for a slot, and D
+waits for A. Leave the Shell open.
 
-### 2. Answer trust or permission prompts when they appear
+### 2. Plan mode, approved by the Judgment (A, B, then C)
 
-Harness may report that Claude or Codex does not yet trust a specific directory.
-Open that agent in the exact directory named in the log, accept the trust
-dialog, then exit that temporary session. Harness resumes automatically. For
-other permission prompts, inspect and answer them in the indicated agent pane.
-Do not change trust configuration files manually or retry a healthy stage that
-is merely waiting for your answer.
-
-### 3. Review and merge A's PR
-
-First let A finish an uninterrupted Implement → Review → Debate → Fix pipeline.
-Check its code, tests, recorded stage results, and PR description. Use the PR
-for branch `test-harness-repo-6fs.1`, not the older PR #1.
-
-Before merging, verify D has not started: it should have no worktree under
-`.harness/worktrees/test-harness-repo-6fs.4`. An open A PR is insufficient to
-unblock it. Then merge A in GitHub. Harness should close A's Beads ticket, clean
-up A's worktree, and start D from the updated default branch. Merge polling is
-every 30 seconds, so allow a polling interval before treating a delay as failure.
-
-### 4. Exercise stop and resume while D is active
-
-On the Shell's input line:
+Every Implement starts in plan mode. When its plan is up, RECENT shows:
 
 ```
-/stop-work
+plan ready in implement (pane 2-1)
+judged: plan follows the Ticket 0.93
+plan approved
 ```
 
-RECENT shows "stopped, panes left running, /continue resumes", the status row
-returns to IDLE with "saved run on test-harness-repo-6fs" and the Epic row
-reads RESUMABLE. The agent panes remain open: agents can continue working
-after the Orchestrator stops; `/stop-work` does not freeze them. Then resume:
+The Judgment sent Enter in the pane, and the pane's footer turns from
+`⏸ plan mode on` to `⏵⏵ auto mode on`. If instead it reads
+`judged: plan strays from the Ticket 0.88`, or scores below 0.8, a Question
+comes up. Handle it as in step 6: read the plan, then approve or send feedback.
 
-```
-/continue
-```
+For A, check the plan hook's evidence:
 
-Do not clear state, delete result files, or reset tickets. Stages with
-accepted completed results should be skipped; an unfinished stage starts a
-fresh session replacing its old pane. There should be no second PR for an
-already completed ticket. Also try `/exit` while the run is live: it asks
-"stop the run and exit? (y/n)"; `y` stops the run, leaves the panes, and
-closes the Shell; `harness` then `/continue` picks the run up again.
-
-### 5. Exercise one failed stage and retry
-
-While D's **Review** is actively working, close only that Review pane in Herdr.
-Wait for a "stuck in review 1: session died" line in RECENT; the Ticket's
-row turns to ◆ BLOCKED and the status row counts it blocked. Other active
-tickets should keep moving. Then, on the input line:
-
-```
-/retry test-harness-repo-6fs.4
+```bash
+cat .harness/runs/<A>/settings.json   # one PreToolUse hook on ExitPlanMode running harness __plan-hook
+head .harness/runs/<A>/plan.md        # the plan Claude presented
 ```
 
-A fresh Review session should appear and the pipeline should continue. If the
-stage finished before you could close it, this fault was not exercised; record
-it as untested rather than disrupting a completed ticket. If the retried stage
-fails again, retain the evidence and investigate the parked state before issuing
-further commands.
+Record for each Ticket whether the Judgment approved its plan or asked you.
 
-### 6. Review and merge the remaining test PRs
+### 3. Answer prompts and Wakes through their Questions
 
-Review B, C, and D, check their test results, then merge them yourself. Keep
-Harness running until it reports the epic complete. All four Beads tickets
-should then be closed and their test worktrees removed. The old PR #1 and its
-worktree belong to the earlier run and are not part of this cleanup expectation.
+A Question is the form above the input line. Up/Down or a digit picks an
+option, Enter answers, and Esc hides it (`/questions` brings it back).
+
+- **Trust**: `waiting: claude does not trust <dir> yet, open it there once and accept (pane 2-1)`.
+  Open that agent in the exact directory, accept, then exit it. The Harness goes on by
+  itself (`claude trusts <dir> now, carrying on`). Do not edit trust files by hand.
+- **Other prompts**: `asking you: waiting at a prompt in implement (pane 2-1)`. Pick
+  **open the pane**, answer the prompt there, and the Question closes on
+  `carrying on`. Choose **I answered it** only once you really have.
+- **Wakes**: `stuck in debate 1: went idle without a result (pane 2-2)`. With the key,
+  the Wake Judgment answers at 0.7 or above: `judged: …` and then its action
+  (`nudged: …`, `retrying …`, `waiting: still working …`). Below the floor you get a
+  Question with the actions on offer. Note every Wake and how it was answered.
+
+### 4. A's PR: check D waits, but do not merge yet
+
+Let A finish an uninterrupted Implement → Review → Debate → Fix pipeline until
+RECENT shows `PR #N opened after K rounds`. Review A's code, tests, stage
+results (`.harness/runs/<A>/`) and PR description.
+
+D must not have started. Its row shows `waiting for PR #N to merge`, and there
+is no `.harness/worktrees/<D>`. An open PR does not unblock it. **Do not merge
+A yet**: step 5 merges it while the Shell is closed.
+
+### 5. Stop, resume, exit mid-run, then resume without the key
+
+Do this while B or C is still active.
+
+1. `/stop-work`. RECENT: `stopped, panes left running, /continue resumes`. The
+   status row returns to IDLE with the saved run, and the Epic row reads
+   RESUMABLE. The agent panes stay open and may keep working: `/stop-work` does
+   not freeze them.
+2. `/continue`. A checklist lists each saved Ticket. Leave every row on resume
+   (Space would toggle a row to reset it to Implement), then press Enter. A Stage
+   with an accepted result is skipped, and an unfinished one either picks its live
+   session back up or starts a fresh one replacing its pane. No Ticket gets a
+   second PR.
+3. `/exit` while the run is live. It asks to stop the run and exit; answer
+   yes. The Shell closes and the panes stay.
+4. Now merge A's PR in GitHub.
+5. Relaunch the Shell **without** the key:
+
+   ```bash
+   cd ~/Documents/Projects/test-harness-repo
+   (
+     unset TYPESAFE_API_KEY
+     [ -f .harness/typesafe-key ] && mv -f .harness/typesafe-key .harness/typesafe-key.off
+     ../harness/target/release/harness
+   )
+   ```
+
+   Then `/continue` and Enter. Within a 30-second merge poll RECENT shows
+   `merged, Ticket closed` for A, A's worktree goes, and D starts from the updated
+   `main`.
+
+From here on nothing is judged. Every plan and every Wake is a Question. A
+Debate settles its disputed Findings as skip (`flagged: TypeSafe unreachable`),
+which is expected in this phase.
+
+### 6. D's plan Question: feedback, then approve
+
+`asking you: plan ready in implement (pane 2-x)`. The Question shows the plan
+and no score, because there is no Judgment. Its options are approve, feedback
+of your own, park, and open the pane.
+
+1. Scroll the plan with PageDown and PageUp. Long lines wrap, and it scrolls by
+   row.
+2. Pick **feedback of your own** and type:
+   `Revise the plan: list every test case by name.` (PageUp/PageDown still
+   scroll the plan while you type.) Press Enter.
+3. Watch D's pane. The cursor moves down one line at a time to `Tell Claude what
+   to change`, then Enter lands there with the field empty. The dialog closes,
+   the pane stays in `⏸ plan mode on`, and your feedback arrives as the next
+   prompt. RECENT: `you answered: feedback`, then `plan sent back with your
+   feedback`.
+4. The revised plan raises the Question again (`plan ready in implement …`).
+   Check it lists the test cases, then pick **approve**. RECENT: `plan approved`.
+   The pane goes to `⏵⏵ auto mode on`.
+
+If RECENT instead shows `feedback not sent: …` with the plan Question back
+(and a "resend your feedback" option), no Enter was sent. Record what the pane
+showed, then resend or approve.
+
+### 7. One failed Stage, and its retry
+
+While D's **Review** is working, close only that Review pane in Herdr. RECENT:
+`stuck in review 1: session died (pane 2-x)`. D's row turns ◆ BLOCKED, and the
+Wake Question offers retry, park and the rest. `/retry <D>` is refused while
+that Question waits (`refused: Ticket … has a Question waiting`), which is
+expected. Answer the Question with **retry**. A fresh Review session appears
+and the pipeline goes on. Other active Tickets keep moving.
+
+If the Stage finished before you could close it, record this as not exercised
+rather than disrupting a finished Ticket. If the retry fails again, keep the
+evidence and look at the state before issuing more commands.
+
+### 8. Merge the rest
+
+Review B, C and D, check their tests, and merge them yourself. Check D's branch
+includes the commit that merged A. Keep the Shell open until RECENT says
+`Epic done, every Ticket closed`. All four Tickets should then be closed and
+their worktrees removed. Then restore the key file if step 5 moved it:
+
+```bash
+[ -f .harness/typesafe-key.off ] && mv -f .harness/typesafe-key.off .harness/typesafe-key
+```
 
 ## Evidence and acceptance
 
-During the run the Shell's TICKETS box is the status. From another pane in
-the target repo, these read-only commands are useful too:
+From another pane in the target repo, while the run is live or after it:
 
 ```bash
-bd list --parent test-harness-repo-6fs --all
+bd list --parent <epic> --all
 gh pr list --state all --json number,headRefName,state,url
 git worktree list
 ```
 
-Preserve `.harness/orchestrator.log`, `.harness/state.json`, and the files in
-`.harness/runs/test-harness-repo-6fs.*`. Note the PR URLs and the stages where
-stop/resume and pane loss were exercised. Check D's branch includes the commit
-that merged A before reviewing D's own changes.
+Keep `.harness/orchestrator.log`, `.harness/state.json` and
+`.harness/runs/<epic>.*` (each with `settings.json` and `plan.md` for
+Implement). Note the PR URLs, which plans the Judgment approved and which you
+did, where stop/resume and the pane loss were exercised, and every Wake with
+its answer.
 
-The live test passes when there are never more than two tickets in the pipeline,
-each ticket produces one valid PR, D waits for A's merge, stop preserves panes
-and resumable state, retry replaces only the failed stage, and all merged
-tickets close and clean up correctly. A green `cargo test` alone does not
-establish these live results. Trust dialogs and PR merges are expected human actions.
+The live run passes when all of the following hold:
 
-If anything differs, preserve the state and log and report the ticket/stage and
-observed behavior. A clean restart must not erase the evidence being tested.
+- There are never more than two Tickets in the pipeline.
+- Each Ticket produces one valid PR.
+- D waits for A's merge.
+- Every Implement ran in plan mode, and its plan was approved, by the Judgment
+  or by you, before any edit.
+- D's feedback reached the session with no Enter on the wrong option, and its
+  revised plan asked again.
+- Stop preserves the panes and a resumable state.
+- `/continue` resumes without a second PR.
+- `/exit` mid-run leaves the panes.
+- Retry replaces only the failed Stage.
+- Every merged Ticket closes and cleans up.
+
+Trust dialogs, plan approvals you answer, and PR merges are expected human
+actions.
+
+If anything differs, keep the state and log and report the Ticket, the Stage
+and what you saw. A clean restart must not erase the evidence being tested.
+
+## After the run: closing the tickets
+
+In the harness repo:
+
+1. **Record the evidence** on each ticket, then close them:
+
+   ```bash
+   bd comments add harness-kqe.5 "Live run passed on target/release/harness: <epic>, PRs <urls>; evidence in test-harness-repo/.harness"
+   bd comments add harness-kqe.10 "Live run passed through the Shell: /start-epic, /stop-work, /continue, /exit mid-run, retry via the Wake Question"
+   bd comments add harness-kqe.13 "Real plan-mode Implement: <A> approved by the Judgment <score>; <D> feedback then approve via the Question"
+   bd close harness-kqe.5 harness-kqe.10
+   ```
+
+2. **Merge the port.** If it is not up yet, push `build/rust-port` and open its
+   PR to `main`, with this checklist in the description (`/create-pr`). Merge it
+   once the run has passed.
+3. **Release v1.0.0.** On the merged `main`, run
+   `git tag v1.0.0 && git push origin v1.0.0`. The release workflow builds the
+   binaries and attaches them to the release. Reinstall the global `harness`
+   (`cargo install --path .`, or the release binary): from then on, it updates
+   itself.
+4. **Close the Epic**: `bd close harness-kqe`.
+5. **Optional, in the target repo**: close the Go run's PRs #3–#5 once its
+   evidence is no longer needed.
