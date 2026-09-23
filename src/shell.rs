@@ -92,7 +92,8 @@ pub(crate) enum About {
     /// still unspent (a nudge with either canned prompt, or the one a
     /// Judgment picked; retry; park; wait), then open the pane and a prompt
     /// of your own; a blocked session offers open the pane, park, "I
-    /// answered it".
+    /// answered it"; a plan offers approve, feedback of your own, park, open
+    /// the pane.
     Asked(Ask),
     /// A yes/no confirmation; it jumps the queue.
     Confirm(Pending),
@@ -110,6 +111,8 @@ pub(crate) struct Question {
     pub(crate) about: About,
     /// The option the cursor is on.
     pub(crate) cursor: usize,
+    /// The first line of a plan shown, PageUp and PageDown scroll it.
+    pub(crate) scroll: usize,
 }
 
 /// What the screen shows, with no terminal in it.
@@ -451,7 +454,7 @@ impl Screen {
         // "stuck in fix 1", without the reason; a prompt line whole
         let short = match ask {
             Ask::Wake { .. } => text.split_once(": ").map_or(text.as_str(), |(s, _)| s),
-            Ask::Blocked { .. } => text.as_str(),
+            Ask::Blocked { .. } | Ask::Plan { .. } => text.as_str(),
         };
         let asking = format!("asking you: {short}");
         self.questions.push(Question {
@@ -459,6 +462,7 @@ impl Screen {
             text,
             about: About::Asked(ask),
             cursor: 0,
+            scroll: 0,
         });
         self.tell(Some(&id), &asking);
     }
@@ -558,6 +562,11 @@ impl Screen {
             About::Asked(Ask::Blocked { .. }) => ["open the pane", "park", "I answered it"]
                 .map(str::to_string)
                 .to_vec(),
+            About::Asked(Ask::Plan { .. }) => {
+                ["approve", "feedback of your own", "park", "open the pane"]
+                    .map(str::to_string)
+                    .to_vec()
+            }
             About::Confirm(_) => ["yes", "no"].map(str::to_string).to_vec(),
             About::Continue { rows } => rows
                 .iter()
@@ -610,8 +619,8 @@ impl Screen {
         }
         // With a Question showing and the input line empty the keys are
         // its: arrows or a number pick, Enter answers, Esc hides or cancels,
-        // Space toggles a /continue row, y and n answer a confirmation; a
-        // slash starts a command.
+        // Space toggles a /continue row, y and n answer a confirmation,
+        // PageUp and PageDown scroll a plan; a slash starts a command.
         if self.showing() && self.input.is_empty() && !self.composing {
             let n = self.options().len();
             let confirm = matches!(self.questions[0].about, About::Confirm(_));
@@ -627,6 +636,15 @@ impl Screen {
                 KeyCode::Char(' ') => {
                     if let About::Continue { rows } = &mut q.about {
                         rows[q.cursor].1 ^= true;
+                    }
+                }
+                KeyCode::PageDown | KeyCode::PageUp => {
+                    if let About::Asked(Ask::Plan { plan, .. }) = &q.about {
+                        let last = plan.lines().count().saturating_sub(1);
+                        q.scroll = match key.code {
+                            KeyCode::PageDown => (q.scroll + 10).min(last),
+                            _ => q.scroll.saturating_sub(10),
+                        };
                     }
                 }
                 KeyCode::Char('y') if confirm => self.answer(0),
@@ -670,7 +688,11 @@ impl Screen {
                 let prompt = std::mem::take(&mut self.input);
                 if !prompt.trim().is_empty() {
                     self.composing = false;
-                    self.reply("your prompt", Answer::Prompt(prompt.trim().to_string()));
+                    let word = match self.questions[0].about {
+                        About::Asked(Ask::Plan { .. }) => "feedback",
+                        _ => "your prompt",
+                    };
+                    self.reply(word, Answer::Prompt(prompt.trim().to_string()));
                 }
             }
             KeyCode::Enter => {
@@ -696,6 +718,10 @@ impl Screen {
                 let q = self.questions.remove(0);
                 self.tell(q.ticket.as_deref(), "you answered: I answered it");
             }
+            (About::Asked(Ask::Plan { .. }), 0) => self.reply("approve", Answer::Approve),
+            (About::Asked(Ask::Plan { .. }), 1) => self.composing = true,
+            (About::Asked(Ask::Plan { .. }), 2) => self.reply("park", Answer::Act(Action::Park)),
+            (About::Asked(Ask::Plan { pane, .. }), _) => self.open_pane(pane.clone()),
             (About::Confirm(_), 0) => {
                 let About::Confirm(pending) = self.questions.remove(0).about else {
                     unreachable!()
@@ -737,8 +763,10 @@ impl Screen {
         let q = self.questions.remove(0);
         let id = q.ticket.unwrap_or_default();
         self.tell(Some(&id), &format!("you answered: {word}"));
-        if let (Some(run), About::Asked(Ask::Wake { pane, .. } | Ask::Blocked { pane })) =
-            (&self.run, &q.about)
+        if let (
+            Some(run),
+            About::Asked(Ask::Wake { pane, .. } | Ask::Blocked { pane } | Ask::Plan { pane, .. }),
+        ) = (&self.run, &q.about)
         {
             run.o.answer(&id, pane, answer);
         }
@@ -752,6 +780,7 @@ impl Screen {
             text: text.to_string(),
             about: About::Confirm(pending),
             cursor: 1,
+            scroll: 0,
         });
     }
 
@@ -842,6 +871,7 @@ impl Screen {
                         text: "continue the saved run: each Ticket resumes at its Stage, or is reset to Implement".to_string(),
                         about: About::Continue { rows },
                         cursor: 0,
+                        scroll: 0,
                     });
                 }
             }

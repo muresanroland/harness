@@ -127,6 +127,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
             retried: true,
             nudged: true,
             waits: 2,
+            feedback: "cover y too".to_string(),
             conflict: true,
         },
     );
@@ -139,6 +140,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
         "\"retried\"",
         "\"nudged\"",
         "\"waits\"",
+        "\"feedback\"",
         "\"conflict_reported\"",
     ] {
         assert!(raw.contains(field), "saved state lacks {field}:\n{raw}");

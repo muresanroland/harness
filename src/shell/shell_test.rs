@@ -3,6 +3,7 @@ use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
 use super::{About, Epic, Launch, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
+use crate::orchestrator::plan_test::{at_dialog, dialog, noul};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Ask, Event, Orchestrator};
 use crate::orchestrator::state::{
@@ -2044,4 +2045,101 @@ fn dump() {
             println!("{}", row(&buf, y));
         }
     }
+}
+
+/// A plan Question shows the Judgment's answer and score above the plan,
+/// which PageDown and PageUp scroll, and offers approve, feedback of your
+/// own, park and open the pane. Feedback goes back to the session and its
+/// revised plan asks again; approve approves it; each answer logs two lines.
+#[test]
+fn a_plan_question_scrolls_its_plan_and_sends_feedback_then_approval() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    let run = w.repo.join(".harness/runs/hx-1");
+    let plan: String = (1..=40).map(|n| format!("- step {n}\n")).collect();
+    let revised = format!("{plan}- step 41\n");
+    w.session(move |p| match p.stage.as_str() {
+        "implement" => at_dialog(&run, &plan),
+        "" if p.text == "cover y too" => at_dialog(&run, &revised),
+        _ => succeed(p),
+    });
+    dialog(&w, "idle");
+    let mut s = shell(&w);
+    s.launch.typesafe = TypeSafeFake::new(|_| Ok(noul(0.3)));
+    s.command("/start-epic hx");
+    await_line(
+        &mut s,
+        "hx-1 asking you: plan ready in implement (pane 1-1)",
+    );
+    assert_eq!(
+        s.options(),
+        ["approve", "feedback of your own", "park", "open the pane"]
+    );
+    let body = |s: &Screen| -> Vec<String> {
+        let buf = render(s, 120, 40);
+        let (_, y) = find(&buf, " QUESTION ").unwrap();
+        (y + 1..39)
+            .map(|y| {
+                row(&buf, y)
+                    .trim_matches(|c| c == '│' || c == ' ')
+                    .to_string()
+            })
+            .collect()
+    };
+    let shown = body(&s);
+    assert_eq!(
+        shown[..5],
+        [
+            "hx-1 Ticket hx-1  plan ready in implement (pane 1-1)",
+            "judged: plan strays from the Ticket 0.70",
+            "",
+            "- step 1",
+            "- step 2",
+        ],
+        "{shown:#?}"
+    );
+    assert!(!shown.contains(&"- step 40".to_string()), "{shown:#?}");
+    assert!(
+        shown.iter().any(|l| l.starts_with("› 1. approve")),
+        "{shown:#?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|l| l.contains("PgUp PgDn scroll the plan")),
+        "{shown:#?}"
+    );
+    s.key(key(KeyCode::PageDown));
+    assert_eq!(body(&s)[3], "- step 11");
+    for _ in 0..5 {
+        s.key(key(KeyCode::PageDown));
+    }
+    assert_eq!(body(&s)[3], "- step 40", "PageDown ran past the plan");
+    s.key(key(KeyCode::PageUp));
+    assert_eq!(body(&s)[3], "- step 30");
+
+    pick(&mut s, 2);
+    assert!(s.composing);
+    type_line(&mut s, "cover y too");
+    await_line(&mut s, "hx-1 plan sent back with your feedback");
+    await_questions(&mut s, 1);
+    assert_eq!(
+        body(&s)[3],
+        "- step 1",
+        "the revised plan kept the old scroll"
+    );
+    pick(&mut s, 1);
+    await_line(&mut s, "hx-1 plan approved");
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    for line in [
+        "hx-1 asking you: plan ready in implement (pane 1-1)",
+        "hx-1 you answered: feedback",
+        "hx-1 plan sent back with your feedback",
+        "hx-1 you answered: approve",
+        "hx-1 plan approved",
+    ] {
+        assert!(logged(&w, line), "the log lacks {line:?}:\n{}", log(&w));
+    }
+    assert_eq!(log(&w).matches(" asking you: plan ready").count(), 2);
 }

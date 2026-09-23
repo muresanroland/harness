@@ -15,8 +15,8 @@ pub(crate) const STATUS_PR_OPEN: &str = "pr-open";
 pub(crate) const STATUS_MERGED: &str = "merged";
 
 /// What the Orchestrator knows about one Ticket. The JSON began as Go's (the
-/// same names, order and omissions); nudged and waits came after the Go tree
-/// was gone.
+/// same names, order and omissions); nudged, waits and feedback came after
+/// the Go tree was gone.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TicketState {
     pub(crate) status: String,
@@ -40,6 +40,10 @@ pub(crate) struct TicketState {
     /// The waits the Stage's live session has taken, of three.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) waits: usize,
+    /// The user's last feedback on the live Implement session's plan, which
+    /// the plan Judgment weighs when the revised plan comes back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) feedback: String,
     #[serde(
         default,
         rename = "conflict_reported",

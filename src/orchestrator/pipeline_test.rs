@@ -44,9 +44,10 @@ fn implement_stage_runs_in_a_ticket_tab_and_reports_to_main() {
         "tab create = {tab:?}"
     );
     let start = &w.called("herdr agent start")[0];
+    // Implement plans first (harness-kqe.13).
     for want in [
         "--kind claude".to_string(),
-        "--permission-mode auto".to_string(),
+        "--permission-mode plan".to_string(),
         format!("--add-dir {}", o.run_dir("hx-12").display()),
     ] {
         assert!(start.contains(&want), "agent start lacks {want:?}: {start}");

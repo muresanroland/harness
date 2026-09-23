@@ -1,7 +1,8 @@
-//! The Wake Judgment: one TypeSafe Choice over a Wake's evidence, acted on at
-//! or above a confidence floor (ADR 0004). The request is judge.py's, from
-//! docs/design/judgment-prototype, keys in its order, without the two
-//! diagnostic Nouls it dropped.
+//! The Judgments (ADR 0004): for a Wake one TypeSafe Choice over its
+//! evidence, acted on at or above a confidence floor, its request judge.py's
+//! from docs/design/judgment-prototype, keys in its order, without the two
+//! diagnostic Nouls it dropped; for a Plan one TypeSafe Noul over the plan and
+//! the Ticket, approved at or above its own floor (harness-7bj.9).
 
 use std::fs;
 use std::path::Path;
@@ -17,6 +18,10 @@ use super::state::TicketState;
 /// At or above this confidence the Judgment acts; below it the Wake is a
 /// Question.
 pub(crate) const FLOOR: f64 = 0.7;
+
+/// At or above this score for yes a plan is approved; below it, or a no, the
+/// plan is a Question.
+pub(crate) const PLAN_FLOOR: f64 = 0.8;
 
 /// How many waits a session may take.
 const WAITS: usize = 3;
@@ -229,6 +234,56 @@ pub(crate) fn request(state: &WakeState, offered: &[Action]) -> String {
     serde_json::to_string(&body).expect("a request of strings serializes")
 }
 
+/// The plan Judgment's state: the plan, the Ticket, and the user's feedback
+/// on the plan before this revision, or "none".
+#[derive(Debug, Serialize)]
+pub(crate) struct PlanState {
+    plan: String,
+    ticket: TicketSpec,
+    prior_feedback: String,
+}
+
+/// One Noul, `follows`, over a plan.
+pub(crate) fn plan_request(state: &PlanState) -> String {
+    #[derive(Serialize)]
+    struct Request<'a> {
+        model: &'a str,
+        state: &'a PlanState,
+        questions: Questions<'a>,
+    }
+    #[derive(Serialize)]
+    struct Questions<'a> {
+        follows: Noul<'a>,
+    }
+    #[derive(Serialize)]
+    struct Noul<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+        instructions: &'a str,
+    }
+    let body = Request {
+        model: "jev-latest",
+        state,
+        questions: Questions {
+            follows: Noul {
+                kind: "noul",
+                instructions: "Does `plan` implement `ticket`, all of it and nothing more, without leaving decisions open? `prior_feedback` is what the user asked of the plan before this revision, or none.",
+            },
+        },
+    };
+    serde_json::to_string(&body).expect("a request of strings serializes")
+}
+
+/// A plan's score as the judged line says it: a yes as its score, a no as
+/// one minus it.
+pub(crate) fn plan_said(score: f64) -> String {
+    if score >= 0.5 {
+        format!("plan follows the Ticket {score:.2}")
+    } else {
+        format!("plan strays from the Ticket {:.2}", 1.0 - score)
+    }
+}
+
 /// A Judgment of a Wake: the chosen action, how sure, and every offered
 /// action's score, highest first.
 #[derive(Clone, Debug)]
@@ -283,16 +338,51 @@ impl Orchestrator {
         tail: &str,
         offered: &[Action],
     ) -> Option<Judged> {
-        let key = self.cfg.api_key.as_str();
-        if key.is_empty() {
+        if self.cfg.api_key.is_empty() {
             return None;
         }
         let body = request(&self.wake_state(ticket, ts, reason, file, tail), offered);
-        let judged = self.cfg.typesafe.systemone(key, &body).and_then(|reply| {
-            parse(&reply, offered).ok_or_else(|| "no choice in the reply".to_string())
-        });
-        match judged {
-            Ok(judged) => Some(judged),
+        self.ask_typesafe(ticket, &body, |reply| {
+            parse(reply, offered).ok_or("no choice in the reply")
+        })
+    }
+
+    /// Puts a plan to TypeSafe: its score for yes. None without a key, on
+    /// any error, or for a reply with no score: the plan is then a Question.
+    pub(crate) fn judge_plan(&self, ticket: &str, plan: &str) -> Option<f64> {
+        if self.cfg.api_key.is_empty() {
+            return None;
+        }
+        let feedback = self.ticket(ticket).feedback;
+        let state = PlanState {
+            plan: plan.to_string(),
+            ticket: self.ticket_spec(ticket),
+            prior_feedback: if feedback.is_empty() {
+                "none".to_string()
+            } else {
+                feedback
+            },
+        };
+        self.ask_typesafe(ticket, &plan_request(&state), |reply| {
+            reply["answers"]["follows"]["noul"]
+                .as_f64()
+                .filter(|score| (0.0..=1.0).contains(score))
+                .ok_or("no answer in the reply")
+        })
+    }
+
+    /// Posts a request under the key and reads the reply; an error, or a
+    /// reply `read` cannot use, is logged without the key.
+    fn ask_typesafe<T>(
+        &self,
+        ticket: &str,
+        body: &str,
+        read: impl FnOnce(&Value) -> Result<T, &'static str>,
+    ) -> Option<T> {
+        let key = self.cfg.api_key.as_str();
+        let reply = self.cfg.typesafe.systemone(key, body);
+        match reply.and_then(|reply| read(&reply).map_err(str::to_string)) {
+            Ok(answer) => Some(answer),
             Err(err) => {
                 self.log(ticket, &format!("no Judgment: {}", err.replace(key, "***")));
                 None
@@ -300,16 +390,9 @@ impl Orchestrator {
         }
     }
 
-    /// judge.py's state for a Wake: the Ticket as bd shows it, where the
-    /// Stage stands, the reason verbatim, the result file and the pane tail.
-    pub(crate) fn wake_state(
-        &self,
-        ticket: &str,
-        ts: &TicketState,
-        reason: &str,
-        file: &Path,
-        tail: &str,
-    ) -> WakeState {
+    /// The Ticket as bd shows it: its description with the acceptance
+    /// criteria under it.
+    fn ticket_spec(&self, ticket: &str) -> TicketSpec {
         let issue = self
             .cfg
             .tools
@@ -326,12 +409,25 @@ impl Orchestrator {
                 field("description")
             ),
         };
+        TicketSpec {
+            id: ticket.to_string(),
+            title: field("title"),
+            spec,
+        }
+    }
+
+    /// judge.py's state for a Wake: the Ticket as bd shows it, where the
+    /// Stage stands, the reason verbatim, the result file and the pane tail.
+    pub(crate) fn wake_state(
+        &self,
+        ticket: &str,
+        ts: &TicketState,
+        reason: &str,
+        file: &Path,
+        tail: &str,
+    ) -> WakeState {
         WakeState {
-            ticket: TicketSpec {
-                id: ticket.to_string(),
-                title: field("title"),
-                spec,
-            },
+            ticket: self.ticket_spec(ticket),
             stage: ts.stage.clone(),
             round: ts.round,
             why_woken: reason.to_string(),

@@ -4,6 +4,7 @@
 pub(crate) mod herdr;
 pub(crate) mod judgment;
 pub(crate) mod pipeline;
+pub(crate) mod plan;
 pub(crate) mod result;
 pub(crate) mod scheduler;
 pub(crate) mod stage;
@@ -27,6 +28,8 @@ mod judgment_test;
 mod panes_test;
 #[cfg(test)]
 mod pipeline_test;
+#[cfg(test)]
+pub(crate) mod plan_test;
 #[cfg(test)]
 mod reliability_test;
 #[cfg(test)]

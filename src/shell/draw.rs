@@ -13,6 +13,7 @@ use super::logo::{
     TICKET_COLORS,
 };
 use super::{suffix, About, Screen};
+use crate::orchestrator::judgment::plan_said;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
@@ -119,6 +120,9 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
                 "Space toggles resume or reset to Implement, Enter starts, Esc cancels"
             }
             About::Confirm(_) => "y or n, Enter answers, Esc cancels",
+            About::Asked(Ask::Plan { .. }) => {
+                "↑↓ or a number picks, PgUp PgDn scroll the plan, Enter answers, Esc hides"
+            }
             About::Asked(_) => "↑↓ or a number picks, Enter answers, Esc hides",
         };
         let block = boxed(&title).title_bottom(Span::styled(format!(" {hint} "), fg(MUTED)));
@@ -386,8 +390,9 @@ fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
 }
 
 /// A Question's lines: the question, a Judgment's scores, a Wake's pane
-/// tail as far as `room` lines allow, and the numbered options with the
-/// cursor on one. Everything but the tail is always there.
+/// tail or a plan from its scroll line as far as `room` lines allow, and
+/// the numbered options with the cursor on one. Everything but the tail or
+/// plan is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
     let q = &s.questions[0];
     let head = match &q.ticket {
@@ -395,13 +400,20 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
         None => q.text.clone(),
     };
     let mut lines = vec![Line::from(Span::styled(head, bold(TEXT)))];
-    if let About::Asked(Ask::Wake {
-        judged: Some(judged),
-        ..
-    }) = &q.about
-    {
+    let judged = match &q.about {
+        About::Asked(Ask::Wake {
+            judged: Some(judged),
+            ..
+        }) => Some(judged.said()),
+        About::Asked(Ask::Plan {
+            judged: Some(score),
+            ..
+        }) => Some(plan_said(*score)),
+        _ => None,
+    };
+    if let Some(judged) = judged {
         lines.push(Line::from(Span::styled(
-            format!("judged: {}", judged.said()),
+            format!("judged: {judged}"),
             fg(TEXT),
         )));
     }
@@ -428,13 +440,22 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
             ]));
         }
     }
-    let tail: Vec<&str> = match &q.about {
-        About::Asked(Ask::Wake { tail, .. }) => tail.lines().collect(),
-        _ => Vec::new(),
-    };
     let fit = room.saturating_sub(lines.len() + options.len());
-    for line in &tail[tail.len().saturating_sub(fit)..] {
-        lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
+    match &q.about {
+        About::Asked(Ask::Wake { tail, .. }) => {
+            let tail: Vec<&str> = tail.lines().collect();
+            for line in &tail[tail.len().saturating_sub(fit)..] {
+                lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
+            }
+        }
+        About::Asked(Ask::Plan { plan, .. }) => lines.extend(
+            plan.lines()
+                .skip(q.scroll)
+                .flat_map(|line| wrap(line, width))
+                .take(fit)
+                .map(|line| Line::from(Span::styled(line, fg(TEXT)))),
+        ),
+        _ => {}
     }
     lines.extend(options);
     lines

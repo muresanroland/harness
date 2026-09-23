@@ -60,6 +60,22 @@ pub fn run(
             }
             preflight(out, repo, &*tools, env)
         }
+        // Claude Code's PreToolUse hook on ExitPlanMode, which Implement's
+        // settings name; hidden, not in the usage.
+        "__plan-hook" => {
+            let mut stdin = io::stdin();
+            let input: &mut dyn Read = match input {
+                Some(scripted) => scripted,
+                None => &mut stdin,
+            };
+            match plan_hook(args.get(1), input) {
+                Ok(()) => 0,
+                Err(err) => {
+                    eprintln!("harness: {err}");
+                    1 // never 2, which would block the tool
+                }
+            }
+        }
         "--version" | "version" => {
             let _ = writeln!(out, "{}", crate::version::version());
             0
@@ -69,6 +85,21 @@ pub fn run(
             2
         }
     }
+}
+
+/// Copies the plan from the hook's input on stdin to `path`, and decides
+/// nothing: no output, so the plan dialog shows as usual.
+fn plan_hook(path: Option<&String>, input: &mut dyn Read) -> Result<(), String> {
+    let path = path.ok_or("usage: harness __plan-hook <plan file>")?;
+    let mut raw = String::new();
+    input
+        .read_to_string(&mut raw)
+        .map_err(|err| err.to_string())?;
+    let call: serde_json::Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    let plan = call["tool_input"]["plan"]
+        .as_str()
+        .ok_or("no tool_input.plan in the hook's input")?;
+    std::fs::write(path, plan).map_err(|err| format!("{path}: {err}"))
 }
 
 /// Prints what is missing and returns the exit code. A missing TypeSafe key is
