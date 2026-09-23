@@ -101,8 +101,9 @@ impl Orchestrator {
                 let (kind, ticket) = command.split_once('-').unwrap_or((&command, ""));
                 let ts = self.ticket(ticket);
                 if busy(ticket) || ticket.is_empty() {
-                    // a Ticket's own hold consumes its retry and park, and
-                    // sleep owns stop, in every mode
+                    // a running Ticket's own waits consume its retry and
+                    // park, and sleep owns stop, in every mode; a Question's
+                    // answers, nudge among them, go by Orchestrator::answer
                 } else if kind == "retry" && ts.status == STATUS_PARKED && self.consume(&command) {
                     // a fresh session: the Parked one is closed, not watched
                     if let Some(old) = ts.panes.get(&ts.stage) {

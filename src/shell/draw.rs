@@ -1,6 +1,6 @@
 //! The layout, folded in from docs/design/screen-prototype: header, status
-//! row, Overall, the TICKETS box, the RECENT box newest first, the Question
-//! form when one shows, a notice line and the input line.
+//! row, Overall, the TICKETS box, the RECENT box newest first (a Question
+//! takes its place when one shows), a notice line and the input line.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -12,8 +12,9 @@ use super::logo::{
     banner, lerp, quantize, BORDER, GRAY, GREEN, HOP, MUTED, ORANGE, PURPLE, REST, TEXT,
     TICKET_COLORS,
 };
-use super::{suffix, Kind, Screen};
+use super::{suffix, About, Screen};
 use crate::orchestrator::scheduler::BdIssue;
+use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
 use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
@@ -54,34 +55,30 @@ pub(crate) fn ticket_color(id: &str) -> Color {
 }
 
 /// Header, status row, Overall, boxed TICKETS, boxed RECENT (newest first),
-/// the QUESTION form, notice, input.
+/// the boxed QUESTION, notice, input.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let area = f.area();
     let rows = s.rows() as u16;
     let head_h = header_height(area);
-    // The TICKETS box takes its rows; RECENT keeps at least four, and gives
-    // the rest to a Question's form. A form whose options need more takes
-    // RECENT whole, then TICKETS rows; on a screen too short for even that
-    // the form's bottom is cut. A taller tree scrolls (Up, Down, PageUp,
-    // PageDown with the input empty).
+    // The TICKETS box takes its rows and RECENT keeps at least four. A
+    // Question takes RECENT's space, its pane tail cut first; TICKETS gives
+    // up rows only when the question and its options do not fit, and on a
+    // screen too short for even that the Question's bottom is cut. A taller
+    // tree scrolls (Up, Down, PageUp, PageDown with the input empty).
     let free = area.height.saturating_sub(head_h + 5);
     let mut tickets_h = (rows + 3).min(free.saturating_sub(4).max(3));
     let width = area.width.saturating_sub(4) as usize;
-    let form = s.showing().then(|| {
+    let asked = s.showing().then(|| {
         let least = question_lines(s, width, 0).len() as u16 + 2;
-        let mut room = free.saturating_sub(tickets_h + 4);
-        if room < least {
-            room = free.saturating_sub(tickets_h);
-        }
-        if room < least {
+        if free.saturating_sub(tickets_h) < least {
             tickets_h = free.saturating_sub(least).max(3);
-            room = free.saturating_sub(tickets_h);
         }
+        let room = free.saturating_sub(tickets_h);
         let lines = question_lines(s, width, room.saturating_sub(2) as usize);
-        let form_h = (lines.len() as u16 + 2).min(room);
-        (lines, form_h)
+        let height = (lines.len() as u16 + 2).min(room);
+        (lines, height)
     });
-    let form_h = form.as_ref().map_or(0, |(_, h)| *h);
+    let asked_h = asked.as_ref().map_or(0, |(_, h)| *h);
     let [head, top, over, _, tickets, recent, question, notice, input] = Layout::vertical([
         Constraint::Length(head_h),
         Constraint::Length(1),
@@ -89,7 +86,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Constraint::Length(1),
         Constraint::Length(tickets_h),
         Constraint::Min(0),
-        Constraint::Length(form_h),
+        Constraint::Length(asked_h),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -112,12 +109,20 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Paragraph::new(recent_lines(s, inner.height as usize, area.width)).block(boxed("RECENT")),
         recent,
     );
-    if let Some((lines, _)) = form {
+    if let Some((lines, _)) = asked {
         let title = match s.questions.len() {
             1 => "QUESTION".to_string(),
             n => format!("QUESTION · {} waiting", plural(n - 1, "more")),
         };
-        f.render_widget(Paragraph::new(lines).block(boxed(&title)), question);
+        let hint = match s.questions[0].about {
+            About::Continue { .. } => {
+                "Space toggles resume or reset to Implement, Enter starts, Esc cancels"
+            }
+            About::Confirm(_) => "y or n, Enter answers, Esc cancels",
+            About::Asked(_) => "↑↓ or a number picks, Enter answers, Esc hides",
+        };
+        let block = boxed(&title).title_bottom(Span::styled(format!(" {hint} "), fg(MUTED)));
+        f.render_widget(Paragraph::new(lines).block(block), question);
     }
     if let Some((text, _)) = &s.notice {
         f.render_widget(
@@ -380,9 +385,9 @@ fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
         .header(Row::new(vec!["", "TICKET", "STAGE", ""]).style(fg(BORDER)))
 }
 
-/// The Question form's lines: the question, a Wake's pane tail as far as
-/// `room` lines allow, the numbered options with the cursor on one, and the
-/// key hint. Everything but the tail is always there.
+/// A Question's lines: the question, a Wake's pane tail as far as `room`
+/// lines allow, and the numbered options with the cursor on one. Everything
+/// but the tail is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
     let q = &s.questions[0];
     let head = match &q.ticket {
@@ -412,26 +417,15 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
             ]));
         }
     }
-    let hint = match q.kind {
-        Kind::Continue { .. } => {
-            "Space toggles resume or reset to Implement, Enter starts, Esc cancels"
-        }
-        Kind::Confirm(_) => "y or n, Enter answers, Esc cancels",
-        _ => "↑↓ or a number picks, Enter answers, Esc hides",
-    };
-    let tail: Vec<&str> = match &q.kind {
-        Kind::Wake { tail, .. } => tail.lines().collect(),
+    let tail: Vec<&str> = match &q.about {
+        About::Asked(Ask::Wake { tail, .. }) => tail.lines().collect(),
         _ => Vec::new(),
     };
-    let fit = room.saturating_sub(lines.len() + options.len() + 2);
-    if !tail.is_empty() && fit > 0 {
-        for line in &tail[tail.len().saturating_sub(fit)..] {
-            lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
-        }
-        lines.push(Line::default());
+    let fit = room.saturating_sub(lines.len() + options.len());
+    for line in &tail[tail.len().saturating_sub(fit)..] {
+        lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
     }
     lines.extend(options);
-    lines.push(Line::from(Span::styled(hint, fg(MUTED))));
     lines
 }
 

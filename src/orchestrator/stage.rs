@@ -42,13 +42,6 @@ pub(crate) const DEBATE: Stage = stage("debate", "stage-moderate", "claude", 30)
 pub(crate) const FIX: Stage = stage("fix", "stage-fix", "claude", 60);
 pub(crate) const ADDRESS: Stage = stage("address", "stage-address", "claude", 60);
 
-/// The Stage table by name, for whoever has only a saved Stage name.
-pub(crate) fn stage_named(name: &str) -> Option<&'static Stage> {
-    [&IMPLEMENT, &REVIEW, &DEBATE, &FIX, &ADDRESS]
-        .into_iter()
-        .find(|st| st.name == name)
-}
-
 /// How a Stage ends other than with an accepted result.
 #[derive(Debug, PartialEq)]
 pub(crate) enum StageError {
@@ -62,18 +55,70 @@ pub(crate) enum StageError {
 /// with no result counts as a Stage that did not write one.
 const SETTLE_TICKS: u32 = 3;
 
-/// The reason a Stage gives when /park took the Ticket out at a prompt.
-const PARKED_BY_YOU: &str = "parked by you";
+/// The canned nudges from docs/design/judgment-prototype: the words the
+/// line says once one is sent, and the prompt over {result_file}. Both are
+/// offered to the user until the Judgment (Ticket 12) picks one.
+const NUDGES: [(&str, &str); 2] = [
+    (
+        "write the result file",
+        "The Orchestrator is waiting for your result file {result_file} and cannot read anything else. Write it now, the first line exactly 'STATUS: done' (or 'STATUS: failed' and why), then stop.",
+    ),
+    (
+        "carry on, the Ticket is the spec",
+        "Nobody is watching this pane and no one will answer. The Ticket is the spec: decide yourself, note the decision in the result file, carry on to the end, then write {result_file} with 'STATUS: done' as its first line.",
+    ),
+];
 
-/// How a hold ends.
+/// The canned nudges' prompts for a Stage's result file.
+pub(crate) fn nudges(file: &Path) -> [String; 2] {
+    NUDGES.map(|(_, prompt)| prompt.replace("{result_file}", &file.display().to_string()))
+}
+
+/// How a Stage's session, or its hold, ends.
 enum Held {
     Retry,
+    /// /park, or park answered: the Ticket leaves the Pipeline at its Stage.
     Park,
     Done(StageResult),
     Stopped,
-    /// The Ticket is stuck (again) for this reason: a nudged or resumed
-    /// session went idle without a result, died, or ran out of time.
+    /// The Stage cannot advance, for this reason: a Wake.
     Woke(String),
+}
+
+/// What a panel line asks of the user; the Shell puts it as a Question.
+#[derive(Clone, Debug)]
+pub(crate) enum Ask {
+    /// A Wake: the session's pane, the tail of its output, and the canned
+    /// nudges over the Stage's result file, shown in full.
+    Wake {
+        pane: String,
+        tail: String,
+        nudges: [String; 2],
+    },
+    /// A session waiting at a prompt only the user can answer.
+    Blocked { pane: String },
+}
+
+/// The user's answer to a Question, for the session (pane) it was about.
+#[derive(Debug)]
+pub(crate) enum Answer {
+    Retry,
+    Park,
+    /// One of the canned nudges, by its place in NUDGES.
+    Nudge(usize),
+    /// A prompt of the user's own, sent as a nudge.
+    Prompt(String),
+}
+
+impl Answer {
+    fn word(&self) -> &'static str {
+        match self {
+            Answer::Retry => "retry",
+            Answer::Park => "park",
+            Answer::Nudge(_) => "nudge",
+            Answer::Prompt(_) => "prompt",
+        }
+    }
 }
 
 /// One moment of the run, said once in plain language: the same words on the
@@ -86,6 +131,8 @@ pub(crate) struct Event {
     pub(crate) text: String,
     /// Shown on the panel; false keeps housekeeping in the log alone.
     pub(crate) panel: bool,
+    /// The line asks the user something: a Wake or a blocked session.
+    pub(crate) ask: Option<Ask>,
 }
 
 /// What the Shell knows when it starts a run.
@@ -127,8 +174,10 @@ pub(crate) struct Orchestrator {
     /// /stop-work arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
     /// The Shell's commands waiting to be consumed: retry-<ticket>,
-    /// park-<ticket>, nudge-<ticket>, address-<ticket>. Stop is the flag above.
+    /// park-<ticket>, address-<ticket>. Stop is the flag above.
     pub(crate) commands: Mutex<Vec<String>>,
+    /// Answers to Questions, each for one session: (ticket, pane, answer).
+    pub(crate) answers: Mutex<Vec<(String, String, Answer)>>,
     /// The Tickets running on a thread of this process.
     pub(crate) active: Mutex<BTreeSet<String>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
@@ -156,6 +205,7 @@ impl Orchestrator {
             state: Mutex::new(state),
             stop: AtomicBool::new(false),
             commands: Mutex::new(Vec::new()),
+            answers: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
             threads: Mutex::new(Vec::new()),
@@ -192,6 +242,15 @@ impl Orchestrator {
     /// the Event to the Shell. A `detail` (a PR's url) goes on the log line
     /// alone, in parentheses.
     pub(crate) fn emit(&self, ticket: &str, text: &str, panel: bool, detail: &str) {
+        self.event(ticket, text, panel, detail, None);
+    }
+
+    /// A panel line that asks the user: the Shell puts it as a Question.
+    fn asks(&self, ticket: &str, text: &str, ask: Ask) {
+        self.event(ticket, text, true, "", Some(ask));
+    }
+
+    fn event(&self, ticket: &str, text: &str, panel: bool, detail: &str, ask: Option<Ask>) {
         let time = chrono::Local::now();
         let id = if ticket.is_empty() {
             String::new()
@@ -203,19 +262,15 @@ impl Orchestrator {
         } else {
             format!(" ({detail})")
         };
-        {
-            let mut log = self.cfg.log.lock().unwrap();
-            let _ = writeln!(
-                log,
-                "{} {id}{text}{detail}",
-                time.format("%Y-%m-%d %H:%M:%S")
-            );
-        }
+        // one write: the Shell appends its own lines to the same file
+        let line = format!("{} {id}{text}{detail}\n", time.format("%Y-%m-%d %H:%M:%S"));
+        let _ = self.cfg.log.lock().unwrap().write_all(line.as_bytes());
         let _ = self.cfg.events.send(Event {
             time,
             ticket: (!ticket.is_empty()).then(|| ticket.to_string()),
             text: text.to_string(),
             panel,
+            ask,
         });
     }
 
@@ -241,9 +296,8 @@ impl Orchestrator {
         self.stop.store(true, Ordering::SeqCst);
     }
 
-    /// A command from the Shell: retry-<ticket>, park-<ticket>,
-    /// nudge-<ticket> (the Shell has prompted the session itself) or
-    /// address-<ticket>, consumed by the Ticket's hold or the scheduler.
+    /// A command from the Shell: retry-<ticket>, park-<ticket> or
+    /// address-<ticket>, consumed by the Ticket's own waits or the scheduler.
     pub(crate) fn command(&self, name: &str) {
         self.commands.lock().unwrap().push(name.to_string());
     }
@@ -263,6 +317,56 @@ impl Orchestrator {
             }
             None => false,
         }
+    }
+
+    /// The user's answer to a Question about the session in `pane`.
+    pub(crate) fn answer(&self, ticket: &str, pane: &str, answer: Answer) {
+        let entry = (ticket.to_string(), pane.to_string(), answer);
+        self.answers.lock().unwrap().push(entry);
+    }
+
+    /// Takes the Ticket's answer for the session in `pane`. Every other
+    /// answer queued for the Ticket (all of them, for None) missed its
+    /// session, which has moved on, and is dropped with a log line.
+    pub(crate) fn take_answer(&self, ticket: &str, pane: Option<&str>) -> Option<Answer> {
+        let mine: Vec<(String, String, Answer)> = {
+            let mut all = self.answers.lock().unwrap();
+            let (mine, rest) = std::mem::take(&mut *all)
+                .into_iter()
+                .partition(|(t, _, _)| t == ticket);
+            *all = rest;
+            mine
+        };
+        let mut found = None;
+        for (_, p, answer) in mine {
+            if found.is_none() && pane == Some(p.as_str()) {
+                found = Some(answer);
+            } else {
+                self.dropped(ticket, &answer);
+            }
+        }
+        found
+    }
+
+    fn dropped(&self, ticket: &str, answer: &Answer) {
+        self.log(
+            ticket,
+            &format!("dropped your {}: that session has moved on", answer.word()),
+        );
+    }
+
+    /// Whether /park, or park answered for the session in `pane`, has
+    /// arrived; any other answer for it is dropped.
+    fn park_arrived(&self, ticket: &str, pane: &str) -> bool {
+        let answered = match self.take_answer(ticket, Some(pane)) {
+            Some(Answer::Park) => true,
+            Some(other) => {
+                self.dropped(ticket, &other);
+                false
+            }
+            None => false,
+        };
+        self.consume(&format!("park-{ticket}")) || answered
     }
 
     /// Changes one Ticket's state and writes the state file.
@@ -374,21 +478,22 @@ impl Orchestrator {
         all.extend_from_slice(inputs);
         let label = stage_label(st, round);
 
-        // A resumed Stage whose session from the stopped run is still alive:
-        // /continue watches it rather than starting a fresh one.
-        let mut live = saved
-            .panes
-            .get(st.name)
-            .filter(|pane| resumed && self.agent_status(pane).is_some())
-            .cloned();
+        // A resumed Stage whose session from the stopped run is still alive
+        // in its pane: /continue watches it rather than starting a fresh one.
+        // The agent is asked for by its name, so a pane that now holds
+        // another agent is not taken for the Stage's.
+        let name = agent_name(ticket, st.name);
+        let mut live = saved.panes.get(st.name).cloned().filter(|pane| {
+            resumed
+                && self
+                    .herdr(&["agent", "get", &name])
+                    .is_ok_and(|reply| reply.result.agent.pane_id == *pane)
+        });
         let mut retry = false;
         loop {
             let mut held = match live.take() {
                 Some(pane) => self.hold(ticket, st, &label, &pane, &file, want, true),
-                None => match self.attempt(ticket, st, &label, retry, &file, &all, want) {
-                    (result, reason) if reason.is_empty() => Held::Done(result),
-                    (_, reason) => Held::Woke(reason),
-                },
+                None => self.attempt(ticket, st, &label, retry, &file, &all, want),
             };
             loop {
                 if self.stopping() {
@@ -405,9 +510,6 @@ impl Orchestrator {
                     }
                     Held::Woke(reason) => reason,
                 };
-                if reason == PARKED_BY_YOU {
-                    return Err(StageError::Parked(format!("by you at {label}")));
-                }
                 let ts = self.ticket(ticket);
                 if ts.retried {
                     return Err(StageError::Parked(format!(
@@ -415,13 +517,33 @@ impl Orchestrator {
                     )));
                 }
                 let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
-                for command in ["retry", "park", "nudge"] {
-                    // a command sent before this Wake is not an answer to it
-                    self.consume(&format!("{command}-{ticket}"));
-                }
-                self.report(
+                // a command or answer sent before this Wake is not an answer to it
+                self.consume(&format!("retry-{ticket}"));
+                self.consume(&format!("park-{ticket}"));
+                self.take_answer(ticket, None);
+                let read = [
+                    "herdr",
+                    "agent",
+                    "read",
+                    &name,
+                    "--source",
+                    "recent-unwrapped",
+                    "--lines",
+                    "120",
+                ];
+                let tail = self
+                    .cfg
+                    .tools
+                    .run(&self.cfg.repo, &read)
+                    .unwrap_or_default();
+                self.asks(
                     ticket,
                     &format!("stuck in {label}: {reason} {}", self.locate(&pane)),
+                    Ask::Wake {
+                        pane: pane.clone(),
+                        tail,
+                        nudges: nudges(&file),
+                    },
                 );
                 held = self.hold(ticket, st, &label, &pane, &file, want, false);
                 if matches!(held, Held::Park) {
@@ -431,9 +553,9 @@ impl Orchestrator {
         }
     }
 
-    /// Runs the Stage once in a fresh session and returns its accepted
-    /// result, or the reason it cannot complete. `retry` says so on the
-    /// panel, once the fresh pane can be named.
+    /// Runs the Stage once in a fresh session: its accepted result, the
+    /// reason it cannot complete, or /park. `retry` says so on the panel,
+    /// once the fresh pane can be named.
     #[allow(clippy::too_many_arguments)]
     fn attempt(
         &self,
@@ -444,8 +566,7 @@ impl Orchestrator {
         file: &Path,
         inputs: &[(&str, &str)],
         want: ResultRequirements,
-    ) -> (StageResult, String) {
-        let none = StageResult::default();
+    ) -> Held {
         let skill_path = self
             .cfg
             .repo
@@ -456,18 +577,15 @@ impl Orchestrator {
         let skill = match fs::read_to_string(&skill_path) {
             Ok(skill) => skill,
             Err(err) => {
-                return (
-                    none,
-                    format!("has no Stage skill (run 'harness init'): {err}"),
-                )
+                return Held::Woke(format!("has no Stage skill (run 'harness init'): {err}"))
             }
         };
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
-            return (none, err.to_string());
+            return Held::Woke(err.to_string());
         }
         let pane = match self.fresh_pane(ticket, st) {
             Ok(pane) => pane,
-            Err(err) => return (none, format!("got no pane: {err}")),
+            Err(err) => return Held::Woke(format!("got no pane: {err}")),
         };
         let at = self.locate(&pane);
         if retry {
@@ -476,9 +594,8 @@ impl Orchestrator {
                 &format!("retrying {label} with a fresh session {at}"),
             );
         }
-        let waited = match self.await_trust(ticket, st, &at) {
-            Ok(waited) => waited,
-            Err(reason) => return (none, reason),
+        let Ok(waited) = self.await_trust(ticket, st, &at) else {
+            return Held::Stopped;
         };
         // The previous session can still write while its pane is closing.
         // Clear its result only after fresh_pane has replaced it, before the
@@ -510,15 +627,14 @@ impl Orchestrator {
         let start_err = self.start_agent(&start, patience).err();
         if let Some(err) = &start_err {
             if !err.to_string().contains("agent_not_ready") {
-                return (none, format!("session did not start: {err}"));
+                return Held::Woke(format!("session did not start: {err}"));
             }
         }
         self.report(ticket, &format!("{label} started: {} {at}", st.kind));
         if start_err.is_some() {
             // blocked at startup: nothing can be prompted yet
-            let reason = self.wait_unblocked(ticket, st, label, &pane, deadline);
-            if !reason.is_empty() {
-                return (none, reason);
+            if let Some(held) = self.wait_unblocked(ticket, st, label, &pane, deadline) {
+                return held;
             }
         }
 
@@ -529,7 +645,7 @@ impl Orchestrator {
         // from a Stage that finished and forgot to write one.
         let prompt = stage_prompt(&skill, inputs);
         if let Err(err) = self.herdr(&["agent", "prompt", &pane, &prompt]) {
-            return (none, format!("never took the Stage skill: {err}"));
+            return Held::Woke(format!("never took the Stage skill: {err}"));
         }
         self.log(
             ticket,
@@ -544,29 +660,34 @@ impl Orchestrator {
         let settled = Instant::now() + SETTLE_TICKS * self.cfg.tick;
         loop {
             if self.stopping() {
-                return (none, "stopped".to_string());
+                return Held::Stopped;
+            }
+            if self.park_arrived(ticket, &pane) {
+                return Held::Park;
             }
             match self.agent_status(&pane).as_deref() {
-                None => return (none, "session died".to_string()),
+                None => return Held::Woke("session died".to_string()),
                 Some("blocked") => {
-                    let reason = self.wait_unblocked(ticket, st, label, &pane, deadline);
-                    if !reason.is_empty() {
-                        return (none, reason);
+                    if let Some(held) = self.wait_unblocked(ticket, st, label, &pane, deadline) {
+                        return held;
                     }
                 }
                 Some("idle" | "done") => {
                     let (result, reason) = read_stage_result(file, want);
-                    if reason.is_empty() || Instant::now() > settled {
-                        return (result, reason);
+                    if reason.is_empty() {
+                        return Held::Done(result);
+                    }
+                    if Instant::now() > settled {
+                        return Held::Woke(reason);
                     }
                 }
                 Some(_) if Instant::now() > deadline => {
-                    return (none, self.timed_out(st));
+                    return Held::Woke(self.timed_out(st));
                 }
                 Some(_) => {}
             }
             if !self.sleep() {
-                return (none, "stopped".to_string());
+                return Held::Stopped;
             }
             // A tick at a time, never to the Stage's deadline: a wait that
             // blocks for an hour is an hour in which /stop-work does
@@ -639,8 +760,9 @@ impl Orchestrator {
         }
     }
 
-    /// Wakes the Shell about a blocked session, which only the user may
-    /// answer, and waits for the session to move on or for /park.
+    /// Asks the user about a blocked session, which only they may answer,
+    /// and waits for the session to move on (None, said as "carrying on"),
+    /// for park, or for a reason it cannot.
     fn wait_unblocked(
         &self,
         ticket: &str,
@@ -648,36 +770,43 @@ impl Orchestrator {
         label: &str,
         pane: &str,
         deadline: Instant,
-    ) -> String {
-        self.report(
+    ) -> Option<Held> {
+        self.take_answer(ticket, None); // an answer sent before this prompt is not for it
+        self.asks(
             ticket,
             &format!("waiting at a prompt in {label} {}", self.locate(pane)),
+            Ask::Blocked {
+                pane: pane.to_string(),
+            },
         );
         loop {
-            if self.consume(&format!("park-{ticket}")) {
-                return PARKED_BY_YOU.to_string();
+            if self.park_arrived(ticket, pane) {
+                return Some(Held::Park);
             }
             match self.agent_status(pane).as_deref() {
-                None => return "session died".to_string(),
+                None => return Some(Held::Woke("session died".to_string())),
                 Some(status) if status != "blocked" => {
                     self.report(ticket, "carrying on");
-                    return String::new();
+                    return None;
                 }
-                Some(_) if Instant::now() > deadline => return self.timed_out(st),
+                Some(_) if Instant::now() > deadline => {
+                    return Some(Held::Woke(self.timed_out(st)))
+                }
                 Some(_) => {}
             }
             if !self.sleep() {
-                return "stopped".to_string();
+                return Some(Held::Stopped);
             }
         }
     }
 
     /// Keeps a woken Ticket waiting, leaving every other Ticket running,
-    /// until a retry or park arrives or a done result appears. `armed`, or a
-    /// nudge, arms the completion check on the live session as well: the
-    /// Ticket Wakes again when the session goes idle without a result, dies
-    /// or runs out of time, and a prompt it stops at is a blocked session as
-    /// in any Stage.
+    /// until a retry or park arrives or a done result appears. A nudge is
+    /// sent to the session in `pane` from here. `armed`, or a nudge, arms
+    /// the completion check on the live session as well: the Ticket Wakes
+    /// again when the session goes idle without a result, dies or runs out
+    /// of time, and a prompt it stops at is a blocked session as in any
+    /// Stage.
     #[allow(clippy::too_many_arguments)]
     fn hold(
         &self,
@@ -701,11 +830,26 @@ impl Orchestrator {
             if self.consume(&format!("park-{ticket}")) {
                 return Held::Park;
             }
-            if self.consume(&format!("nudge-{ticket}")) {
+            let nudge = match self.take_answer(ticket, Some(pane)) {
+                Some(Answer::Retry) => return Held::Retry,
+                Some(Answer::Park) => return Held::Park,
+                Some(Answer::Nudge(n)) => {
+                    Some((nudges(file)[n].clone(), format!("nudged: {}", NUDGES[n].0)))
+                }
+                Some(Answer::Prompt(text)) => Some((text, "nudged with your prompt".to_string())),
+                None => None,
+            };
+            if let Some((prompt, said)) = nudge {
+                if let Err(err) = self.herdr(&["agent", "prompt", pane, &prompt]) {
+                    return Held::Woke(format!("never took the nudge: {err}"));
+                }
+                self.report(ticket, &said);
                 armed = Some(arm());
             }
-            let (result, reason) = read_stage_result(file, want);
+            // The status before the result, as in attempt: a result written
+            // between the two reads must not look like idle without one.
             let status = self.agent_status(pane);
+            let (result, reason) = read_stage_result(file, want);
             if reason.is_empty() && matches!(status.as_deref(), None | Some("idle" | "done")) {
                 return Held::Done(result);
             }
@@ -713,9 +857,8 @@ impl Orchestrator {
                 match status.as_deref() {
                     None => return Held::Woke("session died".to_string()),
                     Some("blocked") => {
-                        let reason = self.wait_unblocked(ticket, st, label, pane, deadline);
-                        if !reason.is_empty() {
-                            return Held::Woke(reason);
+                        if let Some(held) = self.wait_unblocked(ticket, st, label, pane, deadline) {
+                            return held;
                         }
                     }
                     Some("idle" | "done") if Instant::now() > settled => return Held::Woke(reason),

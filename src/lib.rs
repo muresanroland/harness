@@ -21,15 +21,23 @@ pub(crate) mod tempdir {
     pub(crate) struct TempDir(PathBuf);
 
     impl TempDir {
+        /// A directory that did not exist before: one a killed or leaking
+        /// test process left under a pid now reused must not be reused with
+        /// it, stale run files and all.
         pub(crate) fn new() -> Self {
             static N: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "harness-test-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            TempDir(path)
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "harness-test-{}-{}",
+                    std::process::id(),
+                    N.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return TempDir(path),
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => panic!("{}: {err}", path.display()),
+                }
+            }
         }
 
         pub(crate) fn path(&self) -> &Path {

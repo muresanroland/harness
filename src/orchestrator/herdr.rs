@@ -72,6 +72,9 @@ pub(crate) struct Layout {
 pub(crate) struct Agent {
     #[serde(default, rename = "agent_status")]
     pub(crate) status: String,
+    /// The pane the agent lives in.
+    #[serde(default)]
+    pub(crate) pane_id: String,
 }
 
 impl Orchestrator {

@@ -13,7 +13,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 - Every Ticket event shows on the panel, except `prompted` (log only).
 - Run-level errors show: state not saved, bd list failed, bd ready failed, Epic done, stopped.
-- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file.
+- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file, an answer that came after its session moved on (dropped your park: that session has moved on).
 
 ## Vocabulary
 
@@ -50,7 +50,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge
 
 The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 

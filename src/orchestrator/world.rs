@@ -155,6 +155,8 @@ pub(crate) struct Inner {
     pub(crate) panes: Vec<PaneInfo>,
     /// Pane id -> herdr agent status.
     pub(crate) agents: BTreeMap<String, String>,
+    /// Agent name -> the pane it was started in.
+    pub(crate) names: BTreeMap<String, String>,
     /// Width, height in cells of every pane; zero means roomy and square.
     pub(crate) rect: (usize, usize),
     pub(crate) tickets: Vec<BdTicket>,
@@ -340,6 +342,7 @@ impl World {
         }
         if cmd.starts_with("herdr agent start") {
             let pane = flag_value(argv, "--pane").to_string();
+            w.names.insert(argv[3].to_string(), pane.clone());
             w.agents.insert(pane, "idle".to_string());
             return reply(json!({}));
         }
@@ -367,9 +370,13 @@ impl World {
             return Ok("Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string());
         }
         if cmd.starts_with("herdr agent get") {
-            return match w.agents.get(argv[3]) {
+            // a target is a pane id or an agent's name
+            let pane = w.names.get(argv[3]).map_or(argv[3], String::as_str);
+            return match w.agents.get(pane) {
                 None => Err(r#"{"error":{"code":"agent_not_found"}}"#.to_string()),
-                Some(status) => reply(json!({ "agent": { "agent_status": status } })),
+                Some(status) => {
+                    reply(json!({ "agent": { "agent_status": status, "pane_id": pane } }))
+                }
             };
         }
 

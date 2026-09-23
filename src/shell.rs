@@ -3,10 +3,9 @@
 //! terminal and the one draw, poll and tick loop (ADR 0003). The Shell owns
 //! the Orchestrator: the scheduler runs on a thread of this process, its
 //! Events come over a channel into RECENT and the log, and the TICKETS rows
-//! are a snapshot of its State. A Wake or a blocked session becomes a
-//! Question, answered through the Orchestrator's command queue (or, for a
-//! nudge, straight to the session through Tools); the Orchestrator knows no
-//! Shell type.
+//! are a snapshot of its State. An Event that asks (a Wake, a blocked
+//! session) becomes a Question, whose answer goes back to the Orchestrator
+//! for that session; the Orchestrator knows no Shell type.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -19,9 +18,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 
-use crate::orchestrator::herdr::agent_name;
 use crate::orchestrator::scheduler::BdIssue;
-use crate::orchestrator::stage::{result_name, stage_named, Config, Event, Orchestrator};
+use crate::orchestrator::stage::{Answer, Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
     acquire_lock, load_state, Lock, State, TicketState, STATUS_PARKED, STATUS_RUNNING,
 };
@@ -43,10 +41,6 @@ const NOTICE_WINDOW: Duration = Duration::from_secs(5);
 const DEFAULT_MAX: usize = 3;
 /// RECENT keeps this many Events; older ones are in the log.
 const KEPT_EVENTS: usize = 1000;
-/// The canned nudges from docs/design/judgment-prototype, both offered until
-/// the Judgment (Ticket 12) picks one; {result_file} is the Stage's.
-const NUDGE_RESULT: &str = "The Orchestrator is waiting for your result file {result_file} and cannot read anything else. Write it now, the first line exactly 'STATUS: done' (or 'STATUS: failed' and why), then stop.";
-const NUDGE_PROCEED: &str = "Nobody is watching this pane and no one will answer. The Ticket is the spec: decide yourself, note the decision in the result file, carry on to the end, then write {result_file} with 'STATUS: done' as its first line.";
 /// An update another process's run keeps from installing is tried this often.
 const RETRY: Duration = Duration::from_secs(60);
 
@@ -90,27 +84,26 @@ pub(crate) enum Pending {
     Exit,
 }
 
-/// What a Question offers; the kind decides its options and what an answer does.
-pub(crate) enum Kind {
-    /// A Wake: nudge with a canned prompt, retry, park, open the pane, a
-    /// prompt of your own. The pane tail is read when the Question is raised.
-    Wake { tail: String, prompts: [String; 2] },
-    /// A blocked session: open the pane, park, "I answered it".
-    Blocked,
+/// What a Question is about, which decides its options and what an answer does.
+pub(crate) enum About {
+    /// What the Orchestrator asked of a Ticket. A Wake offers nudge with
+    /// either canned prompt, retry, park, open the pane, a prompt of your
+    /// own; a blocked session offers open the pane, park, "I answered it".
+    Asked(Ask),
     /// A yes/no confirmation; it jumps the queue.
     Confirm(Pending),
     /// The /continue checklist: one row per saved Ticket, reset toggled by Space.
     Continue { rows: Vec<(String, bool)> },
 }
 
-/// A form above the input line: what the Shell puts to the user when the
+/// What the Shell puts to the user above the input line when the
 /// Orchestrator cannot act alone. One shows at a time, oldest first; a
 /// Ticket's Question holds that Ticket alone, and none is ever saved.
 pub(crate) struct Question {
     pub(crate) ticket: Option<String>,
     /// The event line it came from, or the confirmation's wording.
     pub(crate) text: String,
-    pub(crate) kind: Kind,
+    pub(crate) about: About,
     /// The option the cursor is on.
     pub(crate) cursor: usize,
 }
@@ -150,7 +143,7 @@ pub(crate) struct Screen {
     run: Option<Run>,
     /// The Questions waiting, oldest first; the first shows unless hidden.
     pub(crate) questions: Vec<Question>,
-    /// Esc hid the form; /questions or Esc on an empty input line brings it back.
+    /// Esc hid the Question; /questions or Esc on an empty input line brings it back.
     pub(crate) hidden: bool,
     /// The input line is a prompt of the user's own for the front Question.
     pub(crate) composing: bool,
@@ -417,95 +410,60 @@ impl Screen {
         }
     }
 
-    /// An Event from the Orchestrator; only panel lines show. A Wake or a
-    /// blocked session raises the Ticket's Question (replacing any it had),
-    /// and a session that carries on by itself closes it.
+    /// An Event from the Orchestrator; only panel lines show. Any line of
+    /// a Ticket closes the Question it had: the Ticket has moved on, and an
+    /// answer sent to it meanwhile is dropped. A line that asks raises the
+    /// Ticket's Question anew.
     pub(crate) fn push(&mut self, event: Event) {
         if !event.panel {
             return;
         }
-        self.events.push(event.clone());
+        let (ticket, ask, text) = (event.ticket.clone(), event.ask.clone(), event.text.clone());
+        self.show(event);
+        let Some(id) = ticket else {
+            return;
+        };
+        if let Some(i) = self
+            .questions
+            .iter()
+            .position(|q| q.ticket.as_deref() == Some(&id))
+        {
+            self.questions.remove(i);
+            if i == 0 && self.composing {
+                self.composing = false; // the prompt was for that Question
+                self.input.clear();
+            }
+            if let Some(run) = &self.run {
+                run.o.take_answer(&id, None);
+            }
+        }
+        let Some(ask) = ask else {
+            return;
+        };
+        if self.questions.is_empty() {
+            self.hidden = false;
+        }
+        // "stuck in fix 1", without the reason; a prompt line whole
+        let short = match ask {
+            Ask::Wake { .. } => text.split_once(": ").map_or(text.as_str(), |(s, _)| s),
+            Ask::Blocked { .. } => text.as_str(),
+        };
+        let asking = format!("asking you: {short}");
+        self.questions.push(Question {
+            ticket: Some(id.clone()),
+            text,
+            about: About::Asked(ask),
+            cursor: 0,
+        });
+        self.tell(Some(&id), &asking);
+    }
+
+    /// A line on RECENT.
+    fn show(&mut self, event: Event) {
+        self.events.push(event);
         if self.events.len() > KEPT_EVENTS {
             self.events.drain(..self.events.len() - KEPT_EVENTS);
         }
-        let Some(id) = &event.ticket else {
-            return;
-        };
-        let kind = if event.text.starts_with("stuck in ") {
-            Some(self.wake(id))
-        } else if event.text.starts_with("waiting at a prompt") {
-            Some(Kind::Blocked)
-        } else if event.text == "carrying on" {
-            None
-        } else {
-            return;
-        };
-        self.questions.retain(|q| q.ticket.as_deref() != Some(id));
-        if let Some(kind) = kind {
-            if self.questions.is_empty() {
-                self.hidden = false;
-            }
-            self.questions.push(Question {
-                ticket: Some(id.clone()),
-                text: event.text.clone(),
-                kind,
-                cursor: 0,
-            });
-            // "stuck in fix 1", without the reason; a prompt line whole
-            let short = match event.text.split_once(": ") {
-                Some((stuck, _)) if stuck.starts_with("stuck in ") => stuck,
-                _ => event.text.as_str(),
-            };
-            self.tell(Some(id), &format!("asking you: {short}"));
-        }
-    }
-
-    /// A Wake's Question: the pane tail and the two canned nudges over the
-    /// Stage's result file.
-    fn wake(&self, id: &str) -> Kind {
-        let ts = self.saved(id);
-        let file = stage_named(&ts.stage).map_or(String::new(), |st| {
-            self.launch
-                .repo
-                .join(".harness")
-                .join("runs")
-                .join(id)
-                .join(result_name(st, ts.round))
-                .display()
-                .to_string()
-        });
-        let agent = agent_name(id, &ts.stage);
-        let read = [
-            "herdr",
-            "agent",
-            "read",
-            &agent,
-            "--source",
-            "recent-unwrapped",
-            "--lines",
-            "120",
-        ];
-        let tail = self
-            .launch
-            .tools
-            .run(&self.launch.repo, &read)
-            .unwrap_or_default();
-        let prompts = [NUDGE_RESULT, NUDGE_PROCEED].map(|p| p.replace("{result_file}", &file));
-        Kind::Wake { tail, prompts }
-    }
-
-    /// One Ticket's state: the live run's, else the saved one.
-    fn saved(&self, id: &str) -> TicketState {
-        match &self.run {
-            Some(run) => run.o.ticket(id),
-            None => self.state.tickets.get(id).cloned().unwrap_or_default(),
-        }
-    }
-
-    /// The pane of a Ticket's current Stage.
-    fn pane_of(&self, id: &str) -> String {
-        let ts = self.saved(id);
-        ts.panes.get(&ts.stage).cloned().unwrap_or_default()
     }
 
     /// A line of the Shell's own, on RECENT and in the log as the
@@ -520,14 +478,17 @@ impl Screen {
                 .open(dir.join("orchestrator.log"))
         });
         if let Ok(mut log) = log {
+            // one write: Ticket threads append to the same file
             let id = ticket.map_or(String::new(), |id| format!("{id} "));
-            let _ = writeln!(log, "{} {id}{text}", time.format("%Y-%m-%d %H:%M:%S"));
+            let line = format!("{} {id}{text}\n", time.format("%Y-%m-%d %H:%M:%S"));
+            let _ = log.write_all(line.as_bytes());
         }
-        self.push(Event {
+        self.show(Event {
             time,
             ticket: ticket.map(str::to_string),
             text: text.to_string(),
             panel: true,
+            ask: None,
         });
     }
 
@@ -576,25 +537,25 @@ impl Screen {
         !self.questions.is_empty() && !self.hidden
     }
 
-    /// The front Question's options, numbered on the form in this order.
+    /// The front Question's options, numbered in this order.
     pub(crate) fn options(&self) -> Vec<String> {
         let Some(q) = self.questions.first() else {
             return Vec::new();
         };
-        match &q.kind {
-            Kind::Wake { prompts, .. } => vec![
-                format!("nudge: {}", prompts[0]),
-                format!("nudge: {}", prompts[1]),
+        match &q.about {
+            About::Asked(Ask::Wake { nudges, .. }) => vec![
+                format!("nudge: {}", nudges[0]),
+                format!("nudge: {}", nudges[1]),
                 "retry with a fresh session".to_string(),
                 "park".to_string(),
                 "open the pane".to_string(),
                 "a prompt of your own".to_string(),
             ],
-            Kind::Blocked => ["open the pane", "park", "I answered it"]
+            About::Asked(Ask::Blocked { .. }) => ["open the pane", "park", "I answered it"]
                 .map(str::to_string)
                 .to_vec(),
-            Kind::Confirm(_) => ["yes", "no"].map(str::to_string).to_vec(),
-            Kind::Continue { rows } => rows
+            About::Confirm(_) => ["yes", "no"].map(str::to_string).to_vec(),
+            About::Continue { rows } => rows
                 .iter()
                 .map(|(id, reset)| {
                     let ts = self.state.tickets.get(id).cloned().unwrap_or_default();
@@ -643,13 +604,13 @@ impl Screen {
             }
             return;
         }
-        // With the form up and the input line empty the keys are its:
-        // arrows or a number pick, Enter answers, Esc hides or cancels,
+        // With a Question showing and the input line empty the keys are
+        // its: arrows or a number pick, Enter answers, Esc hides or cancels,
         // Space toggles a /continue row, y and n answer a confirmation; a
         // slash starts a command.
         if self.showing() && self.input.is_empty() && !self.composing {
             let n = self.options().len();
-            let confirm = matches!(self.questions[0].kind, Kind::Confirm(_));
+            let confirm = matches!(self.questions[0].about, About::Confirm(_));
             let q = &mut self.questions[0];
             match key.code {
                 KeyCode::Up => q.cursor = q.cursor.saturating_sub(1),
@@ -660,7 +621,7 @@ impl Screen {
                     }
                 }
                 KeyCode::Char(' ') => {
-                    if let Kind::Continue { rows } = &mut q.kind {
+                    if let About::Continue { rows } = &mut q.about {
                         rows[q.cursor].1 ^= true;
                     }
                 }
@@ -705,7 +666,7 @@ impl Screen {
                 let prompt = std::mem::take(&mut self.input);
                 if !prompt.trim().is_empty() {
                     self.composing = false;
-                    self.nudge("your prompt", prompt.trim(), "nudged with your prompt");
+                    self.reply("your prompt", Answer::Prompt(prompt.trim().to_string()));
                 }
             }
             KeyCode::Enter => {
@@ -718,40 +679,30 @@ impl Screen {
 
     /// The user picked option `choice` of the front Question.
     fn answer(&mut self, choice: usize) {
-        let ticket = self.questions[0].ticket.clone().unwrap_or_default();
-        match (&self.questions[0].kind, choice) {
-            (Kind::Wake { prompts, .. }, 0 | 1) => {
-                let prompt = prompts[choice].clone();
-                let outcome = if choice == 0 {
-                    "nudged: write the result file"
-                } else {
-                    "nudged: carry on, the Ticket is the spec"
-                };
-                self.nudge("nudge", &prompt, outcome);
+        match (&self.questions[0].about, choice) {
+            (About::Asked(Ask::Wake { .. }), 0 | 1) => self.reply("nudge", Answer::Nudge(choice)),
+            (About::Asked(Ask::Wake { .. }), 2) => self.reply("retry", Answer::Retry),
+            (About::Asked(Ask::Wake { .. }), 3) | (About::Asked(Ask::Blocked { .. }), 1) => {
+                self.reply("park", Answer::Park)
             }
-            (Kind::Wake { .. }, 2) => {
-                self.answered("retry");
-                self.send(&format!("retry-{ticket}"));
-            }
-            (Kind::Wake { .. }, 3) | (Kind::Blocked, 1) => {
-                self.answered("park");
-                self.send(&format!("park-{ticket}"));
-            }
-            (Kind::Wake { .. }, 4) | (Kind::Blocked, 0) => {
+            (About::Asked(Ask::Wake { pane, .. }), 4)
+            | (About::Asked(Ask::Blocked { pane }), 0) => {
                 // the Question stays
-                let pane = self.pane_of(&ticket);
                 let focus = self
                     .launch
                     .tools
-                    .run(&self.launch.repo, &["herdr", "pane", "focus", &pane]);
+                    .run(&self.launch.repo, &["herdr", "pane", "focus", pane]);
                 if let Err(err) = focus {
                     self.notice(&err.to_string(), NOTICE_WINDOW);
                 }
             }
-            (Kind::Wake { .. }, 5) => self.composing = true,
-            (Kind::Blocked, 2) => self.answered("I answered it"),
-            (Kind::Confirm(_), 0) => {
-                let Kind::Confirm(pending) = self.questions.remove(0).kind else {
+            (About::Asked(Ask::Wake { .. }), 5) => self.composing = true,
+            (About::Asked(Ask::Blocked { .. }), 2) => {
+                let q = self.questions.remove(0);
+                self.tell(q.ticket.as_deref(), "you answered: I answered it");
+            }
+            (About::Confirm(_), 0) => {
+                let About::Confirm(pending) = self.questions.remove(0).about else {
                     unreachable!()
                 };
                 match pending {
@@ -759,11 +710,11 @@ impl Screen {
                     Pending::Exit => self.quit(),
                 }
             }
-            (Kind::Confirm(_), _) => {
+            (About::Confirm(_), _) => {
                 self.questions.remove(0);
                 self.notice("cancelled", NOTICE_WINDOW);
             }
-            (Kind::Continue { rows }, _) => {
+            (About::Continue { rows }, _) => {
                 let rows = rows.clone();
                 self.questions.remove(0);
                 self.resume(&rows);
@@ -773,81 +724,61 @@ impl Screen {
         self.hidden = false;
     }
 
-    /// The front Question is answered: line one names the user's answer.
-    fn answered(&mut self, word: &str) {
+    /// The front Question answered: line one names the answer, which goes
+    /// to the Orchestrator for the session the Question was about; line two
+    /// is the Orchestrator's, once it acts.
+    fn reply(&mut self, word: &str, answer: Answer) {
         let q = self.questions.remove(0);
-        self.tell(q.ticket.as_deref(), &format!("you answered: {word}"));
-    }
-
-    /// A command to the live run's Orchestrator.
-    fn send(&mut self, command: &str) {
-        if let Some(run) = &self.run {
-            run.o.command(command);
+        let id = q.ticket.unwrap_or_default();
+        self.tell(Some(&id), &format!("you answered: {word}"));
+        if let (Some(run), About::Asked(Ask::Wake { pane, .. } | Ask::Blocked { pane })) =
+            (&self.run, &q.about)
+        {
+            run.o.answer(&id, pane, answer);
         }
     }
 
-    /// Prompts the front Question's session with `prompt` and re-arms its
-    /// hold; the two lines follow, or the failure with the Question kept.
-    fn nudge(&mut self, word: &str, prompt: &str, outcome: &str) {
-        let ticket = self.questions[0].ticket.clone().unwrap_or_default();
-        let pane = self.pane_of(&ticket);
-        let sent = self.launch.tools.run(
-            &self.launch.repo,
-            &["herdr", "agent", "prompt", &pane, prompt],
-        );
-        if let Err(err) = sent {
-            return self.notice(&format!("nudge failed: {err}"), NOTICE_WINDOW);
-        }
-        self.answered(word);
-        self.send(&format!("nudge-{ticket}"));
-        self.tell(Some(&ticket), outcome);
-    }
-
-    /// A yes/no confirmation, shown at once ahead of any waiting Question.
+    /// A yes/no confirmation, its cursor on no: Enter alone never discards
+    /// or exits.
     fn confirm(&mut self, text: &str, pending: Pending) {
-        self.questions.insert(
-            0,
-            Question {
-                ticket: None,
-                text: text.to_string(),
-                kind: Kind::Confirm(pending),
-                cursor: 0,
-            },
-        );
+        self.ask_first(Question {
+            ticket: None,
+            text: text.to_string(),
+            about: About::Confirm(pending),
+            cursor: 1,
+        });
+    }
+
+    /// A confirmation or the /continue checklist: shown at once, ahead of
+    /// every Ticket's Question, in place of one still waiting.
+    fn ask_first(&mut self, question: Question) {
+        self.questions.retain(|q| q.ticket.is_some());
+        self.questions.insert(0, question);
         self.hidden = false;
     }
 
-    /// The /continue checklist answered: a reset Ticket loses its panes and
-    /// its run directory and starts Implement over; the rest resume as saved.
+    /// The /continue checklist answered, once the lock is held: a reset
+    /// Ticket starts Implement over, a Parked one set to resume is unparked
+    /// at its Stage, and the rest resume as saved.
     fn resume(&mut self, rows: &[(String, bool)]) {
-        for (id, _) in rows.iter().filter(|(_, reset)| *reset) {
-            let ts = self.state.tickets.get(id).cloned().unwrap_or_default();
-            for pane in ts.panes.values() {
-                let _ = self
-                    .launch
-                    .tools
-                    .run(&self.launch.repo, &["herdr", "pane", "close", pane]);
-            }
-            let _ = fs::remove_dir_all(self.launch.repo.join(".harness").join("runs").join(id));
-            if let Some(ts) = self.state.tickets.get_mut(id) {
-                *ts = TicketState {
-                    status: STATUS_RUNNING.to_string(),
-                    stage: "implement".to_string(),
-                    tab: ts.tab.clone(),
-                    ..Default::default()
-                };
+        let Some(prepared) = self.prepare(DEFAULT_MAX) else {
+            return;
+        };
+        let o = prepared.1.clone();
+        for (id, reset) in rows {
+            if *reset {
+                if let Err(err) = reset_ticket(&o, id) {
+                    self.notice(&format!("{id} not reset: {err}"), NOTICE_WINDOW);
+                }
+            } else if o.ticket(id).status == STATUS_PARKED {
+                o.update(id, |ts| ts.status = STATUS_RUNNING.to_string());
             }
         }
-        if rows.iter().any(|(_, reset)| *reset) {
-            if let Err(err) = self.state.save(&self.launch.repo) {
-                return self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
-            }
-        }
-        let epic = self.state.epic.clone();
+        let epic = o.state.lock().unwrap().epic.clone();
         if !epic.is_empty() {
-            self.launch(DEFAULT_MAX, true, move |o| o.run(&epic));
+            self.spawn(prepared, true, move |o| o.run(&epic));
         } else {
-            self.launch(DEFAULT_MAX, false, move |o| {
+            self.spawn(prepared, false, move |o| {
                 o.run_tickets(&o.resumable());
                 Ok(())
             });
@@ -859,7 +790,7 @@ impl Screen {
         if line.is_empty() {
             return;
         }
-        if matches!(self.questions.first(), Some(q) if matches!(q.kind, Kind::Confirm(_))) {
+        if matches!(self.questions.first(), Some(q) if matches!(q.about, About::Confirm(_))) {
             match line {
                 "y" | "yes" => return self.answer(0),
                 "n" | "no" => return self.answer(1),
@@ -895,26 +826,17 @@ impl Screen {
                     .map(|(id, _)| (id.clone(), false))
                     .collect();
                 rows.sort_by_key(|(id, _)| suffix(id).parse::<usize>().unwrap_or(usize::MAX));
-                let running = self
-                    .state
-                    .tickets
-                    .values()
-                    .any(|ts| ts.status == STATUS_RUNNING);
-                if self.state.epic.is_empty() && !running {
+                if rows.is_empty() && self.state.epic.is_empty() {
                     self.refuse("refused: no saved Ticket to continue");
                 } else if rows.is_empty() {
                     self.resume(&rows);
                 } else {
-                    self.questions.insert(
-                        0,
-                        Question {
-                            ticket: None,
-                            text: "continue the saved run: each Ticket resumes at its Stage, or is reset to Implement".to_string(),
-                            kind: Kind::Continue { rows },
-                            cursor: 0,
-                        },
-                    );
-                    self.hidden = false;
+                    self.ask_first(Question {
+                        ticket: None,
+                        text: "continue the saved run: each Ticket resumes at its Stage, or is reset to Implement".to_string(),
+                        about: About::Continue { rows },
+                        cursor: 0,
+                    });
                 }
             }
             "/questions" => match self.questions.is_empty() {
@@ -922,29 +844,29 @@ impl Screen {
                 false => self.hidden = false,
             },
             "/stop-work" => self.stop_work(),
-            "/retry" | "/park" | "/address" => match &self.run {
-                _ if query.is_empty() => {
-                    self.notice(&format!("usage: {name} <ticket>"), NOTICE_WINDOW)
-                }
-                None => self.refuse("refused: no run is live, /start-epic or /continue starts one"),
-                Some(_)
-                    if name != "/address"
-                        && self
-                            .questions
-                            .iter()
-                            .any(|q| q.ticket.as_deref() == Some(query)) =>
-                {
-                    self.refuse(&format!(
+            "/retry" | "/park" | "/address" => {
+                let waiting = self
+                    .questions
+                    .iter()
+                    .any(|q| q.ticket.as_deref() == Some(query));
+                match self.run.as_ref().map(|run| (run.epic, run.o.clone())) {
+                    _ if query.is_empty() => {
+                        self.notice(&format!("usage: {name} <ticket>"), NOTICE_WINDOW)
+                    }
+                    None => {
+                        self.refuse("refused: no run is live, /start-epic or /continue starts one")
+                    }
+                    Some(_) if name != "/address" && waiting => self.refuse(&format!(
                         "refused: Ticket {} has a Question waiting",
                         suffix(query)
-                    ));
-                }
-                Some(run) if name == "/address" && !run.epic => {
+                    )),
                     // ponytail: a single-Ticket run has no scheduler to consume it
-                    run.o.report(query, "address refused: not an Epic run");
+                    Some((false, _)) if name == "/address" => {
+                        self.tell(Some(query), "address refused: not an Epic run")
+                    }
+                    Some((_, o)) => o.command(&format!("{}-{query}", &name[1..])),
                 }
-                Some(run) => run.o.command(&format!("{}-{query}", &name[1..])),
-            },
+            }
             "/exit" => match &self.run {
                 None => self.quit(),
                 Some(_) => self.confirm("stop the run and exit?", Pending::Exit),
@@ -1011,7 +933,8 @@ impl Screen {
     }
 
     /// /start-epic and /start-ticket: over a different saved Epic (the
-    /// Ticket's parent on the tree) it asks before discarding the saved run.
+    /// Ticket's parent on the tree) it asks before discarding the saved run,
+    /// which goes only once the lock is held.
     fn start(&mut self, id: &str, max: usize, epic: bool, discard: bool) {
         let saved = self.state.epic.clone();
         let mine = if epic {
@@ -1023,47 +946,50 @@ impl Screen {
                 .map(|e| e.id.clone())
                 .unwrap_or_default()
         };
-        if !saved.is_empty() && saved != mine {
-            if !discard {
-                let pending = Pending::Start {
-                    id: id.to_string(),
-                    max,
-                    epic,
-                };
-                return self.confirm(&format!("discard the saved run on {saved}?"), pending);
-            }
-            self.state = State::default();
-            if let Err(err) = self.state.save(&self.launch.repo) {
+        let other = !saved.is_empty() && saved != mine;
+        if other && !discard {
+            let pending = Pending::Start {
+                id: id.to_string(),
+                max,
+                epic,
+            };
+            return self.confirm(&format!("discard the saved run on {saved}?"), pending);
+        }
+        let Some(prepared) = self.prepare(max) else {
+            return;
+        };
+        if other {
+            if let Err(err) = State::default().save(&self.launch.repo) {
                 return self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
+            *prepared.1.state.lock().unwrap() = State::default();
         }
         let id = id.to_string();
         if epic {
-            self.launch(max, true, move |o| o.run(&id));
+            self.spawn(prepared, true, move |o| o.run(&id));
         } else {
-            self.launch(max, false, move |o| {
+            self.spawn(prepared, false, move |o| {
                 o.run_single(&id);
                 Ok(())
             });
         }
     }
 
-    /// Takes the lock and runs `work` over a fresh Orchestrator on the
-    /// scheduler thread; it returns when the run ends and poll sees it. The
-    /// callers have checked that no run is live.
-    fn launch(
-        &mut self,
-        max: usize,
-        epic: bool,
-        work: impl FnOnce(&Arc<Orchestrator>) -> Result<(), String> + Send + 'static,
-    ) {
+    /// Takes the lock and makes the run's Orchestrator over the state
+    /// file; None, said in a notice, when a run cannot start. The callers
+    /// have checked that no run is live.
+    fn prepare(&mut self, max: usize) -> Option<(Lock, Arc<Orchestrator>)> {
         if let Some(missing) = self.missing.first() {
-            return self.notice(&format!("refused: {missing}"), NOTICE_WINDOW);
+            self.notice(&format!("refused: {missing}"), NOTICE_WINDOW);
+            return None;
         }
         let repo = &self.launch.repo;
         let lock = match setup::ignore_run_dir(repo).and_then(|()| acquire_lock(repo)) {
             Ok(lock) => lock,
-            Err(err) => return self.notice(&err.to_string(), NOTICE_WINDOW),
+            Err(err) => {
+                self.notice(&err.to_string(), NOTICE_WINDOW);
+                return None;
+            }
         };
         let log: Box<dyn io::Write + Send> = match File::options()
             .create(true)
@@ -1073,7 +999,7 @@ impl Screen {
             Ok(file) => Box::new(file),
             Err(_) => Box::new(io::sink()),
         };
-        let o = match Orchestrator::new(Config {
+        match Orchestrator::new(Config {
             tools: self.launch.tools.clone(),
             repo: repo.clone(),
             workspace: self.launch.workspace.clone(),
@@ -1087,9 +1013,23 @@ impl Screen {
             #[cfg(test)]
             timeout: None,
         }) {
-            Ok(o) => o,
-            Err(err) => return self.notice(&err.to_string(), NOTICE_WINDOW),
-        };
+            Ok(o) => Some((lock, o)),
+            Err(err) => {
+                self.notice(&err.to_string(), NOTICE_WINDOW);
+                None
+            }
+        }
+    }
+
+    /// Runs `work` over the prepared Orchestrator on the scheduler thread;
+    /// it returns when the run ends and poll sees it.
+    fn spawn(
+        &mut self,
+        (lock, o): (Lock, Arc<Orchestrator>),
+        epic: bool,
+        work: impl FnOnce(&Arc<Orchestrator>) -> Result<(), String> + Send + 'static,
+    ) {
+        self.state = o.state.lock().unwrap().clone();
         let scheduler = {
             let o = o.clone();
             thread::spawn(move || work(&o))
@@ -1138,6 +1078,32 @@ impl Screen {
             .find(|t| t.id == id)
             .map(|t| t.title.as_str())
     }
+}
+
+/// A /continue reset: the Ticket's panes close, its run directory moves
+/// aside as <id>.reset-<n> (the evidence stays, and no result in it is
+/// accepted again), and it starts over at Implement. A directory that
+/// cannot move refuses the reset.
+fn reset_ticket(o: &Orchestrator, id: &str) -> io::Result<()> {
+    for pane in o.ticket(id).panes.values() {
+        let _ = o.herdr(&["pane", "close", pane]);
+    }
+    let dir = o.run_dir(id);
+    if dir.exists() {
+        let aside = (1..)
+            .map(|n| dir.with_file_name(format!("{id}.reset-{n}")))
+            .find(|path| !path.exists())
+            .unwrap();
+        fs::rename(&dir, aside)?;
+    }
+    o.update(id, |ts| {
+        *ts = TicketState {
+            status: STATUS_RUNNING.to_string(),
+            stage: "implement".to_string(),
+            ..Default::default()
+        }
+    });
+    Ok(())
 }
 
 /// The child suffix of a bd id: harness-kqe.9 is 9.
