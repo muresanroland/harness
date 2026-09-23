@@ -1,14 +1,23 @@
 # Builds the release binaries for a v* tag and attaches them to a GitHub
-# Release. The tag must equal Cargo.toml's version; the human pushes the tag
-# after the merge.
+# Release. The tag must equal Cargo.toml's version. After the merge the human
+# creates the release on GitHub (or pushes the tag); either starts this. Run
+# it by hand from the Actions tab to rebuild an existing tag.
 name: release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach, e.g. v1.0.0'
+        required: true
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -20,10 +29,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: tag must equal Cargo.toml's version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          test "${GITHUB_REF_NAME#v}" = "$version" || { echo "tag $GITHUB_REF_NAME != Cargo.toml version $version"; exit 1; }
+          test "${TAG#v}" = "$version" || { echo "tag $TAG != Cargo.toml version $version"; exit 1; }
       - name: build
         env:
           HARNESS_RELEASE: '1'
@@ -44,7 +55,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - name: create the release with both assets
+      # A release made on GitHub already exists by now: it gets the assets.
+      # A plain tag push has none yet: this creates it.
+      - name: attach both assets to the release, creating it if needed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harness-aarch64-apple-darwin harness-x86_64-unknown-linux-gnu
+        run: |
+          assets="harness-aarch64-apple-darwin harness-x86_64-unknown-linux-gnu"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber $assets
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes $assets
+          fi
