@@ -31,6 +31,9 @@ pub(crate) struct TicketState {
     pub(crate) reason: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) retried: bool,
+    /// The Stage's live session has had its one nudge.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) nudged: bool,
     #[serde(
         default,
         rename = "conflict_reported",

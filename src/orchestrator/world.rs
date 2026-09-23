@@ -499,6 +499,26 @@ impl World {
         );
     }
 
+    /// Waits for the nth Event (from 1) whose text contains want.
+    pub(crate) fn await_nth(&self, want: &str, n: usize) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(event) = self
+                .events()
+                .into_iter()
+                .filter(|e| e.text.contains(want))
+                .nth(n - 1)
+            {
+                return event;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!(
+            "no Event {n} contained {want:?}; the panel got:\n{}",
+            self.lines().join("\n")
+        );
+    }
+
     /// Makes the next command starting with prefix fail.
     pub(crate) fn fail_once(&self, prefix: &str, err: &str) {
         self.lock()

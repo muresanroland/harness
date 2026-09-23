@@ -1,3 +1,5 @@
+use super::judgment::fake::Fake;
+use super::judgment_test::{choose, criteria};
 use super::stage::{nudges, Answer, Ask, Config, Orchestrator};
 use super::state::{load_state, STATUS_PARKED, STATUS_PR_OPEN};
 use super::world::{new_world, spawn_ticket, succeed, working, BdTicket, Prompt, World};
@@ -121,15 +123,27 @@ fn blocked_session_wakes_main_then_continues_when_the_user_answers() {
     );
 }
 
+/// A retry re-arms the nudge, so the second Wake is a Question again (the
+/// Judgment's, were TypeSafe up); once the fresh session's nudge is spent
+/// too and a timeout leaves no wait, only park is left, and the Ticket
+/// parks by rule.
 #[test]
-fn second_failure_after_retry_parks_the_ticket() {
-    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    w.session(|_| ("STATUS: failed\n".to_string(), "idle".to_string()));
+fn second_failure_after_retry_and_nudge_parks_the_ticket() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.timeout = Some(Duration::from_millis(5));
+    w.session(working);
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    w.await_line("hx-1 stuck in implement");
+    w.await_line("hx-1 stuck in implement: timed out after 5ms");
     o.command("retry-hx-1");
+    let wake = w.await_nth("stuck in implement: timed out after 5ms", 2);
+    assert!(wake.ask.is_some(), "the second Wake asks nothing");
+    o.answer(
+        "hx-1",
+        &o.ticket("hx-1").panes["implement"],
+        Answer::Nudge(0),
+    );
     run.wait();
 
     let ts = o.ticket("hx-1");
@@ -137,11 +151,11 @@ fn second_failure_after_retry_parks_the_ticket() {
         ts.status == STATUS_PARKED && ts.reason.contains("after a retry"),
         "state = {ts:?}, want parked after the retry failed"
     );
-    w.await_line("hx-1 parked: implement session reported failure again after a retry");
+    w.await_line("hx-1 parked: implement timed out after 5ms again after a retry");
     let wakes = w.lines().iter().filter(|l| l.contains("stuck in")).count();
     assert_eq!(
-        wakes, 1,
-        "stuck lines, want 1: the second failure parks instead"
+        wakes, 2,
+        "stuck lines, want 2: the third timeout parks instead"
     );
 }
 
@@ -211,20 +225,25 @@ fn restart_does_not_grant_a_second_retry() {
         ts.round = 0;
         ts.retried = true;
     });
+    let typesafe = Fake::new(|body| Ok(choose(body, "park", 0.9)));
+    let mut o = o;
+    o.cfg.typesafe = typesafe.clone();
 
     o.run_ticket("hx-1");
 
     let ts = o.ticket("hx-1");
     assert_eq!(
         ts.status, STATUS_PARKED,
-        "state after resume = {ts:?}, want parked: a restart must not grant another retry"
+        "state after resume = {ts:?}, want parked"
     );
-    for line in w.lines() {
-        assert!(
-            !line.contains("stuck in"),
-            "unexpected {line:?}: the one retry was already spent"
-        );
-    }
+    let asked = typesafe.requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        criteria(&asked[0]),
+        ["nudge_proceed", "nudge_write_result", "park", "wait"],
+        "a restart granted another retry"
+    );
+    assert!(w.lines().iter().all(|l| !l.contains("retrying")));
 }
 
 /// A nudge is sent by the hold to the Wake's session and re-arms it: the
@@ -252,10 +271,20 @@ fn a_nudge_is_sent_to_its_session_and_re_arms_the_hold() {
         pane,
         tail,
         nudges: offered,
+        scores,
     }) = wake.ask
     else {
         panic!("the Wake asks nothing: {wake:?}");
     };
+    assert_eq!(scores, "", "scores without a Judgment");
+    let offered: Vec<String> = offered
+        .into_iter()
+        .enumerate()
+        .map(|(i, (n, prompt))| {
+            assert_eq!(i, n, "without a Judgment both nudges show, in order");
+            prompt
+        })
+        .collect();
     assert_eq!(
         w.called("herdr agent read"),
         ["herdr agent read h-hx-1-implement --source recent-unwrapped --lines 120"],

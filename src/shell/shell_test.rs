@@ -1,6 +1,7 @@
 use super::draw::{draw, ticket_color};
 use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
 use super::{About, Epic, Launch, Pending, Screen};
+use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{nudges, Ask, Event, Orchestrator};
 use crate::orchestrator::state::{
@@ -1328,7 +1329,8 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
     let wake = || Ask::Wake {
         pane: "w1:p7".to_string(),
         tail: "Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string(),
-        nudges: nudges(file),
+        nudges: nudges(file).into_iter().enumerate().collect(),
+        scores: String::new(),
     };
     s.push(asking(
         "harness-kqe.11",
@@ -1704,6 +1706,58 @@ fn a_wake_question_retries_with_a_fresh_session() {
     );
     assert_eq!(w.called("herdr agent start h-hx-1-implement").len(), 2);
     assert!(s.questions.is_empty());
+}
+
+/// Below the floor the Wake's Question shows the Judgment's scores and the
+/// one nudge it picked; the options after that nudge keep their meaning.
+#[test]
+fn a_wake_question_below_the_floor_shows_the_scores_and_its_one_nudge() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "idle".to_string()));
+    let mut s = shell(&w);
+    s.launch.typesafe = TypeSafeFake::new(|_| {
+        Ok(serde_json::json!({ "answers": { "action": {
+            "choice": "park",
+            "confidence": 0.25,
+            "probabilities": { "park": 0.5, "nudge_proceed": 0.3, "retry": 0.1, "nudge_write_result": 0.06, "wait": 0.04 },
+        } } }))
+    });
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 asking you: stuck in implement");
+    let [_, proceed] = nudges(&w.repo.join(".harness/runs/hx-1/implement.md"));
+    assert_eq!(
+        s.options(),
+        [
+            format!("nudge: {proceed}"),
+            "retry with a fresh session".to_string(),
+            "park".to_string(),
+            "open the pane".to_string(),
+            "a prompt of your own".to_string(),
+        ]
+    );
+    let buf = render(&s, 120, 40);
+    assert!(
+        find(
+            &buf,
+            "judged: park 0.50, nudge_proceed 0.30, retry 0.10, nudge_write_result 0.06, wait 0.04"
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+
+    pick(&mut s, 2);
+    await_line(
+        &mut s,
+        "hx-1 retrying implement with a fresh session (pane 1-1)",
+    );
+    // The fresh session's Wake: the retry re-armed the nudge, and is spent.
+    await_questions(&mut s, 1);
+    assert_eq!(s.options().len(), 5);
+    pick(&mut s, 1);
+    await_line(&mut s, "hx-1 nudged: carry on, the Ticket is the spec");
+    s.command("/stop-work");
+    await_end(&mut s);
 }
 
 /// A blocked session's Question: "I answered it" closes it, the pane moving

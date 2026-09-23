@@ -385,16 +385,25 @@ fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
         .header(Row::new(vec!["", "TICKET", "STAGE", ""]).style(fg(BORDER)))
 }
 
-/// A Question's lines: the question, a Wake's pane tail as far as `room`
-/// lines allow, and the numbered options with the cursor on one. Everything
-/// but the tail is always there.
+/// A Question's lines: the question, a Judgment's scores, a Wake's pane
+/// tail as far as `room` lines allow, and the numbered options with the
+/// cursor on one. Everything but the tail is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
     let q = &s.questions[0];
     let head = match &q.ticket {
         Some(id) => format!("{}  {}", s.name(id), q.text),
         None => q.text.clone(),
     };
-    let mut lines = vec![Line::from(Span::styled(head, bold(TEXT))), Line::default()];
+    let mut lines = vec![Line::from(Span::styled(head, bold(TEXT)))];
+    if let About::Asked(Ask::Wake { scores, .. }) = &q.about {
+        if !scores.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("judged: {scores}"),
+                fg(TEXT),
+            )));
+        }
+    }
+    lines.push(Line::default());
     let mut options = Vec::new();
     for (i, option) in s.options().iter().enumerate() {
         let (mark, style) = if i == q.cursor {

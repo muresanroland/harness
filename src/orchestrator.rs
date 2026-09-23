@@ -2,6 +2,7 @@
 //! placement and Stage transitions (ADR 0001). Ported by harness-kqe.2 to .4.
 
 pub(crate) mod herdr;
+pub(crate) mod judgment;
 pub(crate) mod pipeline;
 pub(crate) mod result;
 pub(crate) mod scheduler;
@@ -20,6 +21,8 @@ pub(crate) fn write_file(path: &std::path::Path, body: &str) {
 
 #[cfg(test)]
 mod async_result_test;
+#[cfg(test)]
+mod judgment_test;
 #[cfg(test)]
 mod panes_test;
 #[cfg(test)]

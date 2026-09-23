@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 
+use crate::orchestrator::judgment::{self, TypeSafe};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Answer, Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
@@ -58,6 +59,7 @@ pub(crate) struct Launch {
     pub(crate) repo: PathBuf,
     pub(crate) workspace: String,
     pub(crate) api_key: String,
+    pub(crate) typesafe: Arc<dyn TypeSafe>,
     pub(crate) home: PathBuf,
     pub(crate) tick: Duration,
     pub(crate) poll_prs: Duration,
@@ -87,8 +89,9 @@ pub(crate) enum Pending {
 /// What a Question is about, which decides its options and what an answer does.
 pub(crate) enum About {
     /// What the Orchestrator asked of a Ticket. A Wake offers nudge with
-    /// either canned prompt, retry, park, open the pane, a prompt of your
-    /// own; a blocked session offers open the pane, park, "I answered it".
+    /// either canned prompt (the one a Judgment picked, when it scored
+    /// them), retry, park, open the pane, a prompt of your own; a blocked
+    /// session offers open the pane, park, "I answered it".
     Asked(Ask),
     /// A yes/no confirmation; it jumps the queue.
     Confirm(Pending),
@@ -220,6 +223,7 @@ impl Screen {
             repo: repo.to_path_buf(),
             workspace: env("HERDR_WORKSPACE_ID"),
             api_key: setup::typesafe_key(repo, env).unwrap_or_default(),
+            typesafe: Arc::new(judgment::Api),
             home: PathBuf::new(), // the Orchestrator reads HOME
             tick: Duration::from_secs(5),
             poll_prs: Duration::from_secs(30),
@@ -529,7 +533,9 @@ impl Screen {
                 .iter()
                 .rev()
                 .find(|e| e.ticket.as_deref() == Some(id))
-                .is_some_and(|e| e.text.starts_with("waiting: "))
+                .is_some_and(|e| {
+                    e.text.starts_with("waiting: ") && e.text.contains(" does not trust ")
+                })
     }
 
     /// Whether the front Question shows above the input line.
@@ -543,14 +549,19 @@ impl Screen {
             return Vec::new();
         };
         match &q.about {
-            About::Asked(Ask::Wake { nudges, .. }) => vec![
-                format!("nudge: {}", nudges[0]),
-                format!("nudge: {}", nudges[1]),
-                "retry with a fresh session".to_string(),
-                "park".to_string(),
-                "open the pane".to_string(),
-                "a prompt of your own".to_string(),
-            ],
+            About::Asked(Ask::Wake { nudges, .. }) => nudges
+                .iter()
+                .map(|(_, prompt)| format!("nudge: {prompt}"))
+                .chain(
+                    [
+                        "retry with a fresh session",
+                        "park",
+                        "open the pane",
+                        "a prompt of your own",
+                    ]
+                    .map(str::to_string),
+                )
+                .collect(),
             About::Asked(Ask::Blocked { .. }) => ["open the pane", "park", "I answered it"]
                 .map(str::to_string)
                 .to_vec(),
@@ -679,8 +690,16 @@ impl Screen {
 
     /// The user picked option `choice` of the front Question.
     fn answer(&mut self, choice: usize) {
+        // a Wake's options past its nudges numbered as if both were shown
+        let (choice, nudge) = match &self.questions[0].about {
+            About::Asked(Ask::Wake { nudges, .. }) if choice < nudges.len() => {
+                (choice, nudges[choice].0)
+            }
+            About::Asked(Ask::Wake { nudges, .. }) => (choice + 2 - nudges.len(), 0),
+            _ => (choice, 0),
+        };
         match (&self.questions[0].about, choice) {
-            (About::Asked(Ask::Wake { .. }), 0 | 1) => self.reply("nudge", Answer::Nudge(choice)),
+            (About::Asked(Ask::Wake { .. }), 0 | 1) => self.reply("nudge", Answer::Nudge(nudge)),
             (About::Asked(Ask::Wake { .. }), 2) => self.reply("retry", Answer::Retry),
             (About::Asked(Ask::Wake { .. }), 3) | (About::Asked(Ask::Blocked { .. }), 1) => {
                 self.reply("park", Answer::Park)
@@ -1004,6 +1023,7 @@ impl Screen {
             repo: repo.clone(),
             workspace: self.launch.workspace.clone(),
             api_key: self.launch.api_key.clone(),
+            typesafe: self.launch.typesafe.clone(),
             home: self.launch.home.clone(),
             tick: self.launch.tick,
             poll_prs: self.launch.poll_prs,
@@ -1012,6 +1032,8 @@ impl Screen {
             events: self.sender.clone(),
             #[cfg(test)]
             timeout: None,
+            #[cfg(test)]
+            wait: None,
         }) {
             Ok(o) => Some((lock, o)),
             Err(err) => {
@@ -1214,6 +1236,7 @@ impl Launch {
             repo: repo.to_path_buf(),
             workspace: "w1".to_string(),
             api_key: "sk-test".to_string(),
+            typesafe: judgment::fake::Fake::down(),
             home: home.to_path_buf(),
             tick: Duration::from_millis(1),
             poll_prs: Duration::from_millis(1),
