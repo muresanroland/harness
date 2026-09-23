@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 
-use crate::orchestrator::judgment::{self, TypeSafe};
+use crate::orchestrator::judgment::{self, Action, TypeSafe};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Answer, Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
@@ -88,10 +88,11 @@ pub(crate) enum Pending {
 
 /// What a Question is about, which decides its options and what an answer does.
 pub(crate) enum About {
-    /// What the Orchestrator asked of a Ticket. A Wake offers nudge with
-    /// either canned prompt (the one a Judgment picked, when it scored
-    /// them), retry, park, open the pane, a prompt of your own; a blocked
-    /// session offers open the pane, park, "I answered it".
+    /// What the Orchestrator asked of a Ticket. A Wake offers the actions
+    /// still unspent (a nudge with either canned prompt, or the one a
+    /// Judgment picked; retry; park; wait), then open the pane and a prompt
+    /// of your own; a blocked session offers open the pane, park, "I
+    /// answered it".
     Asked(Ask),
     /// A yes/no confirmation; it jumps the queue.
     Confirm(Pending),
@@ -549,18 +550,10 @@ impl Screen {
             return Vec::new();
         };
         match &q.about {
-            About::Asked(Ask::Wake { nudges, .. }) => nudges
+            About::Asked(Ask::Wake { actions, file, .. }) => actions
                 .iter()
-                .map(|(_, prompt)| format!("nudge: {prompt}"))
-                .chain(
-                    [
-                        "retry with a fresh session",
-                        "park",
-                        "open the pane",
-                        "a prompt of your own",
-                    ]
-                    .map(str::to_string),
-                )
+                .map(|action| action.option(file))
+                .chain(["open the pane", "a prompt of your own"].map(str::to_string))
                 .collect(),
             About::Asked(Ask::Blocked { .. }) => ["open the pane", "park", "I answered it"]
                 .map(str::to_string)
@@ -690,32 +683,15 @@ impl Screen {
 
     /// The user picked option `choice` of the front Question.
     fn answer(&mut self, choice: usize) {
-        // a Wake's options past its nudges numbered as if both were shown
-        let (choice, nudge) = match &self.questions[0].about {
-            About::Asked(Ask::Wake { nudges, .. }) if choice < nudges.len() => {
-                (choice, nudges[choice].0)
-            }
-            About::Asked(Ask::Wake { nudges, .. }) => (choice + 2 - nudges.len(), 0),
-            _ => (choice, 0),
-        };
         match (&self.questions[0].about, choice) {
-            (About::Asked(Ask::Wake { .. }), 0 | 1) => self.reply("nudge", Answer::Nudge(nudge)),
-            (About::Asked(Ask::Wake { .. }), 2) => self.reply("retry", Answer::Retry),
-            (About::Asked(Ask::Wake { .. }), 3) | (About::Asked(Ask::Blocked { .. }), 1) => {
-                self.reply("park", Answer::Park)
-            }
-            (About::Asked(Ask::Wake { pane, .. }), 4)
-            | (About::Asked(Ask::Blocked { pane }), 0) => {
-                // the Question stays
-                let focus = self
-                    .launch
-                    .tools
-                    .run(&self.launch.repo, &["herdr", "pane", "focus", pane]);
-                if let Err(err) = focus {
-                    self.notice(&err.to_string(), NOTICE_WINDOW);
-                }
-            }
-            (About::Asked(Ask::Wake { .. }), 5) => self.composing = true,
+            // a Wake's actions, then open the pane and a prompt of your own
+            (About::Asked(Ask::Wake { actions, pane, .. }), _) => match actions.get(choice) {
+                Some(&action) => self.reply(action.word(), Answer::Act(action)),
+                None if choice == actions.len() => self.open_pane(pane.clone()),
+                None => self.composing = true,
+            },
+            (About::Asked(Ask::Blocked { pane }), 0) => self.open_pane(pane.clone()),
+            (About::Asked(Ask::Blocked { .. }), 1) => self.reply("park", Answer::Act(Action::Park)),
             (About::Asked(Ask::Blocked { .. }), 2) => {
                 let q = self.questions.remove(0);
                 self.tell(q.ticket.as_deref(), "you answered: I answered it");
@@ -741,6 +717,17 @@ impl Screen {
             _ => {}
         }
         self.hidden = false;
+    }
+
+    /// Focuses the pane a Question is about; the Question stays.
+    fn open_pane(&mut self, pane: String) {
+        let focus = self
+            .launch
+            .tools
+            .run(&self.launch.repo, &["herdr", "pane", "focus", &pane]);
+        if let Err(err) = focus {
+            self.notice(&err.to_string(), NOTICE_WINDOW);
+        }
     }
 
     /// The front Question answered: line one names the answer, which goes

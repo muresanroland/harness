@@ -2,8 +2,9 @@ use super::draw::{draw, ticket_color};
 use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
 use super::{About, Epic, Launch, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
+use crate::orchestrator::judgment::Action;
 use crate::orchestrator::scheduler::BdIssue;
-use crate::orchestrator::stage::{nudges, Ask, Event, Orchestrator};
+use crate::orchestrator::stage::{Ask, Event, Orchestrator};
 use crate::orchestrator::state::{
     acquire_lock, load_state, lock_frees, State, TicketState, STATUS_MERGED, STATUS_PARKED,
     STATUS_PR_OPEN, STATUS_RUNNING,
@@ -25,6 +26,11 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// The two canned nudges' prompts over a result file.
+fn nudges(file: &Path) -> [String; 2] {
+    [Action::NudgeWriteResult, Action::NudgeProceed].map(|a| a.nudge(file).unwrap().0)
+}
 
 fn issue(id: &str, title: &str, status: &str) -> BdIssue {
     BdIssue {
@@ -1329,8 +1335,10 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
     let wake = || Ask::Wake {
         pane: "w1:p7".to_string(),
         tail: "Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string(),
-        nudges: nudges(file).into_iter().enumerate().collect(),
-        scores: String::new(),
+        file: file.to_path_buf(),
+        // its waits spent
+        actions: Action::ALL[..4].to_vec(),
+        judged: None,
     };
     s.push(asking(
         "harness-kqe.11",
@@ -1587,9 +1595,10 @@ fn a_confirmation_and_the_continue_checklist_render_as_questions() {
 }
 
 /// Every answer to a Wake goes to the Orchestrator for the Wake's session:
-/// the two canned nudges and a prompt of your own are sent there by herdr
-/// agent prompt and re-arm the hold, open the pane keeps the Question, park
-/// parks; each answer logs its two lines.
+/// a canned nudge and a prompt of your own are sent there by herdr agent
+/// prompt and re-arm the hold, and a nudged session is offered no canned
+/// nudge again; open the pane keeps the Question, park parks; each answer
+/// logs its two lines.
 #[test]
 fn a_wake_question_nudges_opens_the_pane_and_parks() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
@@ -1613,7 +1622,7 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
             .map(|c| c.splitn(5, ' ').nth(4).unwrap().to_string())
             .collect::<Vec<_>>()
     };
-    let [first, second] = nudges(&file);
+    let [first, _] = nudges(&file);
 
     pick(&mut s, 1);
     assert!(s.questions.is_empty(), "the answered Question stayed");
@@ -1621,8 +1630,19 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
     assert_eq!(prompts(&w), [first]);
     // The hold is re-armed: the nudged session, idle without a result, Wakes again.
     await_questions(&mut s, 1);
+    assert_eq!(
+        s.options(),
+        [
+            "retry with a fresh session",
+            "park",
+            "wait ten minutes",
+            "open the pane",
+            "a prompt of your own"
+        ],
+        "a nudged session was offered a nudge"
+    );
 
-    pick(&mut s, 6);
+    pick(&mut s, 5);
     assert!(s.composing && s.questions.len() == 1);
     assert!(row(&render(&s, 120, 40), 39).contains("your prompt, Enter sends it"));
     type_line(&mut s, "read the failing test first");
@@ -1634,23 +1654,19 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
     );
     await_questions(&mut s, 1);
 
-    pick(&mut s, 5); // open the pane
+    pick(&mut s, 4); // open the pane
     assert_eq!(
         w.called("herdr pane focus"),
         [format!("herdr pane focus {pane}")]
     );
     assert_eq!(s.questions.len(), 1, "open the pane answered the Question");
-    pick(&mut s, 2);
-    await_line(&mut s, "hx-1 nudged: carry on, the Ticket is the spec");
-    assert_eq!(prompts(&w).last(), Some(&second));
-    await_questions(&mut s, 1);
     assert_eq!(
         w.called("herdr agent start h-hx-1-implement").len(),
         1,
         "a nudge started a fresh session"
     );
 
-    pick(&mut s, 4);
+    pick(&mut s, 2);
     await_line(&mut s, "hx-1 parked: implement went idle without a result");
     for line in [
         "hx-1 asking you: stuck in implement",
@@ -1658,7 +1674,6 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
         "hx-1 nudged: write the result file",
         "hx-1 you answered: your prompt",
         "hx-1 nudged with your prompt",
-        "hx-1 nudged: carry on, the Ticket is the spec",
         "hx-1 you answered: park",
         "hx-1 parked: implement went idle without a result",
     ] {
@@ -1668,7 +1683,7 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
             log(&w)
         );
     }
-    assert_eq!(log(&w).matches(" asking you: ").count(), 4);
+    assert_eq!(log(&w).matches(" asking you: ").count(), 3);
     assert!(!log(&w).contains("open"), "open the pane logged something");
     s.command("/stop-work");
     await_end(&mut s);
@@ -1709,7 +1724,7 @@ fn a_wake_question_retries_with_a_fresh_session() {
 }
 
 /// Below the floor the Wake's Question shows the Judgment's scores and the
-/// one nudge it picked; the options after that nudge keep their meaning.
+/// one nudge it picked, then the unspent actions: after a retry, no retry.
 #[test]
 fn a_wake_question_below_the_floor_shows_the_scores_and_its_one_nudge() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
@@ -1725,21 +1740,22 @@ fn a_wake_question_below_the_floor_shows_the_scores_and_its_one_nudge() {
     s.command("/start-epic hx");
     await_line(&mut s, "hx-1 asking you: stuck in implement");
     let [_, proceed] = nudges(&w.repo.join(".harness/runs/hx-1/implement.md"));
+    let rest = ["open the pane", "a prompt of your own"].map(str::to_string);
+    let options = |actions: &[&str]| -> Vec<String> {
+        std::iter::once(format!("nudge: {proceed}"))
+            .chain(actions.iter().map(|a| a.to_string()))
+            .chain(rest.clone())
+            .collect()
+    };
     assert_eq!(
         s.options(),
-        [
-            format!("nudge: {proceed}"),
-            "retry with a fresh session".to_string(),
-            "park".to_string(),
-            "open the pane".to_string(),
-            "a prompt of your own".to_string(),
-        ]
+        options(&["retry with a fresh session", "park", "wait ten minutes"])
     );
     let buf = render(&s, 120, 40);
     assert!(
         find(
             &buf,
-            "judged: park 0.50, nudge_proceed 0.30, retry 0.10, nudge_write_result 0.06, wait 0.04"
+            "judged: park 0.50, nudge to carry on 0.30, retry 0.10, nudge to write the result 0.06, wait 0.04"
         )
         .is_some(),
         "{:#?}",
@@ -1753,11 +1769,30 @@ fn a_wake_question_below_the_floor_shows_the_scores_and_its_one_nudge() {
     );
     // The fresh session's Wake: the retry re-armed the nudge, and is spent.
     await_questions(&mut s, 1);
-    assert_eq!(s.options().len(), 5);
+    assert_eq!(s.options(), options(&["park", "wait ten minutes"]));
     pick(&mut s, 1);
     await_line(&mut s, "hx-1 nudged: carry on, the Ticket is the spec");
     s.command("/stop-work");
     await_end(&mut s);
+}
+
+/// Of the waiting lines, only a trust dialog blocks a Ticket on the user; a
+/// Judgment's wait does not.
+#[test]
+fn only_a_trust_dialog_waiting_line_blocks_a_ticket() {
+    let mut s = screen();
+    s.push(event(
+        Some("harness-kqe.10"),
+        "waiting: still working (pane 2-1)",
+        true,
+    ));
+    assert!(!s.blocked("harness-kqe.10"), "a wait blocked the Ticket");
+    s.push(event(
+        Some("harness-kqe.10"),
+        "waiting: claude does not trust /r yet, open it there once and accept (pane 2-1)",
+        true,
+    ));
+    assert!(s.blocked("harness-kqe.10"));
 }
 
 /// A blocked session's Question: "I answered it" closes it, the pane moving

@@ -482,21 +482,7 @@ impl World {
 
     /// Waits for an Event whose text contains want.
     pub(crate) fn await_event(&self, want: &str) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if let Some(event) = self.events().into_iter().find(|e| e.text.contains(want)) {
-                return event;
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-        panic!(
-            "no Event contained {want:?}; the Orchestrator sent:\n{}",
-            self.events()
-                .iter()
-                .map(|e| format!("{:?} {}", e.ticket, e.text))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        self.await_nth(want, 1)
     }
 
     /// Waits for the nth Event (from 1) whose text contains want.
@@ -514,8 +500,12 @@ impl World {
             thread::sleep(Duration::from_millis(1));
         }
         panic!(
-            "no Event {n} contained {want:?}; the panel got:\n{}",
-            self.lines().join("\n")
+            "no Event {n} contained {want:?}; the Orchestrator sent:\n{}",
+            self.events()
+                .iter()
+                .map(|e| format!("{:?} {}", e.ticket, e.text))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 

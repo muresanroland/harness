@@ -1,7 +1,7 @@
 //! The Orchestrator and its Config, the Stage table and the Stage loop: one
 //! Stage run to its completion rule, with the Wake hold when it cannot advance.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::herdr::{agent_name, split_target};
-use super::judgment::{offered, Judged, TypeSafe, FLOOR};
+use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
 use super::state::{load_state, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
@@ -56,29 +56,8 @@ pub(crate) enum StageError {
 /// with no result counts as a Stage that did not write one.
 const SETTLE_TICKS: u32 = 3;
 
-/// How long a Judgment's wait holds before the Ticket Wakes again.
+/// How long a wait holds before the Ticket Wakes again.
 const WAIT: Duration = Duration::from_secs(10 * 60);
-
-/// The canned nudges from docs/design/judgment-prototype: the Judgment's
-/// action, the words the line says once one is sent, and the prompt over
-/// {result_file}.
-const NUDGES: [(&str, &str, &str); 2] = [
-    (
-        "nudge_write_result",
-        "write the result file",
-        "The Orchestrator is waiting for your result file {result_file} and cannot read anything else. Write it now, the first line exactly 'STATUS: done' (or 'STATUS: failed' and why), then stop.",
-    ),
-    (
-        "nudge_proceed",
-        "carry on, the Ticket is the spec",
-        "Nobody is watching this pane and no one will answer. The Ticket is the spec: decide yourself, note the decision in the result file, carry on to the end, then write {result_file} with 'STATUS: done' as its first line.",
-    ),
-];
-
-/// The canned nudges' prompts for a Stage's result file.
-pub(crate) fn nudges(file: &Path) -> [String; 2] {
-    NUDGES.map(|(_, _, prompt)| prompt.replace("{result_file}", &file.display().to_string()))
-}
 
 /// How a Stage's session, or its hold, ends.
 enum Held {
@@ -94,15 +73,16 @@ enum Held {
 /// What a panel line asks of the user; the Shell puts it as a Question.
 #[derive(Clone, Debug)]
 pub(crate) enum Ask {
-    /// A Wake: the session's pane, the tail of its output, and the canned
-    /// nudges over the Stage's result file by their place in NUDGES, shown
-    /// in full: both, or the one a Judgment below the floor picked, with
-    /// its scores ("" without a Judgment).
+    /// A Wake: the session's pane, the tail of its output, the Stage's
+    /// result file (the canned nudges' subject), the actions on offer (of
+    /// the nudges, the one a Judgment below the floor picked) and that
+    /// Judgment.
     Wake {
         pane: String,
         tail: String,
-        nudges: Vec<(usize, String)>,
-        scores: String,
+        file: PathBuf,
+        actions: Vec<Action>,
+        judged: Option<Judged>,
     },
     /// A session waiting at a prompt only the user can answer.
     Blocked { pane: String },
@@ -111,10 +91,7 @@ pub(crate) enum Ask {
 /// The user's answer to a Question, for the session (pane) it was about.
 #[derive(Debug)]
 pub(crate) enum Answer {
-    Retry,
-    Park,
-    /// One of the canned nudges, by its place in NUDGES.
-    Nudge(usize),
+    Act(Action),
     /// A prompt of the user's own, sent as a nudge.
     Prompt(String),
 }
@@ -122,9 +99,7 @@ pub(crate) enum Answer {
 impl Answer {
     fn word(&self) -> &'static str {
         match self {
-            Answer::Retry => "retry",
-            Answer::Park => "park",
-            Answer::Nudge(_) => "nudge",
+            Answer::Act(action) => action.word(),
             Answer::Prompt(_) => "prompt",
         }
     }
@@ -195,6 +170,8 @@ pub(crate) struct Orchestrator {
     pub(crate) answers: Mutex<Vec<(String, String, Answer)>>,
     /// The Tickets running on a thread of this process.
     pub(crate) active: Mutex<BTreeSet<String>>,
+    /// Each Ticket's live session's deadline, which a wait keeps.
+    deadlines: Mutex<BTreeMap<String, Instant>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
     /// failure on one fails the test as Go's t.Errorf did.
     #[cfg(test)]
@@ -222,6 +199,7 @@ impl Orchestrator {
             commands: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
+            deadlines: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             threads: Mutex::new(Vec::new()),
         }
@@ -236,7 +214,15 @@ impl Orchestrator {
         st.timeout
     }
 
-    /// How long a Judgment's wait holds.
+    /// A full Stage deadline from now for the Ticket's session.
+    fn new_deadline(&self, ticket: &str, st: &Stage) -> Instant {
+        let deadline = Instant::now() + self.timeout(st);
+        let mut deadlines = self.deadlines.lock().unwrap();
+        deadlines.insert(ticket.to_string(), deadline);
+        deadline
+    }
+
+    /// How long a wait holds.
     fn wait_length(&self) -> Duration {
         #[cfg(test)]
         if let Some(wait) = self.cfg.wait {
@@ -383,7 +369,7 @@ impl Orchestrator {
     /// arrived; any other answer for it is dropped.
     fn park_arrived(&self, ticket: &str, pane: &str) -> bool {
         let answered = match self.take_answer(ticket, Some(pane)) {
-            Some(Answer::Park) => true,
+            Some(Answer::Act(Action::Park)) => true,
             Some(other) => {
                 self.dropped(ticket, &other);
                 false
@@ -514,14 +500,9 @@ impl Orchestrator {
                     .is_ok_and(|reply| reply.result.agent.pane_id == *pane)
         });
         let mut retry = false;
-        // ponytail: waits are counted in memory; a restarted run grants three more.
-        let mut waits = 0;
         loop {
             let mut held = match live.take() {
-                Some(pane) => {
-                    let settle = Some(SETTLE_TICKS * self.cfg.tick);
-                    self.hold(ticket, st, &label, &pane, &file, want, settle)
-                }
+                Some(pane) => self.hold(ticket, st, &label, &pane, &file, want, true, None),
                 None => self.attempt(ticket, st, &label, retry, &file, &all, want),
             };
             loop {
@@ -540,13 +521,14 @@ impl Orchestrator {
                     Held::Woke(reason) => reason,
                 };
                 let ts = self.ticket(ticket);
-                let offered = offered(&ts, &reason, waits);
-                if offered == ["park"] {
+                let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
+                let alive = self.agent_status(&pane).is_some();
+                let actions = offered(&ts, &reason, alive);
+                if actions == [Action::Park] {
                     return Err(StageError::Parked(format!(
                         "{label} {reason} again after a retry"
                     )));
                 }
-                let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
                 // a command or answer sent before this Wake is not an answer to it
                 self.consume(&format!("retry-{ticket}"));
                 self.consume(&format!("park-{ticket}"));
@@ -566,61 +548,45 @@ impl Orchestrator {
                     .tools
                     .run(&self.cfg.repo, &read)
                     .unwrap_or_default();
-                let judged = self.judge(ticket, &ts, &reason, &file, &tail, &offered);
-                let at = self.locate(&pane);
-                let stuck = format!("stuck in {label}: {reason} {at}");
-                let mut settle = None;
-                match judged {
+                let judged = self.judge(ticket, &ts, &reason, &file, &tail, &actions);
+                if self.stopping() {
+                    return Err(StageError::Stopped); // a late Judgment is not acted on
+                }
+                let stuck = format!("stuck in {label}: {reason} {}", self.locate(&pane));
+                // At or above the floor the Judgment answers, and the hold
+                // acts on it as on the user's answer.
+                let act = match judged {
                     Some(judged) if judged.confidence >= FLOOR => {
                         self.report(ticket, &stuck);
-                        self.report(ticket, &format!("judged: {}", judged.scores()));
-                        // Every action but wait is answered as the user
-                        // would, and the hold acts on it.
-                        let answer = match judged.choice.as_str() {
-                            "wait" => {
-                                waits += 1;
-                                self.report(ticket, &format!("waiting: still working {at}"));
-                                settle = Some(self.wait_length());
-                                None
-                            }
-                            "retry" => Some(Answer::Retry),
-                            "park" => Some(Answer::Park),
-                            nudge => NUDGES.iter().position(|n| n.0 == nudge).map(Answer::Nudge),
-                        };
-                        if let Some(answer) = answer {
-                            self.answer(ticket, &pane, answer);
-                        }
+                        self.report(ticket, &format!("judged: {}", judged.said()));
+                        Some(Answer::Act(judged.choice))
                     }
                     judged => {
-                        // the higher-scored nudge of a Judgment, else both
-                        let picked = judged.as_ref().and_then(|j| {
-                            j.scores
-                                .iter()
-                                .find_map(|(action, _)| NUDGES.iter().position(|n| n.0 == action))
-                        });
-                        let nudges = nudges(&file)
+                        // of the nudges, the one the Judgment scored higher
+                        let picked = judged
+                            .as_ref()
+                            .and_then(|j| j.scores.iter().map(|(a, _)| *a).find(|a| a.is_nudge()));
+                        let actions = actions
                             .into_iter()
-                            .enumerate()
-                            .filter(|(i, _)| picked.is_none_or(|p| p == *i))
+                            .filter(|a| !a.is_nudge() || picked.is_none_or(|p| p == *a))
                             .collect();
-                        let scores = judged.as_ref().map(Judged::scores).unwrap_or_default();
-                        self.asks(
-                            ticket,
-                            &stuck,
-                            Ask::Wake {
-                                pane: pane.clone(),
-                                tail,
-                                nudges,
-                                scores: scores.clone(),
-                            },
-                        );
-                        if judged.is_some() {
+                        let said = judged.as_ref().map(Judged::said);
+                        let ask = Ask::Wake {
+                            pane: pane.clone(),
+                            tail,
+                            file: file.clone(),
+                            actions,
+                            judged,
+                        };
+                        self.asks(ticket, &stuck, ask);
+                        if let Some(said) = said {
                             // log only: a panel line would close the Question
-                            self.log(ticket, &format!("judged: {scores}"));
+                            self.log(ticket, &format!("judged: {said}"));
                         }
+                        None
                     }
-                }
-                held = self.hold(ticket, st, &label, &pane, &file, want, settle);
+                };
+                held = self.hold(ticket, st, &label, &pane, &file, want, false, act);
                 if matches!(held, Held::Park) {
                     return Err(StageError::Parked(format!("{label} {reason}")));
                 }
@@ -676,7 +642,7 @@ impl Orchestrator {
         // Clear its result only after fresh_pane has replaced it, before the
         // new writer.
         let _ = fs::remove_file(file);
-        let deadline = Instant::now() + self.timeout(st);
+        let deadline = self.new_deadline(ticket, st);
         // The user accepts trust in that very pane, and trust flips while
         // their own session still holds it: after a trust wait the pane may
         // stay busy until they exit, as long as the Stage's deadline allows.
@@ -876,12 +842,15 @@ impl Orchestrator {
     }
 
     /// Keeps a woken Ticket waiting, leaving every other Ticket running,
-    /// until a retry or park arrives or a done result appears. A nudge is
-    /// sent to the session in `pane` from here, and spends the session's
-    /// one. `settle`, or a nudge, arms the completion check on the live
-    /// session as well: the Ticket Wakes again when the session is idle
-    /// without a result once `settle` has passed, dies or runs out of time,
-    /// and a prompt it stops at is a blocked session as in any Stage.
+    /// until a retry or park arrives or a done result appears. The
+    /// Judgment's answer `act`, taken ahead of anything sent meanwhile, and
+    /// the user's are acted on here: a nudge is sent to the session in
+    /// `pane` and spends the session's one, a wait spends one of its three.
+    /// `armed`, a nudge or a wait arms the completion check on the live
+    /// session as well: the Ticket Wakes again when the session goes idle
+    /// without a result (once the wait is over, whatever its state), dies
+    /// or runs out of time, and a prompt it stops at is a blocked session
+    /// as in any Stage.
     #[allow(clippy::too_many_arguments)]
     fn hold(
         &self,
@@ -891,26 +860,44 @@ impl Orchestrator {
         pane: &str,
         file: &Path,
         want: ResultRequirements,
-        settle: Option<Duration>,
+        armed: bool,
+        mut act: Option<Answer>,
     ) -> Held {
-        let arm = |settle: Duration| {
-            let now = Instant::now();
-            (now + settle, now + self.timeout(st))
-        };
-        let mut armed = settle.map(arm);
+        // (settled, deadline, waiting): idle before `settled` is not
+        // believed, and a wait Wakes at `settled` whatever the state.
+        let settle = SETTLE_TICKS * self.cfg.tick;
+        let mut armed = armed.then(|| {
+            (
+                Instant::now() + settle,
+                self.new_deadline(ticket, st),
+                false,
+            )
+        });
         loop {
-            if self.consume(&format!("retry-{ticket}")) {
-                return Held::Retry;
-            }
-            if self.consume(&format!("park-{ticket}")) {
-                return Held::Park;
-            }
-            let nudge = match self.take_answer(ticket, Some(pane)) {
-                Some(Answer::Retry) => return Held::Retry,
-                Some(Answer::Park) => return Held::Park,
-                Some(Answer::Nudge(n)) => {
-                    Some((nudges(file)[n].clone(), format!("nudged: {}", NUDGES[n].1)))
+            let answer = match act.take() {
+                Some(act) => Some(act),
+                None if self.consume(&format!("retry-{ticket}")) => return Held::Retry,
+                None if self.consume(&format!("park-{ticket}")) => return Held::Park,
+                None => self.take_answer(ticket, Some(pane)),
+            };
+            let nudge = match answer {
+                Some(Answer::Act(Action::Retry)) => return Held::Retry,
+                Some(Answer::Act(Action::Park)) => return Held::Park,
+                Some(Answer::Act(Action::Wait)) => {
+                    self.update(ticket, |ts| ts.waits += 1);
+                    self.report(
+                        ticket,
+                        &format!("waiting: still working {}", self.locate(pane)),
+                    );
+                    // the session's own deadline stands
+                    let deadline = self.deadlines.lock().unwrap().get(ticket).copied();
+                    let deadline = deadline.unwrap_or_else(|| self.new_deadline(ticket, st));
+                    armed = Some((Instant::now() + self.wait_length(), deadline, true));
+                    None
                 }
+                Some(Answer::Act(nudge)) => nudge
+                    .nudge(file)
+                    .map(|(prompt, said)| (prompt, format!("nudged: {said}"))),
                 Some(Answer::Prompt(text)) => Some((text, "nudged with your prompt".to_string())),
                 None => None,
             };
@@ -921,7 +908,11 @@ impl Orchestrator {
                     return Held::Woke(format!("never took the nudge: {err}"));
                 }
                 self.report(ticket, &said);
-                armed = Some(arm(SETTLE_TICKS * self.cfg.tick));
+                armed = Some((
+                    Instant::now() + settle,
+                    self.new_deadline(ticket, st),
+                    false,
+                ));
             }
             // The status before the result, as in attempt: a result written
             // between the two reads must not look like idle without one.
@@ -930,7 +921,8 @@ impl Orchestrator {
             if reason.is_empty() && matches!(status.as_deref(), None | Some("idle" | "done")) {
                 return Held::Done(result);
             }
-            if let Some((settled, deadline)) = armed {
+            if let Some((settled, deadline, waiting)) = armed {
+                let now = Instant::now();
                 match status.as_deref() {
                     None => return Held::Woke("session died".to_string()),
                     Some("blocked") => {
@@ -938,8 +930,11 @@ impl Orchestrator {
                             return held;
                         }
                     }
-                    Some("idle" | "done") if Instant::now() > settled => return Held::Woke(reason),
-                    Some(_) if Instant::now() > deadline => return Held::Woke(self.timed_out(st)),
+                    Some("idle" | "done") if now > settled => return Held::Woke(reason),
+                    Some(_) if now > deadline => return Held::Woke(self.timed_out(st)),
+                    Some(_) if waiting && now > settled && !reason.is_empty() => {
+                        return Held::Woke(reason)
+                    }
                     Some(_) => {}
                 }
             }
@@ -1023,7 +1018,9 @@ impl Orchestrator {
         self.update(ticket, |ts| {
             ts.tab = tab;
             ts.panes.insert(st.name.to_string(), pane.clone());
-            ts.nudged = false; // a fresh session has its nudge
+            // a fresh session has its nudge and its waits
+            ts.nudged = false;
+            ts.waits = 0;
         });
         Ok(pane)
     }

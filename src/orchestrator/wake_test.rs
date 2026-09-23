@@ -1,6 +1,7 @@
 use super::judgment::fake::Fake;
+use super::judgment::Action;
 use super::judgment_test::{choose, criteria};
-use super::stage::{nudges, Answer, Ask, Config, Orchestrator};
+use super::stage::{Answer, Ask, Config, Orchestrator};
 use super::state::{load_state, STATUS_PARKED, STATUS_PR_OPEN};
 use super::world::{new_world, spawn_ticket, succeed, working, BdTicket, Prompt, World};
 use super::write_file;
@@ -142,7 +143,7 @@ fn second_failure_after_retry_and_nudge_parks_the_ticket() {
     o.answer(
         "hx-1",
         &o.ticket("hx-1").panes["implement"],
-        Answer::Nudge(0),
+        Answer::Act(Action::NudgeWriteResult),
     );
     run.wait();
 
@@ -270,21 +271,21 @@ fn a_nudge_is_sent_to_its_session_and_re_arms_the_hold() {
     let Some(Ask::Wake {
         pane,
         tail,
-        nudges: offered,
-        scores,
+        file: asked,
+        actions,
+        judged,
     }) = wake.ask
     else {
         panic!("the Wake asks nothing: {wake:?}");
     };
-    assert_eq!(scores, "", "scores without a Judgment");
-    let offered: Vec<String> = offered
-        .into_iter()
-        .enumerate()
-        .map(|(i, (n, prompt))| {
-            assert_eq!(i, n, "without a Judgment both nudges show, in order");
-            prompt
-        })
-        .collect();
+    assert!(judged.is_none(), "a Judgment while TypeSafe is down");
+    assert_eq!(asked, file);
+    assert_eq!(actions, Action::ALL, "without a Judgment both nudges show");
+    let nudge = |a: Action, file: &std::path::Path| a.nudge(file).unwrap().0;
+    let offered = [
+        nudge(Action::NudgeWriteResult, &file),
+        nudge(Action::NudgeProceed, &file),
+    ];
     assert_eq!(
         w.called("herdr agent read"),
         ["herdr agent read h-hx-1-implement --source recent-unwrapped --lines 120"],
@@ -294,10 +295,9 @@ fn a_nudge_is_sent_to_its_session_and_re_arms_the_hold() {
         tail,
         "Ran the tests: 12 passed.\n> Should I also update the docs?\n"
     );
-    assert_eq!(offered, nudges(&file));
     assert!(offered[0].contains(&file.display().to_string()));
 
-    o.answer("hx-1", &pane, Answer::Nudge(0));
+    o.answer("hx-1", &pane, Answer::Act(Action::NudgeWriteResult));
     w.await_line("hx-1 nudged: write the result file");
     assert_eq!(
         w.called(&format!("herdr agent prompt {pane} "))
@@ -335,13 +335,14 @@ fn a_nudge_is_sent_to_its_session_and_re_arms_the_hold() {
 
     // Implement's session is gone: a nudge for it is not sent to Review's.
     let review = o.ticket("hx-1").panes["review"].clone();
-    o.answer("hx-1", &pane, Answer::Nudge(1));
+    o.answer("hx-1", &pane, Answer::Act(Action::NudgeProceed));
     w.await_event("dropped your nudge: that session has moved on");
+    let review_file = o.run_dir("hx-1").join("review-1.md");
     assert!(
         w.called(&format!("herdr agent prompt {review} "))
             .iter()
             .all(|c| !c.ends_with(&offered[1])
-                && !c.ends_with(&nudges(&o.run_dir("hx-1").join("review-1.md"))[1])),
+                && !c.ends_with(&nudge(Action::NudgeProceed, &review_file))),
         "a stale nudge reached the next Stage's pane"
     );
     assert!(o.answers.lock().unwrap().is_empty());

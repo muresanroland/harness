@@ -12,8 +12,9 @@ pub(crate) const STATUS_PARKED: &str = "parked";
 pub(crate) const STATUS_PR_OPEN: &str = "pr-open";
 pub(crate) const STATUS_MERGED: &str = "merged";
 
-/// What the Orchestrator knows about one Ticket. The JSON is Go's: the same
-/// names, order and omissions, so either binary picks up the other's run.
+/// What the Orchestrator knows about one Ticket. The JSON began as Go's (the
+/// same names, order and omissions); nudged and waits came after the Go tree
+/// was gone.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TicketState {
     pub(crate) status: String,
@@ -34,6 +35,9 @@ pub(crate) struct TicketState {
     /// The Stage's live session has had its one nudge.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) nudged: bool,
+    /// The waits the Stage's live session has taken, of three.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) waits: usize,
     #[serde(
         default,
         rename = "conflict_reported",
@@ -48,6 +52,10 @@ pub(crate) struct State {
     pub(crate) epic: String,
     #[serde(default, deserialize_with = "null_is_empty")]
     pub(crate) tickets: BTreeMap<String, TicketState>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Go's nil map: "tickets": null loads as no Tickets.

@@ -395,13 +395,15 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
         None => q.text.clone(),
     };
     let mut lines = vec![Line::from(Span::styled(head, bold(TEXT)))];
-    if let About::Asked(Ask::Wake { scores, .. }) = &q.about {
-        if !scores.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("judged: {scores}"),
-                fg(TEXT),
-            )));
-        }
+    if let About::Asked(Ask::Wake {
+        judged: Some(judged),
+        ..
+    }) = &q.about
+    {
+        lines.push(Line::from(Span::styled(
+            format!("judged: {}", judged.said()),
+            fg(TEXT),
+        )));
     }
     lines.push(Line::default());
     let mut options = Vec::new();

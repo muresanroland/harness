@@ -126,6 +126,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
             reason: "review went idle".to_string(),
             retried: true,
             nudged: true,
+            waits: 2,
             conflict: true,
         },
     );
@@ -137,6 +138,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
         "\"reason\"",
         "\"retried\"",
         "\"nudged\"",
+        "\"waits\"",
         "\"conflict_reported\"",
     ] {
         assert!(raw.contains(field), "saved state lacks {field}:\n{raw}");
