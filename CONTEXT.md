@@ -15,11 +15,15 @@ _Avoid_: Project, host repo
 A skill owned and shipped by the Harness that holds the instructions for one Stage. Once installed in a Target repo, the repo's copy is the one that runs and may be edited there.
 _Avoid_: Prompt, template
 
+**Delegate skill**:
+A third-party skill a Stage skill runs for its Stage's work, chosen per Stage by the user. The Stage skill still owns the Stage result; without a Delegate skill it follows its own instructions.
+_Avoid_: Override, replacement, work skill
+
 **Shipped skill**:
 Any skill the Harness installs into a Target repo: the Stage skills, plus create-pr, which the Fix Stage runs. A repo that already has a create-pr of its own is asked whether to keep it, replace it, or take the shipped one beside it as harness-create-pr.
 
 **Skill manifest**:
-The Target repo's list of the skills it wants: the Stage skills, plus third-party skills named by their source.
+The Target repo's list of the skills it wants: the Stage skills, plus third-party skills named by their source, and which of them is each Stage's Delegate skill.
 _Avoid_: Config, lockfile
 
 **Epic**:
@@ -78,6 +82,10 @@ _Avoid_: Prompt, dialog, alert, form, popup
 **Parked**:
 A Ticket taken out of the Pipeline to wait for the user, after a Wake that a Judgment or the user settled as park. Other Tickets keep running.
 _Avoid_: Stuck, paused, failed
+
+**Limited**:
+A Ticket held because the agent a Stage runs on hit its provider's usage limit. Unlike Parked it waits for the clock, not the user: a Claude Stage resumes by itself at the reset; a codex Review becomes a Question.
+_Avoid_: Rate-limited, cooling down, throttled
 
 **Ticket tab**:
 The herdr tab belonging to one running Ticket, holding one pane per Stage.
