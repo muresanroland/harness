@@ -3,7 +3,7 @@
 //! 'agent prompt': the session hook decides what result file a Stage's
 //! session leaves behind.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -70,6 +70,8 @@ pub(crate) struct Prompt {
     pub(crate) file: String,
     pub(crate) round: usize,
     pub(crate) open_pr: bool,
+    /// The Stage's plan was approved: the session implements it now.
+    pub(crate) approved: bool,
 }
 
 /// Go's `(?m)^- ([A-Za-z ]+): (.*)$` over the prompt's input lines.
@@ -124,7 +126,8 @@ impl Write for LogBuf {
 }
 
 /// Plays one Stage session: returns the result file's content ("" writes
-/// nothing) and the agent status the session settles in.
+/// nothing) and the agent status the session settles in; "plan" stops it,
+/// blocked, at the plan dialog.
 pub(crate) type Session = Arc<dyn Fn(&Prompt) -> (String, String) + Send + Sync>;
 
 /// Answers a call before the world does, or None to let the world answer.
@@ -172,7 +175,25 @@ pub(crate) struct Inner {
     session: Option<Session>,
     /// What 'agent prompt' and 'agent wait' fail with.
     pub(crate) wait_err: Option<String>,
+    /// Pane -> the plan dialog it shows: its options and the cursor.
+    pub(crate) dialogs: BTreeMap<String, (Vec<String>, usize)>,
+    /// The options the next plan dialog shows; empty is research/plan-mode's.
+    pub(crate) options: Vec<String>,
+    /// Keys sent to a plan dialog are dropped: its cursor never moves.
+    pub(crate) dropped: bool,
+    /// Panes whose session is in plan mode.
+    planning: BTreeSet<String>,
+    /// Pane -> the Stage prompt its session took, which it implements once
+    /// its plan is approved.
+    prompts: BTreeMap<String, Prompt>,
 }
+
+/// The plan dialog's options as research/plan-mode saw them.
+const PLAN_OPTIONS: [&str; 3] = [
+    "Yes, and use auto mode",
+    "Yes, manually approve edits",
+    "Tell Claude what to change",
+];
 
 pub(crate) struct World {
     _repo_dir: TempDir,
@@ -342,26 +363,54 @@ impl World {
         }
         if cmd.starts_with("herdr agent start") {
             let pane = flag_value(argv, "--pane").to_string();
+            if flag_value(argv, "--permission-mode") == "plan" {
+                w.planning.insert(pane.clone());
+            }
             w.names.insert(argv[3].to_string(), pane.clone());
             w.agents.insert(pane, "idle".to_string());
             return reply(json!({}));
         }
         if cmd.starts_with("herdr agent prompt") {
             let p = parse_prompt(argv[3], argv[4]);
-            let session = w.session.clone();
+            if !p.stage.is_empty() {
+                w.prompts.insert(p.pane.clone(), p.clone());
+            }
             drop(w);
-            let (result, status) = match session {
-                Some(session) => session(&p),
-                None => succeed(&p),
+            self.work(&p);
+            return self
+                .lock()
+                .wait_err
+                .clone()
+                .map_or(Ok("{}".to_string()), Err);
+        }
+        if cmd.starts_with("herdr agent send-keys") {
+            let (pane, key) = (argv[3].to_string(), argv[4]);
+            let dropped = w.dropped;
+            let Some((options, cursor)) = w.dialogs.get_mut(&pane) else {
+                return Ok(String::new());
             };
-            let mut w = self.lock();
-            if !result.is_empty() {
-                let _ = fs::write(&p.file, result);
+            match key {
+                "down" if !dropped => *cursor = (*cursor + 1).min(options.len() - 1),
+                "enter" => {
+                    let chosen = options[*cursor].clone();
+                    w.dialogs.remove(&pane);
+                    if chosen.starts_with("Tell Claude what to change") {
+                        // left empty: the dialog closes, still in plan mode
+                        w.agents.insert(pane, "idle".to_string());
+                        return Ok(String::new());
+                    }
+                    w.planning.remove(&pane);
+                    let mut p = w.prompts.get(&pane).cloned().unwrap_or_default();
+                    p.approved = true;
+                    drop(w);
+                    self.work(&p);
+                }
+                _ => {}
             }
-            if let Some(alive) = w.agents.get_mut(&p.pane) {
-                *alive = status;
-            }
-            return w.wait_err.clone().map_or(Ok("{}".to_string()), Err);
+            return Ok(String::new());
+        }
+        if cmd.starts_with("herdr agent read") && cmd.ends_with(" --source visible") {
+            return Ok(w.screen(argv[3]));
         }
         if cmd.starts_with("herdr agent wait") {
             return w.wait_err.clone().map_or(Ok("{}".to_string()), Err);
@@ -437,6 +486,34 @@ impl World {
             return Ok("origin\n".to_string());
         }
         Ok(String::new())
+    }
+
+    /// The session works on a prompt, outside the world's lock: its result
+    /// file and the status it settles in, at the plan dialog for "plan".
+    fn work(&self, p: &Prompt) {
+        let session = self.lock().session.clone();
+        let (result, status) = match session {
+            Some(session) => session(p),
+            None => succeed(p),
+        };
+        let mut w = self.lock();
+        if !result.is_empty() {
+            let _ = fs::write(&p.file, result);
+        }
+        let status = match status.as_str() {
+            "plan" => {
+                let options = match w.options.is_empty() {
+                    true => PLAN_OPTIONS.map(str::to_string).to_vec(),
+                    false => w.options.clone(),
+                };
+                w.dialogs.insert(p.pane.clone(), (options, 0));
+                "blocked".to_string()
+            }
+            _ => status,
+        };
+        if let Some(alive) = w.agents.get_mut(&p.pane) {
+            *alive = status;
+        }
     }
 
     /// The panel Events so far as lines, '<bd id> <event>' (no id for a
@@ -542,6 +619,28 @@ impl Inner {
             .filter(|p| p.tab_id == tab)
             .map(|p| json!({ "pane_id": p.pane_id, "rect": { "width": width, "height": height } }))
             .collect()
+    }
+
+    /// A pane's visible screen: the plan dialog in research/plan-mode's
+    /// layout, below a plan with numbered lines of its own, or the input line
+    /// and the mode.
+    fn screen(&self, pane: &str) -> String {
+        let Some((options, cursor)) = self.dialogs.get(pane) else {
+            let mode = match self.planning.contains(pane) {
+                true => "⏸ plan mode on",
+                false => "⏵⏵ auto mode on",
+            };
+            return format!(" > \n {mode} (shift+tab to cycle)\n");
+        };
+        let mut screen = " Here is Claude's plan:\n\n 1. Change x\n 2. Test x\n\n Claude has written up a plan and is ready to execute. Would you like to proceed?\n\n".to_string();
+        for (i, option) in options.iter().enumerate() {
+            let mark = if i == *cursor { "❯" } else { " " };
+            screen += &format!(" {mark} {}. {option}\n", i + 1);
+            if option.starts_with("Tell Claude what to change") {
+                screen += "      shift+tab to approve with this feedback\n";
+            }
+        }
+        screen + "\n ctrl+g to edit in VS Code · ~/.claude/plans/plan.md\n"
     }
 
     fn close_pane(&mut self, id: &str) {

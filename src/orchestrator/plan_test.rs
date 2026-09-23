@@ -1,10 +1,13 @@
 use super::judgment::fake::Fake;
-use super::stage::{Answer, Ask};
-use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
+use super::judgment::Action;
+use super::stage::{Answer, Ask, Config, Orchestrator};
+use super::state::{load_state, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, Prompt, World};
 use super::write_file;
+use crate::tools::Tools;
 use serde_json::{json, Value};
 use std::fs;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -12,6 +15,7 @@ use std::time::{Duration, Instant};
 
 const PLAN: &str = "# Plan\n\n- change src/x.rs\n- test: x_works\n";
 const REVISED: &str = "# Plan\n\n- change src/x.rs and src/y.rs\n- test: x_works, y_works\n";
+const FEEDBACK: &str = "cover y too";
 
 /// TypeSafe's answer to a plan: the Noul's score for yes.
 pub(crate) fn noul(score: f64) -> Value {
@@ -24,72 +28,75 @@ fn typesafe(answer: impl Fn(usize) -> Result<Value, String> + Send + Sync + 'sta
     Fake::new(move |_| answer(n.fetch_add(1, Ordering::SeqCst)))
 }
 
-/// The Implement session plans: the hook copies its plan into the run
-/// directory and the session stops at the plan dialog. Later Stages succeed.
-fn plans(w: &World) {
+/// The hook copies the plan into the run directory, and the session stops
+/// at the plan dialog.
+pub(crate) fn at_dialog(run: &Path, plan: &str) -> (String, String) {
+    write_file(&run.join("plan.md"), plan);
+    (String::new(), "plan".to_string())
+}
+
+/// Implement plans; approved, it finishes ("idle") or settles in `then`;
+/// feedback brings the revised plan; every other Stage succeeds.
+fn plans(w: &World, then: &'static str) {
     let run = w.repo.join(".harness/runs/hx-1");
-    w.session(move |p| match p.stage.as_str() {
-        "implement" => at_dialog(&run, PLAN),
+    w.session(move |p: &Prompt| match (p.stage.as_str(), p.approved) {
+        ("implement", false) => at_dialog(&run, PLAN),
+        ("implement", true) if then != "idle" => (String::new(), then.to_string()),
+        ("", _) if p.text == FEEDBACK => at_dialog(&run, REVISED),
         _ => succeed(p),
     });
 }
 
-pub(crate) fn at_dialog(run: &std::path::Path, plan: &str) -> (String, String) {
-    write_file(&run.join("plan.md"), plan);
-    (String::new(), "blocked".to_string())
-}
-
-/// herdr and bd as a plan dialog needs them: bd shows the Ticket; a visible
-/// read shows plan mode; enter after down, down closes the dialog on its
-/// empty third option, leaving the session idle in plan mode; enter alone
-/// approves, and the session moves to `approved` ("idle" having written its
-/// result, or "blocked" at a permission prompt).
-pub(crate) fn dialog(w: &Arc<World>, approved: &'static str) {
-    let world = w.clone();
-    w.hook(move |_, argv| {
-        let cmd = argv.join(" ");
-        if cmd == "bd show hx-1 --json" {
+/// bd shows hx-1 with a description and acceptance criteria.
+fn bd_show(w: &World) {
+    w.hook(|_, argv| {
+        (argv.join(" ") == "bd show hx-1 --json").then(|| {
             let issue = json!([{ "id": "hx-1", "title": "Ticket hx-1", "description": "Do x.",
                 "acceptance_criteria": "x works", "status": "in_progress", "issue_type": "task" }]);
-            return Some(Ok(issue.to_string()));
-        }
-        if cmd.starts_with("herdr agent read") && cmd.ends_with(" --source visible") {
-            return Some(Ok("⏸ plan mode on (shift+tab to cycle)".to_string()));
-        }
-        if !cmd.starts_with("herdr agent send-keys") {
-            return None;
-        }
-        if argv[4] == "enter" {
-            let keys = world.called("herdr agent send-keys");
-            let dismissed = keys.len() >= 2 && keys[keys.len() - 2].ends_with(" down");
-            let status = if dismissed { "idle" } else { approved };
-            if !dismissed && approved == "idle" {
-                write_file(
-                    &world.repo.join(".harness/runs/hx-1/implement.md"),
-                    "STATUS: done\n",
-                );
-            }
-            world
-                .lock()
-                .agents
-                .insert(argv[3].to_string(), status.to_string());
-        }
-        Some(Ok(String::new()))
+            Ok(issue.to_string())
+        })
     });
 }
 
-/// The plan Question's pane, plan and score.
-fn plan_question(w: &World, n: usize) -> (String, String, Option<f64>) {
-    let ready = w.await_nth("plan ready in implement (pane 1-1)", n);
-    let Some(Ask::Plan { pane, plan, judged }) = ready.ask else {
-        panic!("the plan asks nothing: {ready:?}");
-    };
-    (pane, plan, judged)
+/// The nth plan Question: its pane, plan, score and kept feedback.
+fn plan_question(w: &World, n: usize) -> (String, String, Option<f64>, Option<String>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let asked = w
+            .events()
+            .into_iter()
+            .filter_map(|e| e.ask)
+            .filter(|ask| matches!(ask, Ask::Plan { .. }))
+            .nth(n - 1);
+        if let Some(Ask::Plan {
+            pane,
+            plan,
+            judged,
+            feedback,
+        }) = asked
+        {
+            return (pane, plan, judged, feedback);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no plan Question {n}: {:#?}",
+            w.lines()
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The keys sent to panes, in order.
+fn keys(w: &World) -> Vec<String> {
+    let sent = w.called("herdr agent send-keys");
+    sent.iter()
+        .map(|call| call.rsplit(' ').next().unwrap().to_string())
+        .collect()
 }
 
 /// Implement starts in plan mode with its own settings file, which holds
-/// the one hook: ExitPlanMode's plan copied into the run directory by the
-/// harness binary's hidden mode. The other claude Stages launch as before.
+/// the one hook: the harness binary, as the Shell resolved it, in its
+/// hidden mode. The other claude Stages launch as before.
 #[test]
 fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -116,60 +123,44 @@ fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
         )),
         "{fix:?}"
     );
-
     let settings: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
-    let exe = crate::update::exe_path().unwrap();
     assert_eq!(
         settings,
         json!({ "hooks": { "PreToolUse": [{ "matcher": "ExitPlanMode", "hooks": [{
             "type": "command",
-            "command": format!("'{}' __plan-hook '{}'", exe.display(), run.join("plan.md").display()),
+            "command": format!("'/opt/the harness/harness' __plan-hook '{}'", run.join("plan.md").display()),
         }] }] } })
     );
 }
 
-/// A blocked Implement with a fresh plan reaches the Noul over the plan and
-/// the Ticket; yes at 0.9 approves it with enter, and each step is a line.
+/// Blocked at the plan dialog with a fresh plan reaches the Noul over the
+/// plan and the Ticket; yes at 0.9 approves it with enter, each step a line.
 #[test]
-fn a_fresh_plan_reaches_the_noul_and_yes_at_the_floor_approves_it() {
-    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    plans(&w);
-    dialog(&w, "idle");
+fn a_fresh_plan_at_its_dialog_reaches_the_noul_and_yes_at_the_floor_approves_it() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    plans(&w, "idle");
+    bd_show(&w);
     let fake = typesafe(|_| Ok(noul(0.9)));
-    let mut o = o;
     o.cfg.typesafe = fake.clone();
     o.run_ticket("hx-1");
     assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
 
-    let asked = fake.requests();
-    assert_eq!(asked.len(), 1);
     assert_eq!(
-        asked[0],
-        json!({
+        fake.requests(),
+        [json!({
             "model": "jev-latest",
             "state": {
                 "plan": PLAN,
-                "ticket": { "id": "hx-1", "title": "Ticket hx-1", "spec": "Do x.\n\nAcceptance criteria:\nx works" },
-                "prior_feedback": "none",
+                "ticket": { "id": "hx-1", "title": "Ticket hx-1", "description": "Do x.\n\nAcceptance criteria:\nx works" },
+                "prior_feedback": null,
             },
             "questions": { "follows": {
                 "type": "noul",
-                "instructions": "Does `plan` implement `ticket`, all of it and nothing more, without leaving decisions open? `prior_feedback` is what the user asked of the plan before this revision, or none.",
+                "instructions": "Does this plan implement the Ticket, all of it and nothing more, without leaving decisions open?",
             } },
-        })
+        })]
     );
-    let start = w.called("herdr agent start h-hx-1-implement").remove(0);
-    let pane = start
-        .split(" --pane ")
-        .nth(1)
-        .unwrap()
-        .split(' ')
-        .next()
-        .unwrap();
-    assert_eq!(
-        w.called("herdr agent send-keys"),
-        [format!("herdr agent send-keys {pane} enter")]
-    );
+    assert_eq!(keys(&w), ["enter"]);
     let lines = w.lines();
     let at = lines
         .iter()
@@ -191,7 +182,8 @@ fn a_fresh_plan_reaches_the_noul_and_yes_at_the_floor_approves_it() {
 }
 
 /// Yes below the floor, a no at any score, no Judgment to be had or no key:
-/// the plan Question, with the plan and the score; approve sends enter.
+/// the judged line, then the plan Question, with the plan and the score;
+/// approve sends enter.
 #[test]
 fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
     for (name, answer, said) in [
@@ -205,8 +197,7 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
         ("no key", Ok(1.0), None),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
-        plans(&w);
-        dialog(&w, "idle");
+        plans(&w, "idle");
         let fake = typesafe(move |_| answer.map(noul).map_err(str::to_string));
         o.cfg.typesafe = fake.clone();
         if name == "no key" {
@@ -215,24 +206,26 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
         let o = Arc::new(o);
         let mut run = spawn_ticket(o.clone(), "hx-1");
 
-        let (pane, plan, judged) = plan_question(&w, 1);
-        assert_eq!(plan, PLAN, "{name}");
+        let (pane, plan, judged, feedback) = plan_question(&w, 1);
+        assert_eq!((plan.as_str(), feedback), (PLAN, None), "{name}");
         assert_eq!(judged, answer.ok().filter(|_| said.is_some()), "{name}");
-        assert!(w.called("herdr agent send-keys").is_empty(), "{name}");
+        assert!(keys(&w).is_empty(), "{name}");
+        // the lines, then the Question, which has none of its own
+        let texts: Vec<(String, bool)> = w
+            .events()
+            .iter()
+            .map(|e| (e.text.clone(), e.ask.is_some()))
+            .filter(|(t, _)| t.starts_with("plan ready") || t.starts_with("judged"))
+            .collect();
+        let ready = "plan ready in implement (pane 1-1)".to_string();
+        let mut want = vec![(ready.clone(), false)];
+        want.extend(said.map(|said| (format!("judged: {said}"), false)));
+        want.push((ready, true));
+        assert_eq!(texts, want, "{name}");
         assert!(
-            w.lines()
-                .iter()
-                .all(|l| !l.contains("judged") && !l.contains("waiting at")),
-            "{name}: {:#?}",
-            w.lines()
+            w.events().iter().all(|e| e.ask.is_none() || !e.panel),
+            "{name}"
         );
-        if let Some(said) = said {
-            assert!(
-                w.log().contains(&format!(" hx-1 judged: {said}\n")),
-                "{name}:\n{}",
-                w.log()
-            );
-        }
         if name == "error" {
             assert!(
                 w.log().contains(" hx-1 no Judgment: 401: bad key ***\n"),
@@ -250,11 +243,7 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
         w.await_line("hx-1 plan approved");
         run.wait();
         assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{name}");
-        assert_eq!(
-            w.called("herdr agent send-keys"),
-            [format!("herdr agent send-keys {pane} enter")],
-            "{name}"
-        );
+        assert_eq!(keys(&w), ["enter"], "{name}");
         assert!(
             !w.log().contains("sk-test"),
             "{name}: the key is in the log"
@@ -262,29 +251,23 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
     }
 }
 
-/// Feedback closes the dialog on its empty third option, one key a call with
-/// a pane re-read between, confirms the session idle and still in plan
-/// mode, and sends the feedback as its prompt; the revised plan is judged
-/// again with that feedback. Never esc, never 3.
+/// Feedback reads the pane before every key: down a key a call to "Tell
+/// Claude what to change", enter, idle in plan mode confirmed, then the
+/// prompt. The feedback is kept once sent, and the revised plan is judged
+/// again with it. Never esc, never 3.
 #[test]
-fn feedback_goes_back_by_keys_and_the_prompt_and_the_revised_plan_is_judged_again() {
+fn feedback_reads_the_pane_before_each_key_and_the_revised_plan_is_judged_again() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
-    let run = w.repo.join(".harness/runs/hx-1");
-    w.session(move |p: &Prompt| match p.stage.as_str() {
-        "implement" => at_dialog(&run, PLAN),
-        "" if p.text == "cover y too" => at_dialog(&run, REVISED),
-        _ => succeed(p),
-    });
-    dialog(&w, "idle");
+    plans(&w, "idle");
     let fake = typesafe(|n| Ok(noul([0.3, 0.95][n])));
     o.cfg.typesafe = fake.clone();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
-    let (pane, _, judged) = plan_question(&w, 1);
+    let (pane, _, judged, _) = plan_question(&w, 1);
     assert_eq!(judged, Some(0.3));
     let before = w.calls().len();
-    o.answer("hx-1", &pane, Answer::Prompt("cover y too".to_string()));
+    o.answer("hx-1", &pane, Answer::Prompt(FEEDBACK.to_string()));
     w.await_line("hx-1 plan sent back with your feedback");
     w.await_line("hx-1 plan approved");
     run.wait();
@@ -304,29 +287,26 @@ fn feedback_goes_back_by_keys_and_the_prompt_and_the_revised_plan_is_judged_agai
         .cloned()
         .collect();
     let read = format!("herdr agent read {pane} --source visible");
+    let key = |k: &str| format!("herdr agent send-keys {pane} {k}");
     assert_eq!(
-        driven[..7],
+        driven[..8],
         [
-            format!("herdr agent send-keys {pane} down"),
             read.clone(),
-            format!("herdr agent send-keys {pane} down"),
+            key("down"),
             read.clone(),
-            format!("herdr agent send-keys {pane} enter"),
+            key("down"),
+            read.clone(),
+            key("enter"),
             read,
-            format!("herdr agent prompt {pane} cover y too"),
+            format!("herdr agent prompt {pane} {FEEDBACK}"),
         ]
     );
-    let keys = w.called("herdr agent send-keys");
-    assert!(
-        keys.iter()
-            .all(|k| !k.ends_with(" esc") && !k.ends_with(" 3")),
-        "{keys:?}"
-    );
+    assert_eq!(keys(&w), ["down", "down", "enter", "enter"]);
 
     let asked = fake.requests();
     assert_eq!(asked.len(), 2);
     assert_eq!(asked[1]["state"]["plan"], REVISED);
-    assert_eq!(asked[1]["state"]["prior_feedback"], "cover y too");
+    assert_eq!(asked[1]["state"]["prior_feedback"], FEEDBACK); // kept once sent
     let lines = w.lines();
     let sent = lines
         .iter()
@@ -346,71 +326,205 @@ fn feedback_goes_back_by_keys_and_the_prompt_and_the_revised_plan_is_judged_agai
         .all(|l| !l.contains("stuck in") && !l.contains("carrying on")));
 }
 
-/// A blocked Implement with no plan in the run directory is the ordinary
-/// blocked Question, and so is a prompt after the plan was answered: only a
-/// plan newer than the last one judged is a plan ready.
+/// Enter goes only to "Tell Claude what to change": past an extra first
+/// option it still lands there and the prompt follows; a dropped key or no
+/// dialog on screen sends no Enter, and the plan Question comes back with
+/// the feedback kept to resend.
 #[test]
-fn a_blocked_implement_without_a_fresh_plan_is_the_ordinary_blocked_question() {
+fn feedback_enters_only_on_tell_claude_what_to_change() {
+    for case in [
+        "an extra first option",
+        "a dropped key",
+        "no dialog on screen",
+    ] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        plans(&w, "idle");
+        o.cfg.api_key = String::new();
+        match case {
+            "an extra first option" => {
+                w.lock().options = [
+                    "Yes, clear context and use auto mode",
+                    "Yes, and use auto mode",
+                    "Yes, manually approve edits",
+                    "Tell Claude what to change",
+                ]
+                .map(str::to_string)
+                .to_vec()
+            }
+            "a dropped key" => w.lock().dropped = true,
+            _ => {}
+        }
+        let o = Arc::new(o);
+        let mut run = spawn_ticket(o.clone(), "hx-1");
+        let (pane, _, _, _) = plan_question(&w, 1);
+        if case == "no dialog on screen" {
+            w.lock().dialogs.clear(); // still blocked, at some other prompt
+        }
+        o.answer("hx-1", &pane, Answer::Prompt(FEEDBACK.to_string()));
+
+        let (_, plan, _, kept) = plan_question(&w, 2);
+        let prompted = w.called(&format!("herdr agent prompt {pane} {FEEDBACK}"));
+        match case {
+            "an extra first option" => {
+                assert_eq!(keys(&w), ["down", "down", "down", "enter"]);
+                assert_eq!(prompted.len(), 1);
+                assert_eq!((plan.as_str(), kept), (REVISED, None));
+            }
+            _ => {
+                let (want, why) = match case {
+                    // the cursor did not move: no second down, no Enter
+                    "a dropped key" => (
+                        vec!["down"],
+                        "the cursor never reached Tell Claude what to change",
+                    ),
+                    _ => (vec![], "the plan dialog is not on screen"),
+                };
+                assert_eq!(keys(&w), want, "{case}");
+                assert!(prompted.is_empty(), "{case}");
+                w.await_line(&format!("hx-1 feedback not sent: {why} (pane 1-1)"));
+                assert_eq!(
+                    (plan.as_str(), kept.as_deref()),
+                    (PLAN, Some(FEEDBACK)),
+                    "{case}"
+                );
+                assert!(load_state(&w.repo).unwrap().tickets["hx-1"]
+                    .feedback
+                    .is_empty());
+            }
+        }
+        o.answer("hx-1", &pane, Answer::Act(Action::Park));
+        run.wait();
+        assert_eq!(o.ticket("hx-1").status, STATUS_PARKED, "{case}");
+    }
+}
+
+/// A plan that changes while the Noul judges it gets no Enter: the new one
+/// is judged, and only then approved.
+#[test]
+fn a_plan_changed_during_its_judgment_gets_no_enter_for_the_old_one() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
-    w.session(|p| match p.stage.as_str() {
-        "implement" => (String::new(), "blocked".to_string()), // a permission prompt first
-        _ => succeed(p),
+    plans(&w, "idle");
+    let (world, run) = (w.clone(), o.run_dir("hx-1"));
+    let before_second = Arc::new(AtomicUsize::new(usize::MAX));
+    let seen = before_second.clone();
+    let fake = typesafe(move |n| {
+        if n == 0 {
+            write_file(&run.join("plan.md"), REVISED); // the session revised it meanwhile
+        } else {
+            seen.store(keys(&world).len(), Ordering::SeqCst);
+        }
+        Ok(noul(0.9))
     });
-    dialog(&w, "blocked");
+    o.cfg.typesafe = fake.clone();
+    o.run_ticket("hx-1");
+    assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
+
+    let plans: Vec<Value> = fake
+        .requests()
+        .iter()
+        .map(|r| r["state"]["plan"].clone())
+        .collect();
+    assert_eq!(plans, [PLAN, REVISED]);
+    assert_eq!(
+        before_second.load(Ordering::SeqCst),
+        0,
+        "an Enter went to the old plan"
+    );
+    assert_eq!(keys(&w), ["enter"]);
+}
+
+/// Feedback for a plan the session has since replaced sends no key: the
+/// newer plan is judged and asked about instead.
+#[test]
+fn feedback_for_a_replaced_plan_sends_no_key() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    plans(&w, "idle");
+    o.cfg.api_key = String::new();
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+    let (pane, _, _, _) = plan_question(&w, 1);
+    write_file(&o.run_dir("hx-1").join("plan.md"), REVISED); // presented within a tick
+    o.answer("hx-1", &pane, Answer::Prompt(FEEDBACK.to_string()));
+
+    let (_, plan, _, kept) = plan_question(&w, 2);
+    assert_eq!((plan.as_str(), kept), (REVISED, None));
+    assert!(keys(&w).is_empty(), "{:?}", keys(&w));
+    assert!(w
+        .called(&format!("herdr agent prompt {pane} {FEEDBACK}"))
+        .is_empty());
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
+}
+
+/// A new process over the saved state, its Events to the same place.
+fn restarted(w: &Arc<World>, o: &Orchestrator, typesafe: Arc<Fake>) -> Arc<Orchestrator> {
+    let mut cfg = Config::for_tests(w.clone(), &w.repo, &w.home);
+    cfg.events = o.cfg.events.clone();
+    cfg.typesafe = typesafe;
+    Arc::new(Orchestrator::with_state(cfg, load_state(&w.repo).unwrap()))
+}
+
+/// Only the plan dialog on screen is a plan ready: a blocked Implement with
+/// no plan.md is the ordinary blocked Question, and so is a permission
+/// prompt with a stale plan.md, after /stop-work left a plan Question the
+/// user then answered in the pane.
+#[test]
+fn a_prompt_that_is_not_the_plan_dialog_is_the_ordinary_blocked_question() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "blocked".to_string()));
     let fake = typesafe(|_| Ok(noul(0.9)));
     o.cfg.typesafe = fake.clone();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
-    let set = |status: &str| {
-        for s in w.lock().agents.values_mut() {
-            *s = status.to_string();
-        }
-    };
-
     let blocked = w.await_event("waiting at a prompt in implement (pane 1-1)");
+    assert!(
+        matches!(blocked.ask, Some(Ask::Blocked { .. })),
+        "{blocked:?}"
+    );
+    o.command("park-hx-1");
+    run.wait();
+    assert!(
+        fake.requests().is_empty(),
+        "a prompt without a plan was judged"
+    );
+
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    plans(&w, "blocked"); // approved, it stops at a permission prompt
+    o.cfg.typesafe = typesafe(|_| Ok(noul(0.3)));
+    let o = Arc::new(o);
+    let (pane, _, _, _) = {
+        let _run = spawn_ticket(o.clone(), "hx-1");
+        plan_question(&w, 1)
+    }; // /stop-work with the plan Question up
+    w.run(&w.repo, &["herdr", "agent", "send-keys", &pane, "enter"])
+        .unwrap(); // approved in the pane
+    assert_eq!(w.lock().agents[&pane], "blocked");
+    assert!(o.run_dir("hx-1").join("plan.md").exists());
+
+    let fake = typesafe(|_| Ok(noul(0.9)));
+    let o = restarted(&w, &Arc::try_unwrap(o).ok().unwrap(), fake.clone());
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+    let blocked = w.await_nth("waiting at a prompt in implement (pane 1-1)", 1);
     assert!(
         matches!(blocked.ask, Some(Ask::Blocked { .. })),
         "{blocked:?}"
     );
     assert!(
         fake.requests().is_empty(),
-        "a prompt without a plan was judged"
+        "a stale plan was judged at a permission prompt"
     );
-    set("working"); // answered in the pane
-    w.await_line("hx-1 carrying on");
-
-    write_file(&o.run_dir("hx-1").join("plan.md"), PLAN);
-    set("blocked"); // the plan dialog
-    w.await_line("hx-1 plan approved");
-    // After approval the session stops at a permission prompt: not a plan.
-    let again = w.await_nth("waiting at a prompt in implement (pane 1-1)", 2);
-    assert!(matches!(again.ask, Some(Ask::Blocked { .. })), "{again:?}");
-    assert_eq!(
-        fake.requests().len(),
-        1,
-        "the answered plan was judged again"
-    );
-
     write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
-    set("idle");
+    w.lock().agents.insert(pane, "idle".to_string());
     run.wait();
     assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
-    assert_eq!(
-        w.lines()
-            .iter()
-            .filter(|l| l.contains("plan ready"))
-            .count(),
-        1
-    );
 }
 
-/// /stop-work while TypeSafe judges a plan: nothing is said or sent, and the
-/// plan stays for /continue to judge again. Park at the plan Question parks.
+/// /stop-work while TypeSafe judges a plan: nothing is said or sent. Park
+/// at the plan Question parks.
 #[test]
 fn stop_during_the_plan_judgment_takes_no_action_and_park_parks() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
-    plans(&w);
-    dialog(&w, "idle");
+    plans(&w, "idle");
     let (entered, release) = (
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
@@ -440,21 +554,85 @@ fn stop_during_the_plan_judgment_takes_no_action_and_park_parks() {
         "{:#?}",
         w.lines()
     );
-    assert!(w.called("herdr agent send-keys").is_empty());
-    assert!(o.run_dir("hx-1").join("plan.md").exists());
+    assert!(keys(&w).is_empty());
     assert_eq!(o.ticket("hx-1").status, STATUS_RUNNING);
 
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
-    plans(&w);
+    plans(&w, "idle");
     o.cfg.api_key = String::new();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
-    let (pane, _, _) = plan_question(&w, 1);
-    o.answer("hx-1", &pane, Answer::Act(super::judgment::Action::Park));
+    let (pane, _, _, _) = plan_question(&w, 1);
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
     run.wait();
     let ts = o.ticket("hx-1");
     assert_eq!(
         (ts.status.as_str(), ts.reason.as_str()),
         (STATUS_PARKED, "by you at implement")
     );
+}
+
+/// A plan failure is the user's Question, never the Wake
+/// Judgment's: open the pane, park, retry; retry starts a fresh session,
+/// whose plan is judged afresh.
+#[test]
+fn a_plan_failure_is_the_users_question_not_the_wake_judgment() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    plans(&w, "idle");
+    w.fail_once("herdr agent send-keys", "pane gone");
+    let fake = typesafe(|_| Ok(noul(0.9)));
+    o.cfg.typesafe = fake.clone();
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let stuck = w.await_event("stuck in implement: never took the answer to its plan: ");
+    let Some(Ask::PlanFailed { pane, feedback }) = stuck.ask.clone() else {
+        panic!("not a plan failure's Question: {stuck:?}");
+    };
+    assert!(stuck.text.ends_with("pane gone (pane 1-1)"), "{stuck:?}");
+    assert_eq!(feedback, None);
+    assert_eq!(fake.requests().len(), 1, "the Wake Judgment was asked");
+    o.answer("hx-1", &pane, Answer::Act(Action::Retry));
+    w.await_line("hx-1 retrying implement with a fresh session (pane 1-1)");
+    run.wait();
+    assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
+    assert_eq!(fake.requests().len(), 2);
+    assert_eq!(keys(&w), ["enter", "enter"]);
+}
+
+/// Planning spends none of Implement's time: no deadline runs while the
+/// plan Question waits, and approval, answered or in the pane, starts a
+/// full one.
+#[test]
+fn planning_does_not_use_up_the_implement_deadline() {
+    for in_pane in [false, true] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        plans(&w, "working");
+        let timeout = Duration::from_millis(60);
+        o.cfg.timeout = Some(timeout);
+        o.cfg.api_key = String::new();
+        let o = Arc::new(o);
+        let mut run = spawn_ticket(o.clone(), "hx-1");
+        let (pane, _, _, _) = plan_question(&w, 1);
+        thread::sleep(3 * timeout);
+        assert!(
+            w.lines().iter().all(|l| !l.contains("stuck in")),
+            "{:#?}",
+            w.lines()
+        );
+
+        let approved = Instant::now();
+        match in_pane {
+            true => drop(w.run(&w.repo, &["herdr", "agent", "send-keys", &pane, "enter"])),
+            false => o.answer("hx-1", &pane, Answer::Approve),
+        }
+        w.await_line("hx-1 stuck in implement: timed out after 60ms (pane 1-1)");
+        assert!(
+            approved.elapsed() >= timeout,
+            "in the pane {in_pane}: the deadline did not start at approval"
+        );
+        o.answer("hx-1", &pane, Answer::Act(Action::Park));
+        run.wait();
+        assert_eq!(o.ticket("hx-1").status, STATUS_PARKED);
+    }
 }

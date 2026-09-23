@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::herdr::{agent_name, split_target};
-use super::judgment::{offered, plan_said, Action, Judged, TypeSafe, FLOOR, PLAN_FLOOR};
+use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
 use super::state::{load_state, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
@@ -54,13 +54,13 @@ pub(crate) enum StageError {
 
 /// How long a just-prompted session may still look idle before an idle pane
 /// with no result counts as a Stage that did not write one.
-pub(crate) const SETTLE_TICKS: u32 = 3;
+pub(super) const SETTLE_TICKS: u32 = 3;
 
 /// How long a wait holds before the Ticket Wakes again.
 const WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// How a Stage's session, or its hold, ends.
-pub(crate) enum Held {
+pub(super) enum Held {
     Retry,
     /// /park, or park answered: the Ticket leaves the Pipeline at its Stage.
     Park,
@@ -86,12 +86,20 @@ pub(crate) enum Ask {
     },
     /// A session waiting at a prompt only the user can answer.
     Blocked { pane: String },
-    /// An Implement session's plan to approve: its pane, the plan, and the
-    /// plan Judgment's score for yes, if one was had.
+    /// An Implement session's plan to approve: its pane, the plan, the plan
+    /// Judgment's score for yes if one was had, and the user's feedback
+    /// that could not be sent, to send again.
     Plan {
         pane: String,
         plan: String,
         judged: Option<f64>,
+        feedback: Option<String>,
+    },
+    /// A plan failure, the user's alone: the session's pane, and the
+    /// feedback to send again, if any.
+    PlanFailed {
+        pane: String,
+        feedback: Option<String>,
     },
 }
 
@@ -124,9 +132,11 @@ pub(crate) struct Event {
     /// None for a run-level line.
     pub(crate) ticket: Option<String>,
     pub(crate) text: String,
-    /// Shown on the panel; false keeps housekeeping in the log alone.
+    /// Shown on the panel; false keeps housekeeping in the log alone, and
+    /// with an ask it is a Question with no line of its own.
     pub(crate) panel: bool,
-    /// The line asks the user something: a Wake or a blocked session.
+    /// The line asks the user something: a Wake, a blocked session, a plan
+    /// or a plan failure.
     pub(crate) ask: Option<Ask>,
 }
 
@@ -140,6 +150,10 @@ pub(crate) struct Config {
     pub(crate) workspace: String,
     /// TYPESAFE_API_KEY, handed to the Debate pane and the Judgment.
     pub(crate) api_key: String,
+    /// The harness binary, which Implement's plan hook runs: resolved once
+    /// when the Shell opens, since after a self-update a fresh lookup can
+    /// name the old, deleted image.
+    pub(crate) exe: PathBuf,
     /// The seam to TypeSafe, which the Wake Judgment asks.
     pub(crate) typesafe: Arc<dyn TypeSafe>,
     /// Where the agents record which directories they trust.
@@ -183,6 +197,10 @@ pub(crate) struct Orchestrator {
     pub(crate) active: Mutex<BTreeSet<String>>,
     /// Each Ticket's live session's deadline, which a wait keeps.
     deadlines: Mutex<BTreeMap<String, Instant>>,
+    /// The plan last judged for each Ticket's Implement session: a plan.md
+    /// with other text is a newer one. In memory, so a restarted run judges
+    /// the plan on screen again.
+    pub(super) plans: Mutex<BTreeMap<String, String>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
     /// failure on one fails the test as Go's t.Errorf did.
     #[cfg(test)]
@@ -211,6 +229,7 @@ impl Orchestrator {
             answers: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
             deadlines: Mutex::new(BTreeMap::new()),
+            plans: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             threads: Mutex::new(Vec::new()),
         }
@@ -226,11 +245,18 @@ impl Orchestrator {
     }
 
     /// A full Stage deadline from now for the Ticket's session.
-    fn new_deadline(&self, ticket: &str, st: &Stage) -> Instant {
+    pub(super) fn new_deadline(&self, ticket: &str, st: &Stage) -> Instant {
         let deadline = Instant::now() + self.timeout(st);
         let mut deadlines = self.deadlines.lock().unwrap();
         deadlines.insert(ticket.to_string(), deadline);
         deadline
+    }
+
+    /// The Ticket's live session's deadline, which an approved or sent-back
+    /// plan starts over; a full one from now if it has none.
+    fn deadline(&self, ticket: &str, st: &Stage) -> Instant {
+        let deadline = self.deadlines.lock().unwrap().get(ticket).copied();
+        deadline.unwrap_or_else(|| self.new_deadline(ticket, st))
     }
 
     /// How long a wait holds.
@@ -267,8 +293,20 @@ impl Orchestrator {
     }
 
     /// A panel line that asks the user: the Shell puts it as a Question.
-    fn asks(&self, ticket: &str, text: &str, ask: Ask) {
+    pub(super) fn asks(&self, ticket: &str, text: &str, ask: Ask) {
         self.event(ticket, text, true, "", Some(ask));
+    }
+
+    /// A Question with no line of its own, after the lines that led to it:
+    /// the Shell's "asking you" is its line.
+    pub(super) fn ask_only(&self, ticket: &str, text: &str, ask: Ask) {
+        let _ = self.cfg.events.send(Event {
+            time: chrono::Local::now(),
+            ticket: Some(ticket.to_string()),
+            text: text.to_string(),
+            panel: false,
+            ask: Some(ask),
+        });
     }
 
     fn event(&self, ticket: &str, text: &str, panel: bool, detail: &str, ask: Option<Ask>) {
@@ -369,7 +407,7 @@ impl Orchestrator {
         found
     }
 
-    fn dropped(&self, ticket: &str, answer: &Answer) {
+    pub(super) fn dropped(&self, ticket: &str, answer: &Answer) {
         self.log(
             ticket,
             &format!("dropped your {}: that session has moved on", answer.word()),
@@ -653,15 +691,6 @@ impl Orchestrator {
         // Clear its result only after fresh_pane has replaced it, before the
         // new writer.
         let _ = fs::remove_file(file);
-        // Implement plans first (harness-7bj.9): its own settings hold the
-        // hook that copies each plan into the run directory.
-        let settings = match st.name == IMPLEMENT.name {
-            true => match self.plan_settings(ticket) {
-                Ok(path) => path.display().to_string(),
-                Err(err) => return Held::Woke(format!("has no plan hook: {err}")),
-            },
-            false => String::new(),
-        };
         let deadline = self.new_deadline(ticket, st);
         // The user accepts trust in that very pane, and trust flips while
         // their own session still holds it: after a trust wait the pane may
@@ -673,11 +702,23 @@ impl Orchestrator {
         };
 
         let run_dir = self.run_dir(ticket).display().to_string();
+        let settings;
         let agent_args: &[&str] = if st.kind == "codex" {
             // The pane's cwd is the run directory, so the sandbox lets Codex
             // write its result file there and nothing in the worktree.
             &["--sandbox", "workspace-write"]
         } else if st.name == IMPLEMENT.name {
+            // Implement plans first (harness-7bj.9): its own settings hold
+            // the hook that copies each plan into the run directory.
+            settings = match self.plan_settings(ticket) {
+                Ok(path) => path,
+                Err(err) => {
+                    let reason = format!("has no plan hook: {err}");
+                    let failed =
+                        self.plan_failed(ticket, st, label, &pane, &at, reason.clone(), None);
+                    return failed.unwrap_or(Held::Woke(reason));
+                }
+            };
             &[
                 "--permission-mode",
                 "plan",
@@ -703,7 +744,7 @@ impl Orchestrator {
         self.report(ticket, &format!("{label} started: {} {at}", st.kind));
         if start_err.is_some() {
             // blocked at startup: nothing can be prompted yet
-            if let Some(held) = self.wait_unblocked(ticket, st, label, &pane, deadline) {
+            if let Some(held) = self.wait_unblocked(ticket, st, label, &pane) {
                 return held;
             }
         }
@@ -738,7 +779,7 @@ impl Orchestrator {
             match self.agent_status(&pane).as_deref() {
                 None => return Held::Woke("session died".to_string()),
                 Some("blocked") => {
-                    if let Some(held) = self.wait_unblocked(ticket, st, label, &pane, deadline) {
+                    if let Some(held) = self.wait_unblocked(ticket, st, label, &pane) {
                         return held;
                     }
                 }
@@ -751,7 +792,7 @@ impl Orchestrator {
                         return Held::Woke(reason);
                     }
                 }
-                Some(_) if Instant::now() > deadline => {
+                Some(_) if Instant::now() > self.deadline(ticket, st) => {
                     return Held::Woke(self.timed_out(st));
                 }
                 Some(_) => {}
@@ -762,7 +803,7 @@ impl Orchestrator {
             // A tick at a time, never to the Stage's deadline: a wait that
             // blocks for an hour is an hour in which /stop-work does
             // nothing.
-            let timeout = wait_for(deadline, self.cfg.tick);
+            let timeout = wait_for(self.deadline(ticket, st), self.cfg.tick);
             let _ = self.herdr(&["agent", "wait", &pane, "--timeout", &timeout]);
         }
     }
@@ -830,78 +871,48 @@ impl Orchestrator {
         }
     }
 
+    /// A blocked session: Implement at its plan dialog with a plan newer
+    /// than the last judged is a plan ready (plan.rs); anything else is the
+    /// ordinary blocked Question.
+    fn wait_unblocked(&self, ticket: &str, st: &Stage, label: &str, pane: &str) -> Option<Held> {
+        self.take_answer(ticket, None); // an answer sent before this prompt is not for it
+        if st.name == IMPLEMENT.name {
+            if let Some(plan) = self.plan_ready(ticket, pane) {
+                return self.plan(ticket, st, label, pane, plan);
+            }
+        }
+        self.blocked(ticket, st, label, pane, &self.locate(pane))
+    }
+
     /// Asks the user about a blocked session, which only they may answer,
     /// and waits for the session to move on (None, said as "carrying on"),
-    /// for park, or for a reason it cannot. Implement blocked with a fresh
-    /// plan is a plan ready instead: the plan Judgment approves it at or
-    /// above its floor, and otherwise the user answers its Question.
-    fn wait_unblocked(
+    /// for park, or for a reason it cannot.
+    pub(super) fn blocked(
         &self,
         ticket: &str,
         st: &Stage,
         label: &str,
         pane: &str,
-        deadline: Instant,
+        at: &str,
     ) -> Option<Held> {
-        self.take_answer(ticket, None); // an answer sent before this prompt is not for it
-        let at = self.locate(pane);
-        let plan = (st.name == IMPLEMENT.name)
-            .then(|| self.fresh_plan(ticket))
-            .flatten();
-        match &plan {
-            None => self.asks(
-                ticket,
-                &format!("waiting at a prompt in {label} {at}"),
-                Ask::Blocked {
-                    pane: pane.to_string(),
-                },
-            ),
-            Some(text) => {
-                let judged = self.judge_plan(ticket, text);
-                if self.stopping() {
-                    return Some(Held::Stopped); // a late Judgment is not acted on
-                }
-                let ready = format!("plan ready in {label} {at}");
-                if let Some(score) = judged.filter(|score| *score >= PLAN_FLOOR) {
-                    self.report(ticket, &ready);
-                    self.report(ticket, &format!("judged: {}", plan_said(score)));
-                    return self.approve_plan(ticket, pane);
-                }
-                let ask = Ask::Plan {
-                    pane: pane.to_string(),
-                    plan: text.clone(),
-                    judged,
-                };
-                self.asks(ticket, &ready, ask);
-                if let Some(score) = judged {
-                    // log only: a panel line would close the Question
-                    self.log(ticket, &format!("judged: {}", plan_said(score)));
-                }
-            }
-        }
+        self.asks(
+            ticket,
+            &format!("waiting at a prompt in {label} {at}"),
+            Ask::Blocked {
+                pane: pane.to_string(),
+            },
+        );
         loop {
-            match self.take_answer(ticket, Some(pane)) {
-                Some(Answer::Act(Action::Park)) => return Some(Held::Park),
-                Some(Answer::Approve) if plan.is_some() => return self.approve_plan(ticket, pane),
-                Some(Answer::Prompt(feedback)) if plan.is_some() => {
-                    return self.send_back(ticket, pane, &feedback)
-                }
-                Some(other) => self.dropped(ticket, &other),
-                None => {}
-            }
-            if self.consume(&format!("park-{ticket}")) {
+            if self.park_arrived(ticket, pane) {
                 return Some(Held::Park);
             }
             match self.agent_status(pane).as_deref() {
                 None => return Some(Held::Woke("session died".to_string())),
                 Some(status) if status != "blocked" => {
-                    if plan.is_some() {
-                        self.plan_answered(ticket); // in the pane
-                    }
                     self.report(ticket, "carrying on");
                     return None;
                 }
-                Some(_) if Instant::now() > deadline => {
+                Some(_) if Instant::now() > self.deadline(ticket, st) => {
                     return Some(Held::Woke(self.timed_out(st)))
                 }
                 Some(_) => {}
@@ -934,15 +945,12 @@ impl Orchestrator {
         armed: bool,
         mut act: Option<Answer>,
     ) -> Held {
-        // (settled, deadline, waiting): idle before `settled` is not
-        // believed, and a wait Wakes at `settled` whatever the state.
+        // (settled, waiting): idle before `settled` is not believed, and a
+        // wait Wakes at `settled` whatever the state.
         let settle = SETTLE_TICKS * self.cfg.tick;
         let mut armed = armed.then(|| {
-            (
-                Instant::now() + settle,
-                self.new_deadline(ticket, st),
-                false,
-            )
+            self.new_deadline(ticket, st);
+            (Instant::now() + settle, false)
         });
         loop {
             let answer = match act.take() {
@@ -961,9 +969,7 @@ impl Orchestrator {
                         &format!("waiting: still working {}", self.locate(pane)),
                     );
                     // the session's own deadline stands
-                    let deadline = self.deadlines.lock().unwrap().get(ticket).copied();
-                    let deadline = deadline.unwrap_or_else(|| self.new_deadline(ticket, st));
-                    armed = Some((Instant::now() + self.wait_length(), deadline, true));
+                    armed = Some((Instant::now() + self.wait_length(), true));
                     None
                 }
                 Some(Answer::Act(nudge)) => nudge
@@ -983,11 +989,8 @@ impl Orchestrator {
                     return Held::Woke(format!("never took the nudge: {err}"));
                 }
                 self.report(ticket, &said);
-                armed = Some((
-                    Instant::now() + settle,
-                    self.new_deadline(ticket, st),
-                    false,
-                ));
+                self.new_deadline(ticket, st);
+                armed = Some((Instant::now() + settle, false));
             }
             // The status before the result, as in attempt: a result written
             // between the two reads must not look like idle without one.
@@ -996,17 +999,19 @@ impl Orchestrator {
             if reason.is_empty() && matches!(status.as_deref(), None | Some("idle" | "done")) {
                 return Held::Done(result);
             }
-            if let Some((settled, deadline, waiting)) = armed {
+            if let Some((settled, waiting)) = armed {
                 let now = Instant::now();
                 match status.as_deref() {
                     None => return Held::Woke("session died".to_string()),
                     Some("blocked") => {
-                        if let Some(held) = self.wait_unblocked(ticket, st, label, pane, deadline) {
+                        if let Some(held) = self.wait_unblocked(ticket, st, label, pane) {
                             return held;
                         }
                     }
                     Some("idle" | "done") if now > settled => return Held::Woke(reason),
-                    Some(_) if now > deadline => return Held::Woke(self.timed_out(st)),
+                    Some(_) if now > self.deadline(ticket, st) => {
+                        return Held::Woke(self.timed_out(st))
+                    }
                     Some(_) if waiting && now > settled && !reason.is_empty() => {
                         return Held::Woke(reason)
                     }
@@ -1128,6 +1133,7 @@ impl Config {
             repo: repo.to_path_buf(),
             workspace: "w1".to_string(),
             api_key: "sk-test".to_string(),
+            exe: PathBuf::from("/opt/the harness/harness"),
             typesafe: super::judgment::fake::Fake::down(),
             home: home.to_path_buf(),
             tick: Duration::from_millis(1),

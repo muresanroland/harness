@@ -1,6 +1,8 @@
 use super::state::{acquire_lock, load_state, lock_holder, State, TicketState};
 use crate::tempdir::TempDir;
 use std::fs;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// state.json as the Go binary saved it after a real run on test-harness-repo.
 const GO_STATE: &str = include_str!("testdata/state.json");
@@ -170,6 +172,12 @@ fn a_second_lock_on_the_same_repo_fails_and_names_the_holder() {
         format!("a run is live in this repo (pid {pid}); /stop-work there ends it")
     );
     drop(lock);
+    // A process spawned meanwhile on another test's thread holds a copy of
+    // the lock until it execs: a second is time enough to let go.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while lock_holder(repo.path()) != 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         lock_holder(repo.path()),
         0,

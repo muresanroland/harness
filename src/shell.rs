@@ -7,6 +7,7 @@
 //! session) becomes a Question, whose answer goes back to the Orchestrator
 //! for that session; the Orchestrator knows no Shell type.
 
+use std::cell::Cell;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -92,8 +93,9 @@ pub(crate) enum About {
     /// still unspent (a nudge with either canned prompt, or the one a
     /// Judgment picked; retry; park; wait), then open the pane and a prompt
     /// of your own; a blocked session offers open the pane, park, "I
-    /// answered it"; a plan offers approve, feedback of your own, park, open
-    /// the pane.
+    /// answered it"; a plan offers approve, feedback of your own, resend
+    /// the feedback that was not sent, park, open the pane; a plan
+    /// failure offers open the pane, park, retry, resend the feedback.
     Asked(Ask),
     /// A yes/no confirmation; it jumps the queue.
     Confirm(Pending),
@@ -111,8 +113,9 @@ pub(crate) struct Question {
     pub(crate) about: About,
     /// The option the cursor is on.
     pub(crate) cursor: usize,
-    /// The first line of a plan shown, PageUp and PageDown scroll it.
-    pub(crate) scroll: usize,
+    /// The first row of a plan shown, which PageUp and PageDown move; the
+    /// draw, which knows the width, keeps it inside the plan.
+    pub(crate) scroll: Cell<usize>,
 }
 
 /// What the screen shows, with no terminal in it.
@@ -154,8 +157,9 @@ pub(crate) struct Screen {
     pub(crate) hidden: bool,
     /// The input line is a prompt of the user's own for the front Question.
     pub(crate) composing: bool,
-    /// The running binary's real path, which an update renames over; tests
-    /// point it at a scratch file.
+    /// The running binary's real path, resolved once at open: an update
+    /// renames over it, and every run's plan hook runs it. Tests point it at
+    /// a scratch file.
     pub(crate) exe: PathBuf,
     /// The updater thread's checks, applied between commands in poll().
     update_sender: Sender<Checked>,
@@ -420,14 +424,16 @@ impl Screen {
 
     /// An Event from the Orchestrator; only panel lines show. Any line of
     /// a Ticket closes the Question it had: the Ticket has moved on, and an
-    /// answer sent to it meanwhile is dropped. A line that asks raises the
-    /// Ticket's Question anew.
+    /// answer sent to it meanwhile is dropped. A line that asks, or an ask
+    /// with no line of its own, raises the Ticket's Question anew.
     pub(crate) fn push(&mut self, event: Event) {
-        if !event.panel {
+        if !event.panel && event.ask.is_none() {
             return;
         }
         let (ticket, ask, text) = (event.ticket.clone(), event.ask.clone(), event.text.clone());
-        self.show(event);
+        if event.panel {
+            self.show(event);
+        }
         let Some(id) = ticket else {
             return;
         };
@@ -453,7 +459,9 @@ impl Screen {
         }
         // "stuck in fix 1", without the reason; a prompt line whole
         let short = match ask {
-            Ask::Wake { .. } => text.split_once(": ").map_or(text.as_str(), |(s, _)| s),
+            Ask::Wake { .. } | Ask::PlanFailed { .. } => {
+                text.split_once(": ").map_or(text.as_str(), |(s, _)| s)
+            }
             Ask::Blocked { .. } | Ask::Plan { .. } => text.as_str(),
         };
         let asking = format!("asking you: {short}");
@@ -462,7 +470,7 @@ impl Screen {
             text,
             about: About::Asked(ask),
             cursor: 0,
-            scroll: 0,
+            scroll: Cell::new(0),
         });
         self.tell(Some(&id), &asking);
     }
@@ -562,10 +570,26 @@ impl Screen {
             About::Asked(Ask::Blocked { .. }) => ["open the pane", "park", "I answered it"]
                 .map(str::to_string)
                 .to_vec(),
-            About::Asked(Ask::Plan { .. }) => {
-                ["approve", "feedback of your own", "park", "open the pane"]
+            About::Asked(Ask::Plan { feedback, .. }) => ["approve", "feedback of your own"]
+                .map(str::to_string)
+                .into_iter()
+                .chain(
+                    feedback
+                        .iter()
+                        .map(|f| format!("resend your feedback: {f}")),
+                )
+                .chain(["park", "open the pane"].map(str::to_string))
+                .collect(),
+            About::Asked(Ask::PlanFailed { feedback, .. }) => {
+                ["open the pane", "park", "retry with a fresh session"]
                     .map(str::to_string)
-                    .to_vec()
+                    .into_iter()
+                    .chain(
+                        feedback
+                            .iter()
+                            .map(|f| format!("resend your feedback: {f}")),
+                    )
+                    .collect()
             }
             About::Confirm(_) => ["yes", "no"].map(str::to_string).to_vec(),
             About::Continue { rows } => rows
@@ -638,15 +662,7 @@ impl Screen {
                         rows[q.cursor].1 ^= true;
                     }
                 }
-                KeyCode::PageDown | KeyCode::PageUp => {
-                    if let About::Asked(Ask::Plan { plan, .. }) = &q.about {
-                        let last = plan.lines().count().saturating_sub(1);
-                        q.scroll = match key.code {
-                            KeyCode::PageDown => (q.scroll + 10).min(last),
-                            _ => q.scroll.saturating_sub(10),
-                        };
-                    }
-                }
+                KeyCode::PageDown | KeyCode::PageUp => scroll_plan(q, key.code),
                 KeyCode::Char('y') if confirm => self.answer(0),
                 KeyCode::Char('n') if confirm => self.answer(1),
                 KeyCode::Enter => {
@@ -670,6 +686,11 @@ impl Screen {
         match key.code {
             KeyCode::Char(_) if held => {}
             KeyCode::Char(c) => self.input.push(c),
+            KeyCode::PageDown | KeyCode::PageUp if self.composing => {
+                if let Some(q) = self.questions.first() {
+                    scroll_plan(q, key.code);
+                }
+            }
             KeyCode::Down if self.input.is_empty() => self.scroll = scroll(1),
             KeyCode::Up if self.input.is_empty() => self.scroll = scroll(-1),
             KeyCode::PageDown if self.input.is_empty() => self.scroll = scroll(10),
@@ -718,10 +739,36 @@ impl Screen {
                 let q = self.questions.remove(0);
                 self.tell(q.ticket.as_deref(), "you answered: I answered it");
             }
-            (About::Asked(Ask::Plan { .. }), 0) => self.reply("approve", Answer::Approve),
-            (About::Asked(Ask::Plan { .. }), 1) => self.composing = true,
-            (About::Asked(Ask::Plan { .. }), 2) => self.reply("park", Answer::Act(Action::Park)),
-            (About::Asked(Ask::Plan { pane, .. }), _) => self.open_pane(pane.clone()),
+            // approve, feedback of your own, resend, park, open the pane
+            (About::Asked(Ask::Plan { feedback, pane, .. }), n) => {
+                let resend = usize::from(feedback.is_some());
+                match n {
+                    0 => self.reply("approve", Answer::Approve),
+                    1 => self.composing = true,
+                    2 if resend == 1 => {
+                        let feedback = feedback.clone().unwrap_or_default();
+                        self.reply("feedback", Answer::Prompt(feedback));
+                    }
+                    n if n == 2 + resend => self.reply("park", Answer::Act(Action::Park)),
+                    _ => self.open_pane(pane.clone()),
+                }
+            }
+            (About::Asked(Ask::PlanFailed { pane, .. }), 0) => self.open_pane(pane.clone()),
+            (About::Asked(Ask::PlanFailed { .. }), 1) => {
+                self.reply("park", Answer::Act(Action::Park))
+            }
+            (About::Asked(Ask::PlanFailed { .. }), 2) => {
+                self.reply("retry", Answer::Act(Action::Retry))
+            }
+            (
+                About::Asked(Ask::PlanFailed {
+                    feedback: Some(f), ..
+                }),
+                _,
+            ) => {
+                let feedback = f.clone();
+                self.reply("feedback", Answer::Prompt(feedback));
+            }
             (About::Confirm(_), 0) => {
                 let About::Confirm(pending) = self.questions.remove(0).about else {
                     unreachable!()
@@ -765,7 +812,12 @@ impl Screen {
         self.tell(Some(&id), &format!("you answered: {word}"));
         if let (
             Some(run),
-            About::Asked(Ask::Wake { pane, .. } | Ask::Blocked { pane } | Ask::Plan { pane, .. }),
+            About::Asked(
+                Ask::Wake { pane, .. }
+                | Ask::Blocked { pane }
+                | Ask::Plan { pane, .. }
+                | Ask::PlanFailed { pane, .. },
+            ),
         ) = (&self.run, &q.about)
         {
             run.o.answer(&id, pane, answer);
@@ -780,7 +832,7 @@ impl Screen {
             text: text.to_string(),
             about: About::Confirm(pending),
             cursor: 1,
-            scroll: 0,
+            scroll: Cell::new(0),
         });
     }
 
@@ -871,7 +923,7 @@ impl Screen {
                         text: "continue the saved run: each Ticket resumes at its Stage, or is reset to Implement".to_string(),
                         about: About::Continue { rows },
                         cursor: 0,
-                        scroll: 0,
+                        scroll: Cell::new(0),
                     });
                 }
             }
@@ -1040,6 +1092,7 @@ impl Screen {
             repo: repo.clone(),
             workspace: self.launch.workspace.clone(),
             api_key: self.launch.api_key.clone(),
+            exe: self.exe.clone(),
             typesafe: self.launch.typesafe.clone(),
             home: self.launch.home.clone(),
             tick: self.launch.tick,
@@ -1116,6 +1169,17 @@ impl Screen {
             .flat_map(|e| &e.tickets)
             .find(|t| t.id == id)
             .map(|t| t.title.as_str())
+    }
+}
+
+/// PageDown and PageUp move a plan Question ten rows.
+fn scroll_plan(q: &Question, code: KeyCode) {
+    if matches!(q.about, About::Asked(Ask::Plan { .. })) {
+        let row = q.scroll.get();
+        q.scroll.set(match code {
+            KeyCode::PageDown => row + 10,
+            _ => row.saturating_sub(10),
+        });
     }
 }
 

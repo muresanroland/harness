@@ -235,12 +235,21 @@ pub(crate) fn request(state: &WakeState, offered: &[Action]) -> String {
 }
 
 /// The plan Judgment's state: the plan, the Ticket, and the user's feedback
-/// on the plan before this revision, or "none".
+/// on the plan before this revision, null when there was none.
 #[derive(Debug, Serialize)]
 pub(crate) struct PlanState {
     plan: String,
-    ticket: TicketSpec,
-    prior_feedback: String,
+    ticket: PlanTicket,
+    prior_feedback: Option<String>,
+}
+
+/// The Ticket as the plan Judgment names it: its description holds the
+/// acceptance criteria.
+#[derive(Debug, Serialize)]
+struct PlanTicket {
+    id: String,
+    title: String,
+    description: String,
 }
 
 /// One Noul, `follows`, over a plan.
@@ -267,7 +276,7 @@ pub(crate) fn plan_request(state: &PlanState) -> String {
         questions: Questions {
             follows: Noul {
                 kind: "noul",
-                instructions: "Does `plan` implement `ticket`, all of it and nothing more, without leaving decisions open? `prior_feedback` is what the user asked of the plan before this revision, or none.",
+                instructions: "Does this plan implement the Ticket, all of it and nothing more, without leaving decisions open?",
             },
         },
     };
@@ -354,14 +363,15 @@ impl Orchestrator {
             return None;
         }
         let feedback = self.ticket(ticket).feedback;
+        let spec = self.ticket_spec(ticket);
         let state = PlanState {
             plan: plan.to_string(),
-            ticket: self.ticket_spec(ticket),
-            prior_feedback: if feedback.is_empty() {
-                "none".to_string()
-            } else {
-                feedback
+            ticket: PlanTicket {
+                id: spec.id,
+                title: spec.title,
+                description: spec.spec,
             },
+            prior_feedback: (!feedback.is_empty()).then_some(feedback),
         };
         self.ask_typesafe(ticket, &plan_request(&state), |reply| {
             reply["answers"]["follows"]["noul"]

@@ -51,7 +51,9 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why`
+
+The last four are plan failures: a Question for the user, no Judgment asked.
 
 The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 
@@ -66,7 +68,9 @@ Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks wh
 | Judgment, line 2 | plan approved · asking you: plan ready in implement (pane 2-1) |
 | below the floor, or no TypeSafe | asking you: plan ready in implement (pane 2-1) |
 | user feedback delivered | plan sent back with your feedback |
-| plan dialog without plan.md in the run directory | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
+| feedback not delivered, no Enter sent | feedback not sent: the plan dialog is not on screen (pane 2-1) · feedback not sent: the cursor never reached Tell Claude what to change (pane 2-1) *(then the plan Question again, the feedback kept to resend)* |
+| a plan failure | stuck in implement: `reason` (pane 2-1) *(a Question for you, no Judgment asked: open the pane, park, retry, resend the feedback)* |
+| blocked at another prompt, or at the plan dialog with no new plan.md | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
 
 ## Questions and answers
 

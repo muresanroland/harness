@@ -390,7 +390,7 @@ fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
 }
 
 /// A Question's lines: the question, a Judgment's scores, a Wake's pane
-/// tail or a plan from its scroll line as far as `room` lines allow, and
+/// tail or a plan from its scroll row as far as `room` lines allow, and
 /// the numbered options with the cursor on one. Everything but the tail or
 /// plan is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
@@ -448,13 +448,18 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
                 lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
             }
         }
-        About::Asked(Ask::Plan { plan, .. }) => lines.extend(
-            plan.lines()
-                .skip(q.scroll)
-                .flat_map(|line| wrap(line, width))
-                .take(fit)
-                .map(|line| Line::from(Span::styled(line, fg(TEXT)))),
-        ),
+        About::Asked(Ask::Plan { plan, .. }) => {
+            let rows: Vec<String> = plan.lines().flat_map(|line| wrap(line, width)).collect();
+            // Scrolled by rows at this width, and kept inside the plan.
+            let from = q.scroll.get().min(rows.len().saturating_sub(fit));
+            q.scroll.set(from);
+            lines.extend(
+                rows.into_iter()
+                    .skip(from)
+                    .take(fit)
+                    .map(|row| Line::from(Span::styled(row, fg(TEXT)))),
+            );
+        }
         _ => {}
     }
     lines.extend(options);
