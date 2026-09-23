@@ -224,3 +224,112 @@ fn restart_does_not_grant_a_second_retry() {
         );
     }
 }
+
+/// A nudge re-arms the hold: the Ticket Wakes again when the nudged session
+/// goes idle without a result, and a done result it then writes is accepted.
+#[test]
+fn a_nudge_re_arms_the_hold_so_the_ticket_wakes_again_or_finishes() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "idle".to_string()));
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    w.await_line("hx-1 stuck in implement: went idle without a result (pane 1-1)");
+    o.command("nudge-hx-1"); // the Shell has sent the prompt itself
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while w
+        .lines()
+        .iter()
+        .filter(|l| l.contains("stuck in implement"))
+        .count()
+        < 2
+    {
+        assert!(
+            deadline > std::time::Instant::now(),
+            "no second Wake after the nudge"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        w.called("herdr agent start h-hx-1-implement").len(),
+        1,
+        "a nudge started a fresh session"
+    );
+    // The second nudge works: the session writes the file this time.
+    w.session(succeed);
+    o.command("nudge-hx-1");
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    run.wait();
+    assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
+}
+
+/// /continue re-runs the completion check on the live pane: a result that
+/// appeared meanwhile is accepted, a session still working is watched, and
+/// one idle without a result Wakes again instead of being restarted.
+#[test]
+fn a_resumed_stage_watches_its_live_session_and_wakes_without_a_result() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "working".to_string()));
+    let o = Arc::new(o);
+    let run = spawn_ticket(o.clone(), "hx-1");
+    w.await_event("implement prompted");
+    drop(run); // stopped: the pane keeps working
+    let pane = o.ticket("hx-1").panes["implement"].clone();
+    assert_eq!(w.lock().agents[&pane], "working");
+
+    // A new process over the saved state, its Events to the same panel.
+    let mut cfg = super::stage::Config::for_tests(w.clone(), &w.repo, &w.home);
+    cfg.events = o.cfg.events.clone();
+    let state = super::state::load_state(&w.repo).unwrap();
+    let resumed = Arc::new(super::stage::Orchestrator::with_state(cfg, state));
+    let mut run = spawn_ticket(resumed.clone(), "hx-1");
+    assert!(
+        !run.finished_within(Duration::from_millis(20)),
+        "the resumed Ticket did not watch its live session"
+    );
+    assert_eq!(
+        w.called("herdr agent start").len(),
+        1,
+        "resume started a fresh session over a live one"
+    );
+    w.lock().agents.insert(pane.clone(), "idle".to_string());
+    w.await_line("hx-1 stuck in implement: went idle without a result (pane 1-1)");
+    w.session(succeed);
+    resumed.command("retry-hx-1");
+    run.wait();
+    assert_eq!(resumed.ticket("hx-1").status, STATUS_PR_OPEN);
+    assert_eq!(w.called("herdr agent start h-hx-1-implement").len(), 2);
+}
+
+/// A park at a prompt takes the Ticket out at its Stage; a session that
+/// moves on by itself says so.
+#[test]
+fn a_blocked_session_is_parked_by_you_or_carries_on() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.session(|_| (String::new(), "blocked".to_string()));
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 waiting at a prompt in implement (pane 1-1)");
+    o.command("park-hx-1");
+    run.wait();
+    let ts = o.ticket("hx-1");
+    assert_eq!(
+        (ts.status.as_str(), ts.reason.as_str()),
+        (STATUS_PARKED, "by you at implement")
+    );
+    w.await_line("hx-1 parked: by you at implement");
+
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    fail_implement_once(&w, |_| {
+        ("STATUS: done\n".to_string(), "blocked".to_string())
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 waiting at a prompt in implement (pane 1-1)");
+    for status in w.lock().agents.values_mut() {
+        *status = "idle".to_string();
+    }
+    w.await_line("hx-1 carrying on");
+    run.wait();
+    assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
+}

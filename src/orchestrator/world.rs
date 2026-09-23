@@ -363,6 +363,9 @@ impl World {
         if cmd.starts_with("herdr agent wait") {
             return w.wait_err.clone().map_or(Ok("{}".to_string()), Err);
         }
+        if cmd.starts_with("herdr agent read") {
+            return Ok("Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string());
+        }
         if cmd.starts_with("herdr agent get") {
             return match w.agents.get(argv[3]) {
                 None => Err(r#"{"error":{"code":"agent_not_found"}}"#.to_string()),

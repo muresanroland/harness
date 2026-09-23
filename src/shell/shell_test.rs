@@ -1,6 +1,6 @@
 use super::draw::{draw, ticket_color};
 use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
-use super::{Epic, Launch, Screen};
+use super::{Epic, Kind, Launch, Pending, Screen, NUDGE_PROCEED, NUDGE_RESULT};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Event;
 use crate::orchestrator::state::{
@@ -11,6 +11,7 @@ use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
+use crate::tools::Tools;
 use chrono::TimeZone;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::TestBackend;
@@ -46,6 +47,10 @@ fn ticket(status: &str) -> TicketState {
 /// One open Epic with seven Tickets on the bd tree, four of them started in
 /// the saved run, two of those with a PR: the Overall bar reads 2/7.
 fn screen() -> Screen {
+    screen_at(Fake::quiet(), Path::new(""))
+}
+
+fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
     let epic = Epic {
         id: "harness-kqe".to_string(),
         title: "Build: the Rust port".to_string(),
@@ -78,7 +83,7 @@ fn screen() -> Screen {
             .insert(format!("harness-kqe.{n}"), ticket(status));
     }
     Screen::new(
-        Launch::for_tests(Fake::quiet(), Path::new(""), Path::new("")),
+        Launch::for_tests(tools, repo, Path::new("")),
         "~/harness".to_string(),
         true,
         vec![epic],
@@ -186,6 +191,34 @@ fn type_line(s: &mut Screen, line: &str) {
         s.key(key(KeyCode::Char(c)));
     }
     s.key(key(KeyCode::Enter));
+}
+
+/// Picks option `n` (as numbered on the form) of the front Question.
+fn pick(s: &mut Screen, n: usize) {
+    s.key(key(KeyCode::Char(char::from(b'0' + n as u8))));
+    s.key(key(KeyCode::Enter));
+}
+
+/// The front Question's text, "" when none shows.
+fn question(s: &Screen) -> &str {
+    if s.showing() {
+        s.questions[0].text.as_str()
+    } else {
+        ""
+    }
+}
+
+/// Polls the Shell until its Ticket Questions number `n`.
+fn await_questions(s: &mut Screen, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.questions.iter().filter(|q| q.ticket.is_some()).count() != n {
+        assert!(
+            Instant::now() < deadline,
+            "the Questions never numbered {n}"
+        );
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -410,6 +443,7 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
     );
     // Nothing prepared: a run is refused with the first missing thing.
     s.command("/continue");
+    s.key(key(KeyCode::Enter)); // the checklist, resumed as saved
     assert!(
         notice(&s).starts_with("refused: no bd workspace here"),
         "{:?}",
@@ -696,17 +730,28 @@ fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
     s.command("/stop-work");
     assert_eq!(notice(&s), "nothing is running");
 
-    // /continue resumes the saved Ticket as saved: Implement starts again
-    // in a fresh session and the Epic runs to its end.
+    // /continue asks which saved Tickets to resume, then watches the live
+    // Implement session: idle without a result, the Ticket Wakes, and retry
+    // starts Implement again in a fresh session.
     w.session(succeed);
     s.command("/continue");
+    assert!(!s.running, "started before the checklist was answered");
+    assert!(question(&s).starts_with("continue the saved run"));
+    s.key(key(KeyCode::Enter));
     assert!(s.running, "/continue did not start: {:?}", s.notice);
+    let pane = saved.tickets["hx-1"].panes["implement"].clone();
+    w.lock().agents.insert(pane, "idle".to_string());
+    await_line(
+        &mut s,
+        "hx-1 stuck in implement: went idle without a result (pane 1-1)",
+    );
+    pick(&mut s, 3);
     await_line(&mut s, "Epic done, every Ticket closed");
     await_end(&mut s);
     assert_eq!(
         w.called("herdr agent start h-hx-1-implement").len(),
         2,
-        "want a fresh Implement session on resume"
+        "want a fresh Implement session on retry"
     );
     assert_eq!(w.called("bd worktree create").len(), 1);
     assert!(s.state.epic.is_empty());
@@ -752,8 +797,19 @@ fn retry_and_park_reach_the_ticket_and_refusals_are_logged() {
     assert_eq!(notice(&s), "usage: /retry <ticket>");
     s.command("/retry hx-9");
     await_line(&mut s, "hx-9 refused: not a Ticket of this run");
+    // The Ticket's Question holds it: the commands are refused until answered.
     s.command("/park hx-1");
+    assert_eq!(notice(&s), "refused: Ticket hx-1 has a Question waiting");
+    s.command("/retry hx-1");
+    assert!(
+        log(&w).contains(" refused: Ticket hx-1 has a Question waiting\n"),
+        "log:\n{}",
+        log(&w)
+    );
+    pick(&mut s, 4); // park
+    await_line(&mut s, "hx-1 you answered: park");
     await_line(&mut s, "hx-1 parked: implement went idle without a result");
+    assert!(s.questions.is_empty());
     s.poll();
     let buf = render(&s, 120, 40);
     assert!(
@@ -806,31 +862,23 @@ fn start_epic_resolves_its_argument_from_the_bd_cache_and_asks_before_discarding
     s.input.clear();
 
     type_line(&mut s, "/start-epic Epic hx");
-    assert_eq!(notice(&s), "discard the saved run on old? (y/n)");
+    assert_eq!(question(&s), "discard the saved run on old?");
     assert!(s.run.is_none(), "started before the answer");
     type_line(&mut s, "n");
-    assert!(s.run.is_none() && s.pending.is_none(), "started on no");
+    assert!(s.run.is_none() && s.questions.is_empty(), "started on no");
     assert_eq!(notice(&s), "cancelled");
-    // Enter keeps the question; any other line cancels it; so does the
-    // notice expiring.
+    // A command typed past the form leaves it waiting; Esc cancels it; it
+    // never expires.
     type_line(&mut s, "/start-epic hx");
-    type_line(&mut s, "");
-    assert!(s.pending.is_some(), "Enter answered the question");
     type_line(&mut s, "/bogus");
-    assert!(s.pending.is_none() && s.run.is_none());
+    assert_eq!(notice(&s), "unknown command: /bogus");
+    assert!(s.questions.len() == 1 && s.run.is_none());
+    s.tick();
+    s.key(key(KeyCode::Esc));
+    assert!(s.questions.is_empty() && s.run.is_none());
     assert_eq!(notice(&s), "cancelled");
     type_line(&mut s, "/start-epic hx");
-    s.notice = Some((
-        "discard the saved run on old? (y/n)".to_string(),
-        Instant::now(),
-    ));
-    s.tick();
-    assert!(
-        s.pending.is_none() && s.notice.is_none(),
-        "the expired y/n stayed pending"
-    );
-    type_line(&mut s, "/start-epic hx");
-    type_line(&mut s, "y");
+    s.key(key(KeyCode::Enter)); // yes is the option under the cursor
     assert!(s.run.is_some(), "did not start on yes: {:?}", s.notice);
     await_line(&mut s, "Epic done, every Ticket closed");
     await_end(&mut s);
@@ -890,9 +938,9 @@ fn start_ticket_keeps_a_saved_epic_run_and_asks_over_a_different_one() {
     // A Ticket of another Epic asks, as /start-epic does.
     s.state.epic = "old".to_string();
     s.command("/start-ticket hx-1");
-    assert_eq!(notice(&s), "discard the saved run on old? (y/n)");
+    assert_eq!(question(&s), "discard the saved run on old?");
     assert!(s.run.is_none());
-    s.command("y");
+    s.command("y"); // typed, as well as pressed
     assert!(s.run.is_some(), "{:?}", s.notice);
     await_end(&mut s);
     assert!(s.state.epic.is_empty(), "{:?}", s.state);
@@ -913,7 +961,22 @@ fn continue_resumes_a_saved_single_ticket_run() {
 
     w.session(succeed);
     s.command("/continue");
+    assert_eq!(s.options(), ["hx-2 Ticket hx-2  implement  → resume"]);
+    s.key(key(KeyCode::Enter));
     assert!(s.run.is_some(), "{:?}", s.notice);
+    // The live session is watched; idle without a result it Wakes.
+    let pane = s.state.tickets["hx-2"].panes["implement"].clone();
+    w.lock().agents.insert(pane, "idle".to_string());
+    await_line(
+        &mut s,
+        "hx-2 stuck in implement: went idle without a result (pane 1-1)",
+    );
+    pick(&mut s, 3);
+    await_line(&mut s, "hx-2 you answered: retry");
+    await_line(
+        &mut s,
+        "hx-2 retrying implement with a fresh session (pane 1-1)",
+    );
     await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
     await_end(&mut s);
     assert!(w.called("herdr agent start h-hx-1-implement").is_empty());
@@ -991,10 +1054,10 @@ fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
     s.command("/start-epic hx");
     await_line(&mut s, "hx-1 implement started");
     type_line(&mut s, "/exit");
-    assert_eq!(notice(&s), "stop the run and exit? (y/n)");
+    assert_eq!(question(&s), "stop the run and exit?");
     assert!(!s.quit);
     type_line(&mut s, "n");
-    assert!(!s.quit && s.running);
+    assert!(!s.quit && s.running && s.questions.is_empty());
     type_line(&mut s, "/exit");
     type_line(&mut s, "y");
     assert!(s.quit, "yes did not exit");
@@ -1004,7 +1067,8 @@ fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
 
     let mut s = shell(&w);
     s.command("/continue");
-    await_line(&mut s, "hx-1 implement started: claude (pane 1-1)"); // a fresh Screen: its own Events
+    s.key(key(KeyCode::Enter));
+    assert!(s.running, "{:?}", s.notice); // the live session is watched
     let closed = w.called("herdr pane close").len();
     s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -1020,6 +1084,487 @@ fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
         closed,
         "Ctrl-C closed a pane"
     );
+}
+
+#[test]
+fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
+    let repo = TempDir::new();
+    let fake = Fake::new(|_, argv| {
+        Ok(match argv {
+            ["herdr", "agent", "read", "h-harness-kqe-11-fix", ..] => {
+                "Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string()
+            }
+            _ => String::new(),
+        })
+    });
+    let mut s = screen_at(fake.clone(), repo.path());
+    s.push(event(
+        Some("harness-kqe.11"),
+        "stuck in fix 1: went idle without a result (pane 2-1)",
+        true,
+    ));
+    assert_eq!(
+        fake.calls(),
+        ["herdr agent read h-harness-kqe-11-fix --source recent-unwrapped --lines 120"]
+    );
+    // 50 rows: TICKETS keeps its 11, RECENT its 4, the form gets the rest
+    // and shows two lines of the tail.
+    let buf = render(&s, 120, 50);
+    let (_, y) = find(&buf, " QUESTION ").unwrap();
+    let body: Vec<String> = (y + 1..y + 8)
+        .map(|y| {
+            row(&buf, y)
+                .trim_matches(|c| c == '│' || c == ' ')
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        body[..5],
+        [
+            "11 Questions  stuck in fix 1: went idle without a result (pane 2-1)",
+            "",
+            "Ran the tests: 12 passed.",
+            "> Should I also update the docs?",
+            "",
+        ],
+        "{:#?}",
+        rows(&buf)
+    );
+    let file = format!(
+        "{}/.harness/runs/harness-kqe.11/fix-1.md",
+        repo.path().display()
+    );
+    assert!(
+        body[5].starts_with("› 1. nudge: The Orchestrator is waiting for your result file")
+            && body[5..7].join(" ").contains(&file),
+        "{body:#?}"
+    );
+    let (x, y1) = find(&buf, "› 1. nudge").unwrap();
+    assert_eq!(buf[(x, y1)].fg, PURPLE);
+    for option in [
+        "  2. nudge: Nobody is watching this pane and no one will answer.",
+        "  3. retry with a fresh session",
+        "  4. park",
+        "  5. open the pane",
+        "  6. a prompt of your own",
+        "↑↓ or a number picks, Enter answers, Esc hides",
+    ] {
+        let (x, y2) =
+            find(&buf, option).unwrap_or_else(|| panic!("{option:?} missing:\n{:#?}", rows(&buf)));
+        assert!(y2 > y1 && buf[(x + 2, y2)].fg != PURPLE, "{option:?}");
+    }
+    assert!(
+        find(&buf, "'STATUS: done' as its first line.").is_some(),
+        "the prompt is cut"
+    );
+    assert!(
+        find(&buf, "◆  11 Questions").is_some(),
+        "a Ticket with a Question waiting is blocked"
+    );
+    let (_, y) = find(&buf, " RECENT ").unwrap();
+    assert!(
+        row(&buf, y + 1).contains("11 Questions            asking you: stuck in fix 1"),
+        "{:?}",
+        row(&buf, y + 1)
+    );
+    assert!(
+        std::fs::read_to_string(repo.path().join(".harness/orchestrator.log"))
+            .unwrap()
+            .contains(" harness-kqe.11 asking you: stuck in fix 1\n")
+    );
+
+    // A number or the arrows move the cursor.
+    s.key(key(KeyCode::Char('4')));
+    assert_eq!(s.questions[0].cursor, 3);
+    s.key(key(KeyCode::Up));
+    s.key(key(KeyCode::Up));
+    s.key(key(KeyCode::Down));
+    assert_eq!(s.questions[0].cursor, 2);
+    assert!(find(&render(&s, 120, 50), "› 3. retry with a fresh session").is_some());
+    s.key(key(KeyCode::Char('9')));
+    assert_eq!(
+        s.questions[0].cursor, 2,
+        "a number past the options moved the cursor"
+    );
+
+    // Esc hides the form; the status row counts it; Esc on an empty input
+    // line or /questions brings it back.
+    s.key(key(KeyCode::Esc));
+    assert!(s.hidden);
+    let buf = render(&s, 120, 40);
+    assert!(find(&buf, " QUESTION ").is_none());
+    assert!(
+        row(&buf, 8).contains("/continue resumes  ·  1 question waiting"),
+        "{:?}",
+        row(&buf, 8)
+    );
+    s.key(key(KeyCode::Esc));
+    assert!(s.showing());
+    s.key(key(KeyCode::Esc));
+    type_line(&mut s, "/questions");
+    assert!(s.showing());
+    s.key(key(KeyCode::Esc));
+    type_line(&mut s, "/retry harness-kqe.11");
+    assert_eq!(
+        notice(&s),
+        "refused: no run is live, /start-epic or /continue starts one"
+    );
+
+    // One form at a time, oldest first, the rest counted; a new Wake for a
+    // Ticket replaces its Question, and a session carrying on closes it.
+    s.push(event(
+        Some("harness-kqe.10"),
+        "waiting at a prompt in fix 1 (pane 3-1)",
+        true,
+    ));
+    assert!(s.hidden, "a new Question unhid the form");
+    s.hidden = false;
+    s.push(event(
+        Some("harness-kqe.11"),
+        "stuck in fix 1: timed out after 1h (pane 2-1)",
+        true,
+    ));
+    assert_eq!(
+        s.questions.len(),
+        2,
+        "the new Wake did not replace the old Question"
+    );
+    assert_eq!(question(&s), "waiting at a prompt in fix 1 (pane 3-1)");
+    let buf = render(&s, 120, 40);
+    let (_, y) = find(&buf, " QUESTION · 1 more waiting ").unwrap();
+    let body: Vec<String> = (y + 1..y + 7)
+        .map(|y| {
+            row(&buf, y)
+                .trim_matches(|c| c == '│' || c == ' ')
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        body,
+        [
+            "10 The Shell runs the Orchestrator  waiting at a prompt in fix 1 (pane 3-1)",
+            "",
+            "› 1. open the pane",
+            "2. park",
+            "3. I answered it",
+            "↑↓ or a number picks, Enter answers, Esc hides",
+        ]
+    );
+    s.push(event(Some("harness-kqe.10"), "carrying on", true));
+    assert_eq!(s.questions.len(), 1);
+    assert_eq!(
+        question(&s),
+        "stuck in fix 1: timed out after 1h (pane 2-1)"
+    );
+    // A short screen keeps every option: the tail goes first, then RECENT
+    // whole, then tree rows (the 17-row form here needs one).
+    let buf = render(&s, 120, 40);
+    assert!(find(&buf, " QUESTION ").is_some());
+    assert!(
+        find(&buf, "6. a prompt of your own").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "Esc hides").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "12 passed").is_none());
+    assert!(find(&buf, " RECENT ").is_none(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "… 2 more").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "12 Judgment").is_some(), "{:#?}", rows(&buf));
+    // Shorter still, the tree keeps its header alone and the hint is cut.
+    let buf = render(&s, 120, 32);
+    assert!(
+        find(&buf, "6. a prompt of your own").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "14 Self-update").is_none(), "{:#?}", rows(&buf));
+    assert!(find(&buf, " TICKETS ").is_some());
+    assert!(row(&buf, 31).starts_with("› ▌"), "{:#?}", rows(&buf));
+}
+
+#[test]
+fn a_confirmation_and_the_continue_checklist_render_as_forms() {
+    let mut s = screen();
+    s.confirm("stop the run and exit?", Pending::Exit);
+    let buf = render(&s, 120, 40);
+    let (_, y) = find(&buf, " QUESTION ").unwrap();
+    let body: Vec<String> = (y + 1..y + 6)
+        .map(|y| {
+            row(&buf, y)
+                .trim_matches(|c| c == '│' || c == ' ')
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        body,
+        [
+            "stop the run and exit?",
+            "",
+            "› 1. yes",
+            "2. no",
+            "y or n, Enter answers, Esc cancels",
+        ]
+    );
+    s.key(key(KeyCode::Esc));
+    assert!(s.questions.is_empty() && !s.quit);
+    assert_eq!(notice(&s), "cancelled");
+
+    s.state.tickets.insert(
+        "harness-kqe.9".to_string(),
+        TicketState {
+            reason: "went idle".to_string(),
+            ..ticket(STATUS_PARKED)
+        },
+    );
+    s.command("/continue");
+    let buf = render(&s, 120, 40);
+    let (_, y) = find(&buf, " QUESTION ").unwrap();
+    let body: Vec<String> = (y + 1..y + 7)
+        .map(|y| {
+            row(&buf, y)
+                .trim_matches(|c| c == '│' || c == ' ')
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        body,
+        [
+            "continue the saved run: each Ticket resumes at its Stage, or is reset to Implement",
+            "",
+            "› 1. 9 The Shell, idle: harness opens the screen  fix 1  parked: went idle  → resume",
+            "2. 10 The Shell runs the Orchestrator  fix 1  → resume",
+            "3. 11 Questions  fix 1  → resume",
+            "Space toggles resume or reset to Implement, Enter starts, Esc cancels",
+        ]
+    );
+    s.key(key(KeyCode::Char('2')));
+    s.key(key(KeyCode::Char(' ')));
+    assert!(find(
+        &render(&s, 120, 40),
+        "› 2. 10 The Shell runs the Orchestrator  fix 1  → reset to Implement"
+    )
+    .is_some());
+    s.key(key(KeyCode::Char(' ')));
+    assert_eq!(
+        s.options()[1],
+        "10 The Shell runs the Orchestrator  fix 1  → resume"
+    );
+    s.key(key(KeyCode::Esc));
+    assert!(s.questions.is_empty() && s.run.is_none());
+}
+
+/// Every answer to a Wake: the two canned nudges and a prompt of your own go
+/// to the session by herdr agent prompt and re-arm the hold, open the pane
+/// keeps the Question, park parks; each answer logs its two lines.
+#[test]
+fn a_wake_question_nudges_opens_the_pane_and_parks() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.session(|_| (String::new(), "idle".to_string())); // no result: a Wake, again and again
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 asking you: stuck in implement");
+    assert_eq!(
+        question(&s),
+        "stuck in implement: went idle without a result (pane 1-1)"
+    );
+    let file = format!("{}/.harness/runs/hx-1/implement.md", w.repo.display());
+    let pane = s.state.tickets["hx-1"].panes["implement"].clone();
+    // What the Shell prompted the session with, the Stage prompt left out.
+    let prompts = |w: &World| {
+        w.called(&format!("herdr agent prompt {pane} "))
+            .iter()
+            .filter(|c| !c.contains("- Result file: "))
+            .map(|c| c.splitn(5, ' ').nth(4).unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    pick(&mut s, 1);
+    assert_eq!(prompts(&w), [NUDGE_RESULT.replace("{result_file}", &file)]);
+    await_line(&mut s, "hx-1 you answered: nudge");
+    await_line(&mut s, "hx-1 nudged: write the result file");
+    assert!(s.questions.is_empty(), "the answered Question stayed");
+    // The hold is re-armed: the nudged session, idle without a result, Wakes again.
+    await_questions(&mut s, 1);
+
+    pick(&mut s, 6);
+    assert!(s.composing && s.questions.len() == 1);
+    assert!(row(&render(&s, 120, 40), 39).contains("your prompt, Enter sends it"));
+    type_line(&mut s, "read the failing test first");
+    assert!(!s.composing && s.input.is_empty());
+    assert_eq!(
+        prompts(&w).last().map(String::as_str),
+        Some("read the failing test first")
+    );
+    await_line(&mut s, "hx-1 you answered: your prompt");
+    await_line(&mut s, "hx-1 nudged with your prompt");
+    await_questions(&mut s, 1);
+
+    pick(&mut s, 5); // open the pane
+    assert_eq!(
+        w.called("herdr pane focus"),
+        [format!("herdr pane focus {pane}")]
+    );
+    assert_eq!(s.questions.len(), 1, "open the pane answered the Question");
+    pick(&mut s, 2);
+    assert_eq!(
+        prompts(&w).last(),
+        Some(&NUDGE_PROCEED.replace("{result_file}", &file))
+    );
+    await_line(&mut s, "hx-1 nudged: carry on, the Ticket is the spec");
+    await_questions(&mut s, 1);
+    assert_eq!(
+        w.called("herdr agent start h-hx-1-implement").len(),
+        1,
+        "a nudge started a fresh session"
+    );
+
+    pick(&mut s, 4);
+    await_line(&mut s, "hx-1 you answered: park");
+    await_line(&mut s, "hx-1 parked: implement went idle without a result");
+    let log = log(&w);
+    for line in [
+        " hx-1 asking you: stuck in implement\n",
+        " hx-1 you answered: nudge\n",
+        " hx-1 nudged: write the result file\n",
+        " hx-1 you answered: your prompt\n",
+        " hx-1 nudged with your prompt\n",
+        " hx-1 nudged: carry on, the Ticket is the spec\n",
+        " hx-1 you answered: park\n",
+        " hx-1 parked: implement went idle without a result\n",
+    ] {
+        assert!(log.contains(line), "log lacks {line:?}:\n{log}");
+    }
+    assert_eq!(log.matches("asking you").count(), 4);
+    assert!(!log.contains("open"), "open the pane logged something");
+    s.command("/stop-work");
+    await_end(&mut s);
+}
+
+#[test]
+fn a_wake_question_retries_with_a_fresh_session() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    let once = std::sync::atomic::AtomicBool::new(false);
+    w.session(move |p| {
+        if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return (String::new(), "idle".to_string());
+        }
+        succeed(p)
+    });
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 asking you: stuck in implement");
+    pick(&mut s, 3);
+    await_line(&mut s, "hx-1 you answered: retry");
+    await_line(
+        &mut s,
+        "hx-1 retrying implement with a fresh session (pane 1-1)",
+    );
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    assert_eq!(w.called("herdr agent start h-hx-1-implement").len(), 2);
+    assert!(s.questions.is_empty());
+}
+
+/// A blocked session's Question: "I answered it" closes it, the pane moving
+/// on closes it by itself with "carrying on", and park takes the Ticket out
+/// at its Stage.
+#[test]
+fn a_blocked_question_closes_itself_when_the_session_carries_on() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.session(|_| ("STATUS: done\n".to_string(), "blocked".to_string()));
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(
+        &mut s,
+        "hx-1 asking you: waiting at a prompt in implement (pane 1-1)",
+    );
+    assert!(matches!(s.questions[0].kind, Kind::Blocked));
+    pick(&mut s, 3);
+    await_line(&mut s, "hx-1 you answered: I answered it");
+    assert!(s.questions.is_empty());
+    let unblock = |w: &World| {
+        for status in w.lock().agents.values_mut() {
+            *status = "idle".to_string();
+        }
+    };
+    unblock(&w);
+    await_line(&mut s, "hx-1 carrying on");
+    // Review blocks next; nobody answers, and the session moves on by itself.
+    await_line(
+        &mut s,
+        "hx-1 asking you: waiting at a prompt in review 1 (pane 1-2)",
+    );
+    assert_eq!(s.questions.len(), 1);
+    unblock(&w);
+    await_questions(&mut s, 0);
+    assert_eq!(
+        log(&w).matches(" hx-1 carrying on\n").count(),
+        2,
+        "log:\n{}",
+        log(&w)
+    );
+    // The Debate blocks: park.
+    await_line(
+        &mut s,
+        "hx-1 asking you: waiting at a prompt in debate 1 (pane 1-3)",
+    );
+    s.command("/retry hx-1");
+    assert_eq!(notice(&s), "refused: Ticket hx-1 has a Question waiting");
+    pick(&mut s, 2);
+    await_line(&mut s, "hx-1 you answered: park");
+    await_line(&mut s, "hx-1 parked: by you at debate 1");
+    s.command("/stop-work");
+    await_end(&mut s);
+    assert_eq!(
+        load_state(&w.repo).unwrap().tickets["hx-1"].status,
+        STATUS_PARKED
+    );
+}
+
+/// A reset row of the /continue checklist runs Implement over: its panes
+/// close, its run directory goes, and a fresh Implement session starts.
+#[test]
+fn the_continue_checklist_resets_a_ticket_to_implement() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.session(|p| {
+        if p.stage == "implement" {
+            succeed(p)
+        } else {
+            (String::new(), "working".to_string())
+        }
+    });
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 review 1 started: codex (pane 1-2)");
+    s.command("/stop-work");
+    await_end(&mut s);
+    assert!(w.repo.join(".harness/runs/hx-1/implement.md").exists());
+
+    w.session(succeed);
+    s.command("/continue");
+    assert_eq!(s.options(), ["hx-1 Ticket hx-1  review 1  → resume"]);
+    s.key(key(KeyCode::Char(' ')));
+    assert_eq!(
+        s.options(),
+        ["hx-1 Ticket hx-1  review 1  → reset to Implement"]
+    );
+    let closed = w.called("herdr pane close").len();
+    s.key(key(KeyCode::Enter));
+    assert!(s.running, "{:?}", s.notice);
+    assert_eq!(
+        w.called("herdr pane close").len(),
+        closed + 2,
+        "the old panes stay open"
+    );
+    assert!(!w.repo.join(".harness/runs/hx-1/implement.md").exists());
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+    assert_eq!(w.called("herdr agent start h-hx-1-implement").len(), 2);
+    assert_eq!(w.called("herdr agent start h-hx-1-review").len(), 2);
 }
 
 #[test]

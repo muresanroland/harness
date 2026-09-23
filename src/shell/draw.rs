@@ -1,6 +1,6 @@
 //! The layout, folded in from docs/design/screen-prototype: header, status
-//! row, Overall, the TICKETS box, the RECENT box newest first, a notice line
-//! and the input line.
+//! row, Overall, the TICKETS box, the RECENT box newest first, the Question
+//! form when one shows, a notice line and the input line.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -12,13 +12,14 @@ use super::logo::{
     banner, lerp, quantize, BORDER, GRAY, GREEN, HOP, MUTED, ORANGE, PURPLE, REST, TEXT,
     TICKET_COLORS,
 };
-use super::{suffix, Screen};
+use super::{suffix, Kind, Screen};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
 use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
 const PLACEHOLDER: &str =
     "  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit";
+const COMPOSING: &str = "  your prompt, Enter sends it, Esc goes back";
 const SPINNER: [&str; 4] = ["|", "/", "—", "\\"];
 
 /// A Ticket's place on the tree.
@@ -52,22 +53,43 @@ pub(crate) fn ticket_color(id: &str) -> Color {
     TICKET_COLORS[n.wrapping_sub(1) % TICKET_COLORS.len()]
 }
 
-/// Header, status row, Overall, boxed TICKETS, boxed RECENT (newest first), notice, input.
+/// Header, status row, Overall, boxed TICKETS, boxed RECENT (newest first),
+/// the QUESTION form, notice, input.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let area = f.area();
     let rows = s.rows() as u16;
     let head_h = header_height(area);
-    // The TICKETS box takes its rows; RECENT keeps at least four. A taller
-    // tree scrolls (Up, Down, PageUp, PageDown with the input empty).
+    // The TICKETS box takes its rows; RECENT keeps at least four, and gives
+    // the rest to a Question's form. A form whose options need more takes
+    // RECENT whole, then TICKETS rows; on a screen too short for even that
+    // the form's bottom is cut. A taller tree scrolls (Up, Down, PageUp,
+    // PageDown with the input empty).
     let free = area.height.saturating_sub(head_h + 5);
-    let tickets_h = (rows + 3).min(free.saturating_sub(4).max(3));
-    let [head, top, over, _, tickets, recent, notice, input] = Layout::vertical([
+    let mut tickets_h = (rows + 3).min(free.saturating_sub(4).max(3));
+    let width = area.width.saturating_sub(4) as usize;
+    let form = s.showing().then(|| {
+        let least = question_lines(s, width, 0).len() as u16 + 2;
+        let mut room = free.saturating_sub(tickets_h + 4);
+        if room < least {
+            room = free.saturating_sub(tickets_h);
+        }
+        if room < least {
+            tickets_h = free.saturating_sub(least).max(3);
+            room = free.saturating_sub(tickets_h);
+        }
+        let lines = question_lines(s, width, room.saturating_sub(2) as usize);
+        let form_h = (lines.len() as u16 + 2).min(room);
+        (lines, form_h)
+    });
+    let form_h = form.as_ref().map_or(0, |(_, h)| *h);
+    let [head, top, over, _, tickets, recent, question, notice, input] = Layout::vertical([
         Constraint::Length(head_h),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(tickets_h),
         Constraint::Min(0),
+        Constraint::Length(form_h),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -90,6 +112,13 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Paragraph::new(recent_lines(s, inner.height as usize, area.width)).block(boxed("RECENT")),
         recent,
     );
+    if let Some((lines, _)) = form {
+        let title = match s.questions.len() {
+            1 => "QUESTION".to_string(),
+            n => format!("QUESTION · {} waiting", plural(n - 1, "more")),
+        };
+        f.render_widget(Paragraph::new(lines).block(boxed(&title)), question);
+    }
     if let Some((text, _)) = &s.notice {
         f.render_widget(
             Line::from(Span::styled(text.clone(), fg(ORANGE))),
@@ -203,7 +232,7 @@ fn status_line(s: &Screen) -> Line<'static> {
             spans.push(dot());
             spans.push(Span::styled(format!("{parked} parked"), fg(MUTED)));
         }
-        return Line::from(spans);
+        return Line::from(waiting(s, spans));
     }
     let tickets: usize = s.epics.iter().map(|e| e.tickets.len()).sum();
     let mut spans = vec![
@@ -222,7 +251,19 @@ fn status_line(s: &Screen) -> Line<'static> {
             fg(PURPLE),
         ));
     }
-    Line::from(spans)
+    Line::from(waiting(s, spans))
+}
+
+/// The status row ends in the hidden Questions' count.
+fn waiting(s: &Screen, mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    if s.hidden && !s.questions.is_empty() {
+        spans.push(dot());
+        spans.push(Span::styled(
+            format!("{} waiting", plural(s.questions.len(), "question")),
+            fg(ORANGE),
+        ));
+    }
+    spans
 }
 
 /// Filled cells over empty, labelled N/M PRs; purple blending to green by the
@@ -339,17 +380,83 @@ fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
         .header(Row::new(vec!["", "TICKET", "STAGE", ""]).style(fg(BORDER)))
 }
 
+/// The Question form's lines: the question, a Wake's pane tail as far as
+/// `room` lines allow, the numbered options with the cursor on one, and the
+/// key hint. Everything but the tail is always there.
+fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
+    let q = &s.questions[0];
+    let head = match &q.ticket {
+        Some(id) => format!("{}  {}", s.name(id), q.text),
+        None => q.text.clone(),
+    };
+    let mut lines = vec![Line::from(Span::styled(head, bold(TEXT))), Line::default()];
+    let mut options = Vec::new();
+    for (i, option) in s.options().iter().enumerate() {
+        let (mark, style) = if i == q.cursor {
+            ("›", bold(PURPLE))
+        } else {
+            (" ", fg(TEXT))
+        };
+        for (n, piece) in wrap(option, width.saturating_sub(5))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if n == 0 {
+                format!("{mark} {}. ", i + 1)
+            } else {
+                "     ".to_string()
+            };
+            options.push(Line::from(vec![
+                Span::styled(lead, style),
+                Span::styled(piece, style),
+            ]));
+        }
+    }
+    let hint = match q.kind {
+        Kind::Continue { .. } => {
+            "Space toggles resume or reset to Implement, Enter starts, Esc cancels"
+        }
+        Kind::Confirm(_) => "y or n, Enter answers, Esc cancels",
+        _ => "↑↓ or a number picks, Enter answers, Esc hides",
+    };
+    let tail: Vec<&str> = match &q.kind {
+        Kind::Wake { tail, .. } => tail.lines().collect(),
+        _ => Vec::new(),
+    };
+    let fit = room.saturating_sub(lines.len() + options.len() + 2);
+    if !tail.is_empty() && fit > 0 {
+        for line in &tail[tail.len().saturating_sub(fit)..] {
+            lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
+        }
+        lines.push(Line::default());
+    }
+    lines.extend(options);
+    lines.push(Line::from(Span::styled(hint, fg(MUTED))));
+    lines
+}
+
+/// Word-wraps text to width; a word longer than the width stays whole.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    for word in text.split(' ') {
+        let last = lines.last_mut().unwrap();
+        if !last.is_empty() && last.chars().count() + 1 + word.chars().count() > width {
+            lines.push(word.to_string());
+        } else {
+            if !last.is_empty() {
+                last.push(' ');
+            }
+            last.push_str(word);
+        }
+    }
+    lines
+}
+
 /// HH:MM:SS  <suffix> <title>  <event>; the Ticket column colored per Ticket
 /// and cut to `name_width`; run-level rows read harness.
 fn event_line(s: &Screen, ev: &Event, name_width: usize) -> Line<'static> {
     let (name, color) = match &ev.ticket {
-        Some(id) => (
-            match s.title(id) {
-                Some(title) => format!("{} {title}", suffix(id)),
-                None => id.clone(),
-            },
-            ticket_color(id),
-        ),
+        Some(id) => (s.name(id), ticket_color(id)),
         None => ("harness".to_string(), MUTED),
     };
     let name: String = name.chars().take(name_width).collect();
@@ -378,12 +485,12 @@ fn input_line(f: &mut Frame, area: Rect, s: &Screen) {
         "▌".fg(TEXT),
     ];
     if s.input.is_empty() {
-        spans.push(PLACEHOLDER.fg(BORDER));
+        spans.push(if s.composing { COMPOSING } else { PLACEHOLDER }.fg(BORDER));
     }
     f.render_widget(Line::from(spans), area);
 }
 
-fn boxed(title: &'static str) -> Block<'static> {
+fn boxed(title: &str) -> Block<'static> {
     Block::bordered()
         .title(Span::styled(format!(" {title} "), fg(MUTED)))
         .border_style(fg(BORDER))

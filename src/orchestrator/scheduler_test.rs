@@ -72,6 +72,9 @@ fn a_ticket_thread_that_panics_frees_its_slot() {
     let o = Arc::new(o);
 
     let mut run = spawn_epic(o.clone(), "hx");
+    // Resumed, the Ticket watches its live pane, idle without a result: a Wake.
+    w.await_line("hx-1 stuck in implement: went idle without a result (pane 1-1)");
+    o.command("retry-hx-1");
     assert!(
         run.finished_within(Duration::from_secs(10)),
         "the Epic never finished: the dead Ticket's slot was not given back"
@@ -236,12 +239,19 @@ fn killed_run_resumes_at_the_right_stage_without_redoing_finished_ones() {
         succeed(p)
     });
     let state = load_state(&w.repo).unwrap();
-    let resumed = Arc::new(Orchestrator::with_state(
-        Config::for_tests(w.clone(), &w.repo, &w.home),
-        state,
-    ));
+    let mut cfg = Config::for_tests(w.clone(), &w.repo, &w.home);
+    cfg.events = o.cfg.events.clone();
+    let resumed = Arc::new(Orchestrator::with_state(cfg, state));
     let before = w.called("herdr agent start").len();
-    run_epic(&resumed);
+    // The live Review session is watched, not replaced; once it goes idle
+    // without a result the Ticket Wakes, and retry starts Review afresh.
+    let mut run = spawn_epic(resumed.clone(), "hx");
+    let old_pane = resumed.ticket("hx-1").panes["review"].clone();
+    w.lock().agents.insert(old_pane, "idle".to_string());
+    w.await_line("hx-1 stuck in review 1: went idle without a result");
+    resumed.command("retry-hx-1");
+    run.wait();
+    resumed.wait_in_flight();
 
     let stages: Vec<String> = w.called("herdr agent start")[before..]
         .iter()

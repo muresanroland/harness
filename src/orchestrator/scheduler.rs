@@ -104,7 +104,15 @@ impl Orchestrator {
                     // a Ticket's own hold consumes its retry and park, and
                     // sleep owns stop, in every mode
                 } else if kind == "retry" && ts.status == STATUS_PARKED && self.consume(&command) {
-                    self.update(ticket, |ts| ts.status = STATUS_RUNNING.to_string());
+                    // a fresh session: the Parked one is closed, not watched
+                    if let Some(old) = ts.panes.get(&ts.stage) {
+                        let _ = self.herdr(&["pane", "close", old]);
+                    }
+                    self.update(ticket, |ts| {
+                        ts.status = STATUS_RUNNING.to_string();
+                        let stage = ts.stage.clone();
+                        ts.panes.remove(&stage);
+                    });
                 } else if kind == "address" && self.consume(&command) {
                     launch(ticket, Orchestrator::address);
                 } else if ts.status.is_empty() && self.consume(&command) {
