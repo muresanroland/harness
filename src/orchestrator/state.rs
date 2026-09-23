@@ -14,9 +14,7 @@ pub(crate) const STATUS_PARKED: &str = "parked";
 pub(crate) const STATUS_PR_OPEN: &str = "pr-open";
 pub(crate) const STATUS_MERGED: &str = "merged";
 
-/// What the Orchestrator knows about one Ticket. The JSON began as Go's (the
-/// same names, order and omissions); nudged, waits and feedback came after
-/// the Go tree was gone.
+/// What the Orchestrator knows about one Ticket.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TicketState {
     pub(crate) status: String,
@@ -64,7 +62,7 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// Go's nil map: "tickets": null loads as no Tickets.
+/// "tickets": null loads as no Tickets.
 fn null_is_empty<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<BTreeMap<String, TicketState>, D::Error> {
@@ -124,12 +122,6 @@ pub(crate) fn lock_holder(repo: &Path) -> u32 {
             .unwrap_or(0),
         _ => 0, // ours now, so nobody's: stale, that Orchestrator was killed
     }
-}
-
-/// Tests only: whether the lock can be taken now it should be free.
-#[cfg(test)]
-pub(crate) fn lock_frees(repo: &Path) -> bool {
-    acquire_lock(repo).is_ok()
 }
 
 /// How long a lock held elsewhere is waited for before a run is refused. A

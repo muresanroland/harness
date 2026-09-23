@@ -53,7 +53,7 @@ fn claude_records(home: &Path, dir: &Path) -> Option<bool> {
     let entry = doc.get("projects")?.get(dir.to_str()?)?;
     match entry.get("hasTrustDialogAccepted") {
         None => Some(false),
-        Some(value) => value.as_bool(), // not a bool: Go's unmarshal fails, unknown
+        Some(value) => value.as_bool(), // not a bool: unknown
     }
 }
 

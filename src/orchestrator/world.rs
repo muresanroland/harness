@@ -250,7 +250,7 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
     let state = load_state(&repo).unwrap_or_default();
     let mut o = Orchestrator::with_state(Config::for_tests(w.clone(), &repo, &home), state);
     o.cfg.events = events;
-    o.cfg.log = Mutex::new(Box::new(LogBuf(w.log.clone())));
+    o.cfg.log = Arc::new(Mutex::new(Box::new(LogBuf(w.log.clone()))));
     (w, o)
 }
 
@@ -709,13 +709,13 @@ pub(crate) fn spawn_epic(o: Arc<Orchestrator>, epic: &str) -> Running {
     }
 }
 
-/// run_single in the background.
+/// run_ticket in the background.
 pub(crate) fn spawn_single(o: Arc<Orchestrator>, ticket: &str) -> Running {
     let (run, ticket) = (o.clone(), ticket.to_string());
     Running {
         o,
         handle: Some(thread::spawn(move || {
-            run.run_single(&ticket);
+            run.run_ticket(&ticket);
         })),
     }
 }

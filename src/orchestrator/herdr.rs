@@ -39,41 +39,35 @@ pub(crate) struct Rect {
 
 /// Every herdr response shape the Orchestrator reads.
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct HerdrReply {
-    #[serde(default)]
     pub(crate) result: HerdrResult,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct HerdrResult {
-    #[serde(default)]
     pub(crate) tab: TabInfo,
-    #[serde(default)]
     pub(crate) root_pane: PaneInfo,
-    #[serde(default)]
     pub(crate) pane: PaneInfo,
-    #[serde(default)]
     pub(crate) tabs: Vec<TabInfo>,
-    #[serde(default)]
     pub(crate) panes: Vec<PaneInfo>,
-    #[serde(default)]
     pub(crate) layout: Layout,
-    #[serde(default)]
     pub(crate) agent: Agent,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct Layout {
-    #[serde(default)]
     pub(crate) panes: Vec<PaneRect>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct Agent {
-    #[serde(default, rename = "agent_status")]
+    #[serde(rename = "agent_status")]
     pub(crate) status: String,
     /// The pane the agent lives in.
-    #[serde(default)]
     pub(crate) pane_id: String,
 }
 

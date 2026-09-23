@@ -11,7 +11,7 @@ pub(crate) mod stage;
 pub(crate) mod state;
 pub(crate) mod trust;
 
-/// The port of the Go tests' writeFile: parents are created as needed.
+/// Writes a test file; parents are created as needed.
 #[cfg(test)]
 pub(crate) fn write_file(path: &std::path::Path, body: &str) {
     if let Some(parent) = path.parent() {

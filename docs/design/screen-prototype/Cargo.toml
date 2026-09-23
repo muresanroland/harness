@@ -1,9 +1,0 @@
-[package]
-name = "screen-prototype"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-ratatui = "0.30"
-crossterm = "0.29"

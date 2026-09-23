@@ -1,6 +1,6 @@
-//! The layout, folded in from docs/design/screen-prototype: header, status
-//! row, Overall, the TICKETS box, the RECENT box newest first (a Question
-//! takes its place when one shows), a notice line and the input line.
+//! The layout: header, status row, Overall, the TICKETS box, the RECENT box
+//! newest first (a Question takes its place when one shows), a notice line
+//! and the input line.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};

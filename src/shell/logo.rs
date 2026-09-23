@@ -1,12 +1,10 @@
 //! The palette, the half-block logo with its hop, the THE HARNESS banner, and
-//! the 256-color fallback (docs/design/status-panel.rs, logo.txt, the logo
-//! prototype).
+//! the 256-color fallback (docs/design/logo.txt).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-// Palette from docs/design/status-panel.rs.
 pub(crate) const PURPLE: Color = Color::Rgb(210, 90, 255);
 pub(crate) const BLUE: Color = Color::Rgb(60, 180, 255);
 pub(crate) const ORANGE: Color = Color::Rgb(255, 175, 60);

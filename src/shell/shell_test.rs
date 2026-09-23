@@ -1,14 +1,14 @@
 use super::draw::{draw, ticket_color};
 use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
-use super::{About, Epic, Launch, Pending, Screen};
+use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
 use crate::orchestrator::plan_test::{at_dialog, noul};
 use crate::orchestrator::scheduler::BdIssue;
-use crate::orchestrator::stage::{Ask, Event, Orchestrator};
+use crate::orchestrator::stage::{Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
-    acquire_lock, load_state, lock_frees, State, TicketState, STATUS_MERGED, STATUS_PARKED,
-    STATUS_PR_OPEN, STATUS_RUNNING,
+    acquire_lock, load_state, State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
+    STATUS_RUNNING,
 };
 use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
@@ -92,7 +92,7 @@ fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
             .insert(format!("harness-kqe.{n}"), ticket(status));
     }
     Screen::new(
-        Launch::for_tests(tools, repo, Path::new("")),
+        Config::for_tests(tools, repo, Path::new("")),
         "~/harness".to_string(),
         true,
         vec![epic],
@@ -102,15 +102,13 @@ fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
 
 /// The Shell over the fake world, no terminal: what the slash commands drive.
 fn shell(w: &Arc<World>) -> Screen {
-    let mut s = Screen::new(
-        Launch::for_tests(w.clone(), &w.repo, &w.home),
+    Screen::new(
+        Config::for_tests(w.clone(), &w.repo, &w.home),
         "~/hx".to_string(),
         true,
         Vec::new(),
         load_state(&w.repo).unwrap_or_default(),
-    );
-    s.exe = PathBuf::from("/opt/the harness/harness"); // the plan hook's
-    s
+    )
 }
 
 /// Polls the Shell until a panel line (as world::lines formats it) shows.
@@ -682,7 +680,7 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     await_line(&mut s, "Epic done, every Ticket closed");
     await_end(&mut s);
     assert!(!s.running, "still running after the Epic is done");
-    assert!(lock_frees(&w.repo), "the lock outlived the run");
+    assert!(acquire_lock(&w.repo).is_ok(), "the lock outlived the run");
     assert_eq!(s.state, State::default(), "a done Epic is still saved");
     assert_eq!(load_state(&w.repo).unwrap(), State::default());
     assert_eq!(w.lock().peak, 1, "--max 1 was not obeyed");
@@ -741,7 +739,10 @@ fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
     await_line(&mut s, "stopped, panes left running, /continue resumes");
     await_end(&mut s);
     assert!(!s.running);
-    assert!(lock_frees(&w.repo), "the lock outlived /stop-work");
+    assert!(
+        acquire_lock(&w.repo).is_ok(),
+        "the lock outlived /stop-work"
+    );
     assert_eq!(
         w.called("herdr pane close").len() + w.called("herdr tab close").len(),
         0,
@@ -1080,7 +1081,7 @@ fn stop_work_keeps_the_run_and_the_lock_until_every_ticket_thread_has_left() {
     release_tx.send(()).unwrap();
     await_line(&mut s, "stopped, panes left running, /continue resumes");
     await_end(&mut s);
-    assert!(lock_frees(&w.repo), "the lock outlived the run");
+    assert!(acquire_lock(&w.repo).is_ok(), "the lock outlived the run");
     assert!(
         log(&w).contains(" stopped, panes left running, /continue resumes\n"),
         "log:\n{}",
@@ -1137,8 +1138,8 @@ fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
 fn release_shell(w: &Arc<World>) -> (Screen, PathBuf) {
     let mut s = shell(w);
     s.version = "v1.0.0".to_string();
-    s.exe = w.repo.join("harness");
-    std::fs::write(&s.exe, b"old").unwrap();
+    s.cfg.exe = w.repo.join("harness");
+    std::fs::write(&s.cfg.exe, b"old").unwrap();
     (s, w.repo.join("harness"))
 }
 
@@ -1733,7 +1734,7 @@ fn a_wake_question_below_the_floor_shows_the_scores_and_its_one_nudge() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     w.session(|_| (String::new(), "idle".to_string()));
     let mut s = shell(&w);
-    s.launch.typesafe = TypeSafeFake::new(|_| {
+    s.cfg.typesafe = TypeSafeFake::new(|_| {
         Ok(serde_json::json!({ "answers": { "action": {
             "choice": "park",
             "confidence": 0.25,
@@ -2007,7 +2008,7 @@ fn the_continue_checklist_resets_a_ticket_to_implement() {
         state
     );
     drop(other);
-    assert!(lock_frees(&w.repo));
+    assert!(acquire_lock(&w.repo).is_ok());
 
     w.session(succeed);
     s.command("/continue");
@@ -2069,7 +2070,7 @@ fn a_plan_question_scrolls_its_plan_by_rows_and_sends_feedback_then_approval() {
         _ => succeed(p),
     });
     let mut s = shell(&w);
-    s.launch.typesafe = TypeSafeFake::new(|_| Ok(noul(0.3)));
+    s.cfg.typesafe = TypeSafeFake::new(|_| Ok(noul(0.3)));
     s.command("/start-epic hx");
     await_line(
         &mut s,
