@@ -8,6 +8,7 @@ use super::stage::{
     plural, pr_ref, result_name, Orchestrator, StageError, DEBATE, FIX, IMPLEMENT, REVIEW,
 };
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
+use crate::skills::manifest::link_checkout_skills;
 
 const MAX_ROUNDS: usize = 3;
 
@@ -172,7 +173,8 @@ impl Orchestrator {
 
     /// Creates the Ticket's worktree and branch once, brings the new branch
     /// up to the remote's default branch so a dependent Ticket builds on what
-    /// was just merged (ADR 0002), and marks the Ticket in progress.
+    /// was just merged (ADR 0002), links the skills init put in the checkout
+    /// into it and the Run directory, and marks the Ticket in progress.
     fn prepare_worktree(&self, ticket: &str) -> Result<(), StageError> {
         let worktree = self.worktree(ticket);
         if worktree.exists() {
@@ -195,6 +197,10 @@ impl Orchestrator {
             return Err(StageError::Parked(format!(
                 "new branch not brought up to origin's default branch: {err}"
             )));
+        }
+        let run_dir = self.run_dir(ticket);
+        if let Err(err) = link_checkout_skills(repo, &[&worktree, &run_dir]) {
+            self.log(ticket, &format!("skills not linked: {err}"));
         }
         if let Err(err) = tools.run(repo, &["bd", "update", ticket, "--status", "in_progress"]) {
             self.log(ticket, &format!("not marked in_progress: {err}"));

@@ -664,18 +664,18 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
-        let skill_path = self
-            .cfg
-            .repo
-            .join(".agents")
-            .join("skills")
-            .join(st.skill)
-            .join("SKILL.md");
-        let skill = match fs::read_to_string(&skill_path) {
-            Ok(skill) => skill,
-            Err(err) => {
-                return Held::Woke(format!("has no Stage skill (run 'harness init'): {err}"))
-            }
+        // Wherever init put it: a copy committed in the repo first, then the
+        // checkout's, then the user's.
+        let (repo, home) = (&self.cfg.repo, &self.cfg.home);
+        let mut dirs = vec![repo.join(".agents/skills"), repo.join(".harness/skills")];
+        if !home.as_os_str().is_empty() {
+            dirs.push(home.join(".agents/skills"));
+        }
+        let Some(skill) = dirs
+            .iter()
+            .find_map(|dir| fs::read_to_string(dir.join(st.skill).join("SKILL.md")).ok())
+        else {
+            return Held::Woke("has no Stage skill (run 'harness init')".to_string());
         };
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());

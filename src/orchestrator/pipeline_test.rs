@@ -217,3 +217,28 @@ fn open_pr_prunes_build_scratch_and_keeps_evidence() {
         assert!(run_dir.join(kept).exists(), "evidence pruned: {kept}");
     }
 }
+
+#[test]
+fn a_prepared_worktree_links_the_checkouts_skills_and_hides_the_links() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+
+    o.run_ticket("hx-1");
+
+    // The fake world's init put the skills in the checkout.
+    let skill = w.repo.join(".harness/skills/stage-implement");
+    for sub in [".claude/skills", ".agents/skills"] {
+        let link = o.worktree("hx-1").join(sub).join("stage-implement");
+        assert_eq!(
+            std::fs::read_link(&link).ok(),
+            Some(skill.clone()),
+            "{link:?}"
+        );
+    }
+    let exclude = std::fs::read_to_string(w.repo.join(".git/info/exclude")).unwrap_or_default();
+    for line in [
+        "/.claude/skills/stage-implement",
+        "/.agents/skills/stage-implement",
+    ] {
+        assert!(exclude.lines().any(|l| l == line), "{line}:\n{exclude}");
+    }
+}

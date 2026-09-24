@@ -1,7 +1,11 @@
-use super::{ask_typesafe_key, install_skills, typesafe_key};
+use super::{ask_typesafe_key, install_skills, preflight, typesafe_key, warnings};
+use crate::orchestrator::write_file;
+use crate::skills::manifest::{Installed, Location, Manifest, JOBS, NONE};
 use crate::tempdir::TempDir;
+use crate::tools::fake::Fake;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -17,9 +21,12 @@ fn repo_with_own_pr() -> TempDir {
     repo
 }
 
+/// init in the repo Location (its own keystroke first), then `answer`.
 fn install(repo: &Path, answer: &str) -> String {
     let mut out = Vec::new();
-    install_skills(repo, false, &mut out, &mut answer.as_bytes(), false).unwrap();
+    let home = TempDir::new();
+    let mut keys = b"2".chain(answer.as_bytes());
+    install_skills(repo, home.path(), false, &mut out, &mut keys, false).unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -99,14 +106,25 @@ fn install_skills_does_not_ask_when_the_repo_has_no_create_pr() {
 fn install_skills_force_skips_the_questions_and_keeps_the_repos_own_create_pr() {
     let repo = repo_with_own_pr();
     let mut out = Vec::new();
-    install_skills(repo.path(), true, &mut out, &mut "2\n".as_bytes(), false).unwrap();
+    let home = TempDir::new();
+    install_skills(
+        repo.path(),
+        home.path(),
+        true,
+        &mut out,
+        &mut "2\n".as_bytes(),
+        false,
+    )
+    .unwrap();
     let out = String::from_utf8(out).unwrap();
     assert!(!out.contains("already"), "--force still asked:\n{out}");
+    assert!(!out.contains("where should"), "--force asked where:\n{out}");
     assert_eq!(
         read(repo.path(), ".agents/skills/create-pr/SKILL.md"),
         "the repo's own"
     );
-    assert!(read(repo.path(), STAGE_FIX).contains("name: stage-fix"));
+    // A fresh repo's place, as a silent init takes it.
+    assert!(read(repo.path(), ".harness/skills/stage-fix/SKILL.md").contains("name: stage-fix"));
 }
 
 #[test]
@@ -327,4 +345,109 @@ fn typesafe_key_prefers_the_variable_over_the_file() {
         }
     };
     assert_eq!(typesafe_key(repo.path(), &env).as_deref(), Some("sk-env"));
+}
+
+/// The environment with HOME at home, nothing else set.
+fn home_env(home: &Path) -> impl Fn(&str) -> String {
+    let home = home.display().to_string();
+    move |key: &str| {
+        if key == "HOME" {
+            home.clone()
+        } else {
+            String::new()
+        }
+    }
+}
+
+fn picks_missing(repo: &Path, home: &Path) -> Vec<String> {
+    preflight(repo, &*Fake::quiet(), &home_env(home))
+        .into_iter()
+        .filter(|m| m.contains("is missing"))
+        .collect()
+}
+
+#[test]
+fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let missing = picks_missing(repo.path(), home.path());
+    assert!(
+        missing.contains(
+            &"the self review skill code-review is missing: harness init installs it, or /config picks another"
+                .to_string()
+        ),
+        "{missing:?}"
+    );
+    // The review job's default is none: nothing to miss.
+    assert_eq!(missing.len(), JOBS.len() - 1, "{missing:?}");
+
+    let mut manifest = Manifest::default();
+    for (job, _) in JOBS {
+        manifest.picks.insert(job.to_string(), NONE.to_string());
+    }
+    manifest
+        .picks
+        .insert("review".into(), "review-agent".into()); // codex's own
+    manifest.save(repo.path()).unwrap();
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        Vec::<String>::new()
+    );
+
+    // A pick you have anywhere, at user level here, is there.
+    manifest.picks.insert("test-first".into(), "tdd".into());
+    manifest.save(repo.path()).unwrap();
+    assert_eq!(picks_missing(repo.path(), home.path()).len(), 1);
+    write_file(&home.path().join(".claude/skills/tdd/SKILL.md"), "yours");
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn preflight_warns_of_a_personal_copy_shadowing_an_installed_skill_and_of_superpowers() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let mut manifest = Manifest::default();
+    manifest.skills.insert("tdd".into(), Installed::default());
+    manifest.location = Some(Location::Checkout);
+    manifest.save(repo.path()).unwrap();
+    let env = home_env(home.path());
+    assert_eq!(
+        warnings(repo.path(), &*Fake::quiet(), &env),
+        Vec::<String>::new()
+    );
+
+    write_file(&home.path().join(".claude/skills/tdd/SKILL.md"), "yours");
+    let got = warnings(repo.path(), &*Fake::quiet(), &env);
+    assert!(
+        got.len() == 1 && got[0].contains("tdd") && got[0].contains("personal"),
+        "{got:?}"
+    );
+    // At user level the installed one is the personal one.
+    manifest.location = Some(Location::User);
+    manifest.save(repo.path()).unwrap();
+    assert_eq!(
+        warnings(repo.path(), &*Fake::quiet(), &env),
+        Vec::<String>::new()
+    );
+
+    let plugins = |enabled: bool| {
+        let reply = serde_json::json!([
+            {"id": "superpowers@claude-plugins-official", "enabled": enabled, "installPath": "/nowhere"},
+        ])
+        .to_string();
+        Fake::new(move |_, argv| match argv.join(" ").as_str() {
+            "claude plugin list --json" => Ok(reply.clone()),
+            other => Err(format!("unexpected: {other}")),
+        })
+    };
+    let got = warnings(repo.path(), &*plugins(true), &env);
+    assert!(
+        got.len() == 1 && got[0].contains("superpowers") && got[0].contains("SessionStart"),
+        "{got:?}"
+    );
+    assert_eq!(
+        warnings(repo.path(), &*plugins(false), &env),
+        Vec::<String>::new()
+    );
 }

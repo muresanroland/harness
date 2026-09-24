@@ -72,7 +72,7 @@ first" section. The other shipped skills already match. From a Herdr shell pane
 The preflight should report nothing missing. Check the refresh landed:
 
 ```bash
-grep -c "Plan first" .agents/skills/stage-implement/SKILL.md   # 1
+grep -c "Plan first" .harness/skills/stage-implement/SKILL.md   # 1, in the checkout location
 ```
 
 The leftover `start-work` skill is unused by the Shell. Leave it.

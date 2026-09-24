@@ -101,7 +101,74 @@ pub(crate) const JOBS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-/// One skill the Harness installed, at .agents/skills/<name>.
+/// Where the skills the Harness installs go, as harness init asked.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Location {
+    /// .harness/skills, uncommitted, linked into each Ticket's worktree.
+    Checkout,
+    /// .agents/skills, linked from .claude/skills; the user commits them.
+    Repo,
+    /// ~/.agents/skills, linked from ~/.claude/skills.
+    User,
+}
+
+impl Location {
+    pub(crate) fn place(self, repo: &Path, home: &Path) -> Place {
+        let (root, files, links) = match self {
+            Location::Checkout => (repo, ".harness/skills", None),
+            Location::Repo => (repo, ".agents/skills", Some(".claude/skills")),
+            Location::User => (home, ".agents/skills", Some(".claude/skills")),
+        };
+        Place {
+            root: root.to_path_buf(),
+            files,
+            links,
+        }
+    }
+}
+
+/// A Location on disk; its folders are relative to root.
+pub(crate) struct Place {
+    pub(crate) root: PathBuf,
+    /// The skills' folders.
+    pub(crate) files: &'static str,
+    /// The folder of links to them, for Claude. None for the checkout's,
+    /// linked into each worktree instead (link_checkout_skills).
+    pub(crate) links: Option<&'static str>,
+}
+
+impl Place {
+    pub(crate) fn skill(&self, name: &str) -> PathBuf {
+        self.root.join(self.files).join(name)
+    }
+
+    pub(crate) fn link(&self, name: &str) -> Option<PathBuf> {
+        self.links.map(|dir| self.root.join(dir).join(name))
+    }
+
+    /// What the skill's link points at, from the links' folder.
+    pub(crate) fn target(&self, name: &str) -> PathBuf {
+        Path::new("../..").join(self.files).join(name)
+    }
+
+    /// Whether the Harness may write to dir: in the checkout only when it is
+    /// the checkout's own (own); the user's home is theirs to arrange, a
+    /// linked ~/.claude included.
+    fn owns(&self, repo: &Path, dir: &str) -> bool {
+        self.root != repo || own(repo, dir)
+    }
+
+    /// The first of its folders the Harness may not write to.
+    fn unowned(&self, repo: &Path) -> Option<&'static str> {
+        [Some(self.files), self.links]
+            .into_iter()
+            .flatten()
+            .find(|dir| !self.owns(repo, dir))
+    }
+}
+
+/// One skill the Harness installed, at its Location.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Installed {
@@ -128,6 +195,10 @@ pub(crate) struct Manifest {
     /// Job to its pick: a skill name or "none". A job left out takes its
     /// default.
     pub(crate) picks: BTreeMap<String, String>,
+    /// Where init put the skills; None before it asked: the repo's
+    /// .agents/skills, where they always were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) location: Option<Location>,
 }
 
 impl Manifest {
@@ -151,6 +222,38 @@ impl Manifest {
                 .find(|(name, _)| *name == job)
                 .map_or(NONE, |(_, suggestions)| suggestions[0].0),
         }
+    }
+
+    pub(crate) fn place(&self, repo: &Path, home: &Path) -> Place {
+        self.location.unwrap_or(Location::Repo).place(repo, home)
+    }
+
+    /// Moves every skill the Harness installed here, the Shipped ones too,
+    /// with its link, to `to`, and records `to`. A skill whose new place is
+    /// taken, or that cannot be moved, stays where it was: each such is given
+    /// with why.
+    // ponytail: a user-level skill leaves ~ though another checkout may use
+    // it too, and worktrees already prepared keep links to the old place;
+    // copy, and relink them, should either bite.
+    pub(crate) fn relocate(&mut self, repo: &Path, home: &Path, to: Location) -> Vec<String> {
+        let (from, place) = (self.place(repo, home), to.place(repo, home));
+        if let Some(dir) = place.unowned(repo) {
+            return vec![format!(
+                "{dir} is not the checkout's own folder: the skills stay where they were"
+            )];
+        }
+        let mut stayed = Vec::new();
+        for name in self.skills.keys().filter(|name| safe_name(name)) {
+            let old = from.skill(name);
+            if fs::symlink_metadata(&old).is_err() {
+                continue; // nothing there to move
+            }
+            if let Err(err) = move_skill(&from, &place, name) {
+                stayed.push(format!("{name} stays at {}: {err}", old.display()));
+            }
+        }
+        self.location = Some(to);
+        stayed
     }
 
     /// Written to a temp file and renamed into place, so that a cut-short
@@ -229,11 +332,12 @@ pub(crate) enum Added {
 }
 
 /// Installs one skill from a source: the one named, or the only one there.
-/// The skill is copied to .agents/skills/<name>, linked from .claude/skills
-/// as init does, and recorded with its source and commit. A source already
+/// The skill is copied to its folder at the manifest's Location, linked as
+/// init does, and recorded with its source and commit. A source already
 /// installed is refused, and so is a same-named skill from anywhere else.
 pub(crate) fn add(
     repo: &Path,
+    home: &Path,
     tools: &dyn Tools,
     source: &str,
     name: Option<&str>,
@@ -291,27 +395,25 @@ pub(crate) fn add(
         None => {}
     }
     // put and its undo write through both folders.
-    if let Some(dir) = [".agents/skills", ".claude/skills"]
-        .into_iter()
-        .find(|dir| !own(repo, dir))
-    {
+    let place = manifest.place(repo, home);
+    if let Some(dir) = place.unowned(repo) {
         return Err(format!(
             "{dir} is not the checkout's own folder: the Harness will not install {name} there"
         ));
     }
-    let at = format!(".agents/skills/{name}");
-    let link = Path::new(".claude/skills").join(&name);
-    if [Path::new(&at), &link]
-        .iter()
-        .any(|place| fs::symlink_metadata(repo.join(place)).is_ok())
+    let (at, link) = (place.skill(&name), place.link(&name));
+    if let Some(there) = [Some(&at), link.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|path| fs::symlink_metadata(path).is_ok())
     {
-        let link = link.display();
         return Err(format!(
-            "{at} or {link} is there already, and the Harness did not put it there"
+            "{} is there already, and the Harness did not put it there",
+            there.display()
         ));
     }
-    let installed = put(repo, &clone.join(&path), &at, &link)
-        .map_err(|err| format!("{at}: {err}"))
+    let installed = put(&place, &clone.join(&path), &name)
+        .map_err(|err| format!("{}: {err}", at.display()))
         .and_then(|()| {
             let skill = Installed {
                 repo: source.repo.clone(),
@@ -326,17 +428,25 @@ pub(crate) fn add(
     if installed.is_err() {
         // Nothing left half installed, which a later add would take for the
         // repo's own.
-        let _ = fs::remove_file(repo.join(&link));
-        let _ = fs::remove_dir_all(repo.join(&at));
+        if let Some(link) = &link {
+            let _ = fs::remove_file(link);
+        }
+        let _ = fs::remove_dir_all(&at);
     }
     installed.map(|()| Added::Installed(name))
 }
 
 /// Fetches an installed skill's source again, replaces its folder with the
 /// skill at the recorded path, and records the new commit.
-pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), String> {
+pub(crate) fn update(
+    repo: &Path,
+    home: &Path,
+    tools: &dyn Tools,
+    name: &str,
+) -> Result<(), String> {
     let mut manifest = Manifest::load(repo)?;
-    let skill = third_party(repo, &manifest, name)?.clone();
+    let place = manifest.place(repo, home);
+    let skill = third_party(repo, &manifest, &place, name)?.clone();
     let (clone, commit) = fetch(repo, tools, &skill.repo, &skill.git_ref)?;
     let from = in_clone(clone.path(), &skill.path)
         .filter(|from| skill_in(from).as_deref() == Some(name))
@@ -344,14 +454,14 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
     // The new copy goes beside the old one first, and the old one is only
     // moved aside until the new one is in place, so that a copy or a rename
     // that fails leaves the installed skill whole.
-    let at = repo.join(".agents/skills").join(name);
+    let at = place.skill(name);
     let fresh = at.with_file_name(format!(".{name}.new"));
     let old = at.with_file_name(format!(".{name}.old"));
     // A staging folder an earlier update left that cannot be cleared would
     // carry its stale files into the new copy.
     match fs::remove_dir_all(&fresh) {
         Err(err) if err.kind() != io::ErrorKind::NotFound => {
-            return Err(format!(".agents/skills/.{name}.new: {err}"))
+            return Err(format!("{}/.{name}.new: {err}", place.files))
         }
         _ => {}
     }
@@ -366,7 +476,7 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
     });
     if let Err(err) = swapped {
         let _ = fs::remove_dir_all(&fresh);
-        return Err(format!(".agents/skills/{name}: {err}"));
+        return Err(format!("{}/{name}: {err}", place.files));
     }
     // The old copy goes only once the manifest records the new commit: a
     // failed save puts it back.
@@ -383,32 +493,42 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
 
 /// Updates every installed skill but the Shipped ones, and returns those
 /// that failed, each with why.
-pub(crate) fn update_all(repo: &Path, tools: &dyn Tools) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn update_all(
+    repo: &Path,
+    home: &Path,
+    tools: &dyn Tools,
+) -> Result<Vec<(String, String)>, String> {
     Ok(Manifest::load(repo)?
         .skills
         .into_iter()
         .filter(|(_, skill)| !skill.shipped)
-        .filter_map(|(name, _)| update(repo, tools, &name).err().map(|err| (name, err)))
+        .filter_map(|(name, _)| {
+            update(repo, home, tools, &name)
+                .err()
+                .map(|err| (name, err))
+        })
         .collect())
 }
 
 /// Removes a skill the Harness fetched: its folder, its link and its entry.
 /// A job it did, picked or by default, is set to none.
-pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
+pub(crate) fn remove(repo: &Path, home: &Path, name: &str) -> Result<(), String> {
     let mut manifest = Manifest::load(repo)?;
-    third_party(repo, &manifest, name)?;
-    let link = repo.join(".claude/skills").join(name);
+    let place = manifest.place(repo, home);
+    third_party(repo, &manifest, &place, name)?;
     // Only the link put makes is removed, not one the user put there instead,
     // and a failed save puts it back.
-    let target = fs::read_link(&link).ok();
-    if target.is_some() && !own(repo, ".claude/skills") {
-        return Err(format!(
-            ".claude/skills is not the checkout's own folder: the Harness will not touch {name}"
-        ));
+    let link = place.link(name).filter(|link| fs::read_link(link).is_ok());
+    if let (Some(_), Some(dir)) = (&link, place.links) {
+        if !place.owns(repo, dir) {
+            return Err(format!(
+                "{dir} is not the checkout's own folder: the Harness will not touch {name}"
+            ));
+        }
     }
-    let target = target.filter(|target| *target == Path::new("../../.agents/skills").join(name));
-    if target.is_some() {
-        fs::remove_file(&link).map_err(|err| format!("{}: {err}", link.display()))?;
+    let link = link.filter(|link| fs::read_link(link).is_ok_and(|to| to == place.target(name)));
+    if let Some(link) = &link {
+        fs::remove_file(link).map_err(|err| format!("{}: {err}", link.display()))?;
     }
     for (job, _) in JOBS {
         if manifest.pick(job) == name {
@@ -418,7 +538,7 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
     manifest.skills.remove(name);
     // The folder is moved aside until the manifest is saved without it, and
     // back should the save fail.
-    let at = repo.join(".agents/skills").join(name);
+    let at = place.skill(name);
     let old = at.with_file_name(format!(".{name}.old"));
     let _ = fs::remove_dir_all(&old);
     let removed = if at.exists() {
@@ -426,7 +546,7 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
-    .map_err(|err| format!(".agents/skills/{name}: {err}"))
+    .map_err(|err| format!("{}/{name}: {err}", place.files))
     .and_then(|()| {
         manifest.save(repo).inspect_err(|_| {
             let _ = fs::rename(&old, &at);
@@ -434,19 +554,20 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
     });
     if removed.is_ok() {
         let _ = fs::remove_dir_all(&old);
-    } else if let Some(target) = target {
-        let _ = symlink(target, &link);
+    } else if let Some(link) = link {
+        let _ = symlink(place.target(name), link);
     }
     removed
 }
 
 /// An installed skill the Harness fetched from a source, which update and
-/// remove may touch. Only while its name is a folder name and .agents/skills
-/// is the checkout's own: they delete .agents/skills/<name>, and an entry
+/// remove may touch. Only while its name is a folder name and its Place's
+/// folder is the checkout's own: they delete <files>/<name>, and an entry
 /// edited by hand, or a linked .agents, could name something else.
 fn third_party<'a>(
     repo: &Path,
     manifest: &'a Manifest,
+    place: &Place,
     name: &str,
 ) -> Result<&'a Installed, String> {
     match manifest.skills.get(name) {
@@ -457,8 +578,9 @@ fn third_party<'a>(
         Some(_) if !safe_name(name) => Err(format!(
             "{name} in {MANIFEST} is not a folder name: the Harness will not touch it"
         )),
-        Some(_) if !own(repo, ".agents/skills") => Err(format!(
-            ".agents/skills is not the checkout's own folder: the Harness will not touch {name}"
+        Some(_) if !place.owns(repo, place.files) => Err(format!(
+            "{} is not the checkout's own folder: the Harness will not touch {name}",
+            place.files
         )),
         Some(skill) => Ok(skill),
     }
@@ -565,11 +687,77 @@ fn safe_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// Copies the skill's folder to at and links it from link.
-fn put(repo: &Path, from: &Path, at: &str, link: &Path) -> io::Result<()> {
-    copy_dir(from, &repo.join(at))?;
-    fs::create_dir_all(repo.join(".claude/skills"))?;
-    symlink(Path::new("../..").join(at), repo.join(link))
+/// Copies the skill's folder to its place and links it there.
+fn put(place: &Place, from: &Path, name: &str) -> io::Result<()> {
+    copy_dir(from, &place.skill(name))?;
+    link(place, name)
+}
+
+/// Links the skill from its place's links folder, unless something is there.
+fn link(place: &Place, name: &str) -> io::Result<()> {
+    match place.link(name) {
+        Some(link) if fs::symlink_metadata(&link).is_err() => {
+            fs::create_dir_all(link.parent().unwrap())?;
+            symlink(place.target(name), link)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Moves a skill's folder from one place to another, and its link with it.
+fn move_skill(from: &Place, to: &Place, name: &str) -> io::Result<()> {
+    let (old, new) = (from.skill(name), to.skill(name));
+    if fs::symlink_metadata(&new).is_ok() {
+        return Err(io::Error::other(format!(
+            "{} is there already",
+            new.display()
+        )));
+    }
+    fs::create_dir_all(new.parent().unwrap())?;
+    // Across filesystems, as from a checkout to ~, rename cannot.
+    fs::rename(&old, &new)
+        .or_else(|_| copy_dir(&old, &new).and_then(|()| fs::remove_dir_all(&old)))?;
+    if let Some(link) = from
+        .link(name)
+        .filter(|link| fs::read_link(link).is_ok_and(|to| to == from.target(name)))
+    {
+        fs::remove_file(link)?;
+    }
+    link(to, name)
+}
+
+/// Links every skill in the checkout's .harness/skills into each dir's
+/// .claude/skills and .agents/skills, where nothing is there already, and
+/// hides the links from git in the repo's .git/info/exclude: a Ticket's
+/// worktree, and the Review's Run directory. Absolute: they are never
+/// committed.
+pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()> {
+    let from = repo.join(".harness/skills");
+    let mut names: Vec<String> = fs::read_dir(&from)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| safe_name(name)) // not update's staging folders
+        .collect();
+    names.sort();
+    let mut hidden = Vec::new();
+    for name in &names {
+        for sub in [".claude/skills", ".agents/skills"] {
+            for dir in dirs {
+                let link = dir.join(sub).join(name);
+                if fs::symlink_metadata(&link).is_err() {
+                    fs::create_dir_all(dir.join(sub))?;
+                    symlink(from.join(name), link)?;
+                }
+            }
+            hidden.push(format!("/{sub}/{name}"));
+        }
+    }
+    if hidden.is_empty() {
+        return Ok(());
+    }
+    crate::setup::add_lines(&repo.join(".git/info/exclude"), &hidden)
 }
 
 /// Copies files and folders only, so that a link in the clone cannot pull in
@@ -598,34 +786,45 @@ struct Plugin {
     install_path: PathBuf,
 }
 
-/// Every skill the user has, each with where it is: the repo's (the
-/// Harness's installs included), the user's, and the enabled Claude Code
-/// plugins', named plugin:skill. A skill is named by its folder, as the
-/// agents name it. A skill linked from .claude/skills to .agents/skills is
-/// listed at both places: Claude reads the one, codex the other. Without
-/// claude there are no plugin skills.
-// ponytail: a plugin's skills are read from its skills/ folder only, not a
-// skills list in its plugin.json; read that when a plugin needs it.
-pub(crate) fn list(repo: &Path, home: &Path, tools: &dyn Tools) -> Vec<(String, PathBuf)> {
+/// The enabled Claude Code plugins, each by its name (its id before the @)
+/// with its install path. Without claude, none.
+pub(crate) fn plugins(repo: &Path, tools: &dyn Tools) -> Vec<(String, PathBuf)> {
     let plugins: Vec<Plugin> = tools
         .run(repo, &["claude", "plugin", "list", "--json"])
         .ok()
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
-    let dirs = [
-        repo.join(".agents/skills"),
-        repo.join(".claude/skills"),
-        home.join(".claude/skills"),
-        home.join(".agents/skills"),
-    ]
-    .map(|dir| (String::new(), dir));
-    let plugin_dirs = plugins
+    plugins
         .into_iter()
         .filter(|plugin| plugin.enabled)
         .map(|plugin| {
             let name = plugin.id.split('@').next().unwrap_or_default();
-            (format!("{name}:"), plugin.install_path.join("skills"))
-        });
+            (name.to_string(), plugin.install_path)
+        })
+        .collect()
+}
+
+/// Every skill the user has, each with where it is: the repo's and the
+/// checkout's (the Harness's installs included), the user's, and the enabled Claude Code
+/// plugins', named plugin:skill. A skill is named by its folder, as the
+/// agents name it. A skill linked from .claude/skills to .agents/skills is
+/// listed at both places: Claude reads the one, codex the other. No home, no
+/// user's.
+// ponytail: a plugin's skills are read from its skills/ folder only, not a
+// skills list in its plugin.json; read that when a plugin needs it.
+pub(crate) fn list(repo: &Path, home: &Path, tools: &dyn Tools) -> Vec<(String, PathBuf)> {
+    let mut dirs = vec![
+        repo.join(".agents/skills"),
+        repo.join(".claude/skills"),
+        repo.join(".harness/skills"),
+    ];
+    if !home.as_os_str().is_empty() {
+        dirs.extend([home.join(".claude/skills"), home.join(".agents/skills")]);
+    }
+    let dirs = dirs.into_iter().map(|dir| (String::new(), dir));
+    let plugin_dirs = plugins(repo, tools)
+        .into_iter()
+        .map(|(name, path)| (format!("{name}:"), path.join("skills")));
     let mut found = Vec::new();
     for (prefix, dir) in dirs.into_iter().chain(plugin_dirs) {
         let mut skills: Vec<PathBuf> = fs::read_dir(&dir)
