@@ -601,7 +601,7 @@ codex: outdated (v7) (/h/.codex/herdr-agent-state.sh)
         "{out}"
     );
     assert!(
-        out.contains("codex: writes /h/.codex/herdr-agent-state.sh, and registers it"),
+        out.contains("  codex: outdated (v7) (/h/.codex/herdr-agent-state.sh)\r\n"),
         "{out}"
     );
     assert!(

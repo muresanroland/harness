@@ -559,13 +559,4 @@ fn preflight_names_each_row_whose_app_is_not_on_path() {
             "Debate side B runs on codex, which is not on PATH",
         ]
     );
-    // Each App is looked for once.
-    assert_eq!(
-        no_codex
-            .calls()
-            .iter()
-            .filter(|c| c.starts_with("which"))
-            .collect::<Vec<_>>(),
-        ["which claude", "which codex"]
-    );
 }

@@ -266,13 +266,8 @@ fn install_integrations(
             if !state.starts_with("not installed") && !state.starts_with("outdated") {
                 return None;
             }
-            // The path, the last parenthesis: a version one may come first.
-            let writes = state.find(" (/").map_or("", |at| {
-                let path = state[at + 2..].trim_end();
-                path.strip_suffix(')').unwrap_or(path)
-            });
             tools.run(repo, &["which", app.name]).ok()?;
-            Some((app.name, writes))
+            Some((app.name, state.trim_end()))
         })
         .collect();
     if stale.is_empty() {
@@ -280,16 +275,10 @@ fn install_integrations(
     }
     write!(
         out,
-        "init: herdr's integration tells herdr each session's id, so /continue can resume a Stage:\r\n"
+        "init: herdr's integration tells herdr each session's id, so /continue can resume a Stage; it writes a hook script and registers it in the App's settings:\r\n"
     )?;
-    for (name, writes) in &stale {
-        match *writes {
-            "" => write!(out, "  {name}\r\n")?,
-            _ => write!(
-                out,
-                "  {name}: writes {writes}, and registers it as a hook in {name}'s settings\r\n"
-            )?,
-        }
+    for (name, state) in &stale {
+        write!(out, "  {name}: {state}\r\n")?;
     }
     if yes(out, input, tty, "Install herdr's integration for these?")? == Some(true) {
         for (name, _) in &stale {
@@ -777,18 +766,13 @@ pub(crate) fn preflight(
         }
         Err(err) => missing.push(err),
     }
-    // Each App a row picks, looked for once; a row that cannot be read is
-    // the Orchestrator's to refuse.
-    let mut on_path = BTreeMap::new();
+    // A row that cannot be read is the Orchestrator's to refuse.
     for (key, said) in app::ROWS {
         let Ok(row) = app::row(repo, key) else {
             continue;
         };
         let name = row.app.name;
-        if !*on_path
-            .entry(name)
-            .or_insert_with(|| tools.run(repo, &["which", name]).is_ok())
-        {
+        if tools.run(repo, &["which", name]).is_err() {
             missing.push(format!("{said} runs on {name}, which is not on PATH"));
         }
     }
