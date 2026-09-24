@@ -356,9 +356,17 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
         let _ = fs::remove_dir_all(&fresh);
         return Err(format!(".agents/skills/{name}: {err}"));
     }
-    let _ = fs::remove_dir_all(&old);
+    // The old copy goes only once the manifest records the new commit: a
+    // failed save puts it back.
     manifest.skills.get_mut(name).unwrap().commit = commit;
-    manifest.save(repo)
+    let saved = manifest.save(repo);
+    if saved.is_ok() {
+        let _ = fs::remove_dir_all(&old);
+    } else {
+        let _ = fs::remove_dir_all(&at);
+        let _ = fs::rename(&old, &at);
+    }
+    saved
 }
 
 /// Updates every installed skill but the Shipped ones, and returns those
@@ -378,7 +386,9 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
     let mut manifest = Manifest::load(repo)?;
     third_party(repo, &manifest, name)?;
     let link = repo.join(".claude/skills").join(name);
-    if fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    // Only a link is removed, and a failed save puts it back.
+    let target = fs::read_link(&link).ok();
+    if target.is_some() {
         if !own(repo, ".claude/skills") {
             return Err(format!(
                 ".claude/skills is not the checkout's own folder: the Harness will not touch {name}"
@@ -386,17 +396,34 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
         }
         fs::remove_file(&link).map_err(|err| format!("{}: {err}", link.display()))?;
     }
-    let at = format!(".agents/skills/{name}");
-    if repo.join(&at).exists() {
-        fs::remove_dir_all(repo.join(&at)).map_err(|err| format!("{at}: {err}"))?;
-    }
     for (job, _) in JOBS {
         if manifest.pick(job) == name {
             manifest.picks.insert(job.to_string(), NONE.to_string());
         }
     }
     manifest.skills.remove(name);
-    manifest.save(repo)
+    // The folder is moved aside until the manifest is saved without it, and
+    // back should the save fail.
+    let at = repo.join(".agents/skills").join(name);
+    let old = at.with_file_name(format!(".{name}.old"));
+    let _ = fs::remove_dir_all(&old);
+    let removed = if at.exists() {
+        fs::rename(&at, &old)
+    } else {
+        Ok(())
+    }
+    .map_err(|err| format!(".agents/skills/{name}: {err}"))
+    .and_then(|()| {
+        manifest.save(repo).inspect_err(|_| {
+            let _ = fs::rename(&old, &at);
+        })
+    });
+    if removed.is_ok() {
+        let _ = fs::remove_dir_all(&old);
+    } else if let Some(target) = target {
+        let _ = symlink(target, &link);
+    }
+    removed
 }
 
 /// An installed skill the Harness fetched from a source, which update and

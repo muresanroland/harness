@@ -207,6 +207,34 @@ fn update_refetches_the_source_and_records_the_new_commit() {
 }
 
 #[test]
+fn a_failed_save_leaves_update_and_remove_undone() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = TempDir::new();
+    let remote = remote("abc123", TWO_SKILLS);
+    let tools = git(&remote);
+    add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap();
+    let manifest = Manifest::load(repo.path()).unwrap();
+    let saved = repo.path().join(".harness/skills.json");
+    fs::set_permissions(&saved, fs::Permissions::from_mode(0o444)).unwrap();
+
+    *remote.lock().unwrap() = ("def456", vec![("skills/engineering/tdd/SKILL.md", "new")]);
+    update(repo.path(), &*tools, "tdd").unwrap_err();
+    remove(repo.path(), "tdd").unwrap_err();
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".claude/skills/tdd/SKILL.md")).unwrap(),
+        TDD
+    );
+    assert!(repo.path().join(".agents/skills/tdd/tests.md").exists());
+    assert_eq!(Manifest::load(repo.path()).unwrap(), manifest);
+    let mut left: Vec<_> = fs::read_dir(repo.path().join(".agents/skills"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["tdd"], "a copy set aside stayed");
+}
+
+#[test]
 fn each_job_takes_its_default_until_a_pick_is_recorded() {
     let mut manifest = Manifest::default();
     for (job, default) in [
