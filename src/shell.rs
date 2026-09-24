@@ -716,10 +716,7 @@ impl Screen {
     /// Tab or Enter on an open list: a command fills in as '<command> ', an
     /// Epic or Ticket id in place of '@<query>', a space after either.
     fn fill(&mut self, picked: &str) {
-        let at = match picked.starts_with('/') {
-            true => 0,
-            false => self.input.rfind('@').unwrap_or(0),
-        };
+        let at = self.input.rfind('@').unwrap_or(0);
         self.input.truncate(at);
         self.input.push_str(picked);
         self.input.push(' ');
@@ -807,11 +804,7 @@ impl Screen {
             }
             KeyCode::Up if open > 0 => self.pick = self.pick.saturating_sub(1),
             KeyCode::Down if open > 0 => self.pick = (self.pick + 1).min(open - 1),
-            KeyCode::Tab => {
-                if let Some(picked) = picked {
-                    self.fill(&picked);
-                }
-            }
+            KeyCode::Tab if picked.is_some() => self.fill(&picked.unwrap()),
             KeyCode::Enter if picked.is_some() && !whole => self.fill(&picked.unwrap()),
             KeyCode::PageDown | KeyCode::PageUp if self.composing => {
                 if let Some(q) = self.questions.first() {

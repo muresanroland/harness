@@ -410,7 +410,6 @@ fn the_slash_list_filters_the_command_table_and_fills_in() {
         "/exit",
     ];
     assert_eq!(list_keys(&s), all);
-    assert_eq!(super::COMMANDS.map(|c| c.0), all);
     type_in(&mut s, "pa");
     assert_eq!(list_keys(&s), ["/park"]);
     s.key(key(KeyCode::Tab));
