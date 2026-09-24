@@ -2994,8 +2994,8 @@ fn kept_feedback_can_be_resent_and_a_failed_plan_step_offers_retry() {
     }
 }
 
-/// A session asking ASKS in `stage` (Implement for hx-1), or taking up the
-/// answer ours; every other one succeeds.
+/// `ticket`'s Implement session asks ASKS, and takes up the answer ours;
+/// every other session succeeds.
 fn asks_in(w: &World, ticket: &'static str) {
     w.session(move |p| match p.text.as_str() {
         "ours" => (String::new(), "working".to_string()),

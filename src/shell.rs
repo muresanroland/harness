@@ -47,7 +47,7 @@ const KEPT_EVENTS: usize = 1000;
 /// An update another process's run keeps from installing is tried this often.
 const RETRY: Duration = Duration::from_secs(60);
 /// Every command the Shell takes: its name, arguments and what it does. The
-/// / list shows it; nothing else lists the commands.
+/// / list shows it, and the README's table.
 const COMMANDS: [(&str, &str, &str); 10] = [
     (
         "/start-epic",
@@ -504,7 +504,7 @@ impl Screen {
             Ask::Wake { .. } | Ask::PlanFailed { .. } => {
                 text.split_once(": ").map_or(text.as_str(), |(s, _)| s)
             }
-            Ask::Blocked { .. } | Ask::Plan { .. } | Ask::Question { .. } => text.as_str(),
+            Ask::Blocked { .. } | Ask::Plan { .. } | Ask::StageQuestion { .. } => text.as_str(),
         };
         let asking = format!("asking you: {short}");
         // /continue @ticket's goes after a confirmation, and the Question
@@ -649,7 +649,7 @@ impl Screen {
                     )
                     .collect()
             }
-            About::Asked(Ask::Question { options, .. }) => options
+            About::Asked(Ask::StageQuestion { options, .. }) => options
                 .iter()
                 .cloned()
                 .chain(["an answer of your own", "open the pane", "park"].map(str::to_string))
@@ -866,7 +866,7 @@ impl Screen {
                     self.composing = false;
                     let word = match self.questions[0].about {
                         About::Asked(Ask::Plan { .. }) => "feedback",
-                        About::Asked(Ask::Question { .. }) => "your answer",
+                        About::Asked(Ask::StageQuestion { .. }) => "your answer",
                         _ => "your prompt",
                     };
                     self.reply(word, Answer::Prompt(prompt.trim().to_string()));
@@ -926,7 +926,7 @@ impl Screen {
                 self.reply("feedback", Answer::Prompt(feedback));
             }
             // the Stage's options, an answer of your own, open the pane, park
-            (About::Asked(Ask::Question { options, pane, .. }), n) => {
+            (About::Asked(Ask::StageQuestion { options, pane, .. }), n) => {
                 match (options.get(n).cloned(), n.saturating_sub(options.len())) {
                     (Some(option), _) => self.reply(&option.clone(), Answer::Prompt(option)),
                     (None, 0) => self.composing = true,
@@ -982,7 +982,7 @@ impl Screen {
                 | Ask::Blocked { pane }
                 | Ask::Plan { pane, .. }
                 | Ask::PlanFailed { pane, .. }
-                | Ask::Question { pane, .. },
+                | Ask::StageQuestion { pane, .. },
             ),
         ) = (&self.run, &q.about)
         {

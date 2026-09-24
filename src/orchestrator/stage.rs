@@ -110,7 +110,7 @@ pub(crate) enum Ask {
     },
     /// The Stage's own question (STATUS: question): its pane, the question
     /// and its options.
-    Question {
+    StageQuestion {
         pane: String,
         question: String,
         options: Vec<String>,
@@ -606,9 +606,9 @@ impl Orchestrator {
                     // never a Wake: put to the user, then watched again
                     Held::Woke(reason) if reason == ASKED => {
                         let pane = self.ticket(ticket).panes.get(st.name).cloned();
-                        let pane = pane.unwrap_or_default();
+                        let pane = pane.unwrap_or_default(); // the pane it asked in
                         held = self
-                            .question(ticket, &label, &pane, &file)
+                            .question(ticket, st, &label, &pane, &file)
                             .unwrap_or_else(|| {
                                 self.hold(ticket, st, &label, &pane, &file, want, true, None)
                             });
@@ -1059,10 +1059,18 @@ impl Orchestrator {
     /// never a Wake, never judged, and no deadline runs while it waits.
     /// Away, the Ticket parks with a bd comment asking for a manual resume,
     /// its session left waiting in its pane; turning Away on while the
-    /// Question waits does the same. Otherwise it is a Question, whose
-    /// answer goes into the pane as a prompt. None once the answer is sent,
-    /// or the session moves on in the pane.
-    fn question(&self, ticket: &str, label: &str, pane: &str, file: &Path) -> Option<Held> {
+    /// Question waits does the same. Otherwise, and always for Address,
+    /// whose Ticket has its PR open and no Parked to go to, it is a
+    /// Question, whose answer goes into the pane as a prompt. None once the
+    /// answer is sent, or the session moves on in the pane.
+    fn question(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        label: &str,
+        pane: &str,
+        file: &Path,
+    ) -> Option<Held> {
         let mut raised = false;
         loop {
             let asked = read_question(file);
@@ -1077,7 +1085,7 @@ impl Orchestrator {
                 }
             }
             let (question, options) = asked.unwrap();
-            if self.cfg.away.load(Ordering::SeqCst) {
+            if self.cfg.away.load(Ordering::SeqCst) && st.name != ADDRESS.name {
                 let comment = format!(
                     "{label} asked a question while you were away and needs a manual resume: \
                      /continue @{ticket} in the Harness Shell puts it to you, its session \
@@ -1096,7 +1104,7 @@ impl Orchestrator {
             if !raised {
                 self.take_answer(ticket, None); // an answer sent before it is not for it
                 let at = self.locate(pane);
-                let ask = Ask::Question {
+                let ask = Ask::StageQuestion {
                     pane: pane.to_string(),
                     question,
                     options,

@@ -28,4 +28,4 @@ STATUS: done
 
 Write `STATUS: failed` with the reason if the tests cannot be made to pass, the rebase cannot be completed sensibly, or the push is rejected.
 
-To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then one line per option starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then its options as the last lines, one per line starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.

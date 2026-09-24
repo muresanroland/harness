@@ -2,7 +2,8 @@
 //! or with Away on, its Ticket parked with a bd comment and its pane open.
 
 use super::judgment::fake::Fake;
-use super::stage::{Answer, Ask, AWAY};
+use super::result::ResultRequirements;
+use super::stage::{Answer, Ask, ADDRESS, AWAY};
 use super::state::STATUS_PARKED;
 use super::world::{new_world, spawn_ticket, succeed, BdTicket};
 use super::write_file;
@@ -30,7 +31,7 @@ fn a_stage_question_is_put_to_you_never_judged_and_the_deadline_waits() {
 
     let asked = w.await_event("question in implement");
     assert_eq!(asked.text, "question in implement (pane 1-1)");
-    let Some(Ask::Question {
+    let Some(Ask::StageQuestion {
         pane,
         question,
         options,
@@ -104,4 +105,31 @@ fn away_parks_a_question_with_a_bd_comment_and_the_pane_open() {
             "{label}: Away still put a Question"
         );
     }
+}
+
+/// Address runs on your command over a Ticket with its PR open, which has
+/// no Parked to go to: Away, its question still waits as a Question.
+#[test]
+fn away_leaves_an_address_question_waiting_for_you() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.away.store(true, Ordering::SeqCst);
+    w.session(|p| match p.text.as_str() {
+        "ours" => (String::new(), "working".to_string()),
+        _ => (ASKS.to_string(), "idle".to_string()),
+    });
+    let o = Arc::new(o);
+    let run = {
+        let o = o.clone();
+        thread::spawn(move || o.run_stage("hx-1", &ADDRESS, 0, &[], ResultRequirements::default()))
+    };
+    let asked = w.await_event("question in address");
+    let Some(Ask::StageQuestion { pane, .. }) = asked.ask else {
+        panic!("Away parked an address question: {:?}", asked.ask);
+    };
+    o.answer("hx-1", &pane, Answer::Prompt("ours".to_string()));
+    w.await_line("hx-1 sent your answer");
+    write_file(&o.run_dir("hx-1").join("address.md"), "STATUS: done\n");
+    w.lock().agents.insert(pane, "idle".to_string());
+    assert!(run.join().unwrap().is_ok());
+    assert!(w.called("bd comments add").is_empty());
 }

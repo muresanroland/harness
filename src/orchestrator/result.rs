@@ -88,7 +88,8 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
 }
 
 /// A Stage's own question, its result file's first line STATUS: question:
-/// the question text, and its options, the lines that start with "- ".
+/// the question text as written, and its options, the last block of lines
+/// that start with "- " (a hunk in the question keeps its removed lines).
 pub(crate) fn read_question(path: &Path) -> Option<(String, Vec<String>)> {
     let body = fs::read_to_string(path).ok()?;
     let mut lines = body.lines();
@@ -96,14 +97,17 @@ pub(crate) fn read_question(path: &Path) -> Option<(String, Vec<String>)> {
     if !first.trim().eq_ignore_ascii_case("question") {
         return None;
     }
-    let (mut text, mut options) = (Vec::new(), Vec::new());
-    for line in lines.map(str::trim).filter(|line| !line.is_empty()) {
-        match line.strip_prefix("- ") {
-            Some(option) => options.push(option.trim().to_string()),
-            None => text.push(line),
-        }
+    let mut lines: Vec<&str> = lines.collect();
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
     }
-    Some((text.join("\n"), options))
+    let from = lines
+        .iter()
+        .rposition(|line| !line.starts_with("- "))
+        .map_or(0, |i| i + 1);
+    let options = lines[from..].iter().map(|o| o[2..].trim().to_string());
+    let text = lines[..from].join("\n");
+    Some((text.trim_matches('\n').to_string(), options.collect()))
 }
 
 /// The text a Stage's session is prompted with: the Stage skill's body

@@ -81,12 +81,13 @@ harness init
 |---|---|
 | `/start-epic <epic> [--max N]` | Run every Ticket of the Epic, at most N at once (default 3) |
 | `/start-ticket <ticket>` | Run one Ticket |
-| `/continue` | Resume the saved run, e.g. after `/stop-work` or a restart |
+| `/continue [<ticket>]` | Resume the saved run, e.g. after `/stop-work` or a restart. With a Ticket: unpark that Ticket at its Stage and put its question to you first |
 | `/stop-work` | Stop scheduling. Agent panes keep running and the state is saved |
 | `/retry <ticket>` | Rerun the Ticket's failed Stage with a fresh session |
 | `/park <ticket>` | Take the Ticket out of the pipeline; the others keep going |
 | `/address <ticket>` | Act on the review comments or merge conflicts on the Ticket's open PR |
 | `/questions` | Show the Questions waiting for you |
+| `/away` | Toggle Away: a Stage's question parks its Ticket, with a bd comment, until you `/continue @ticket` it |
 | `/exit` | Leave the Shell (asks first during a run). Ctrl-C twice does the same |
 
 Leaving the Shell never kills agent panes.

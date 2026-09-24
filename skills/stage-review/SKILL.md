@@ -31,4 +31,4 @@ STATUS: done
 
 Severity is `high`, `medium` or `low`. Paths are relative to the Worktree. No Findings is a valid review: write the heading and no items. If you cannot review at all, write `STATUS: failed` and the reason.
 
-To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then one line per option starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then its options as the last lines, one per line starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.

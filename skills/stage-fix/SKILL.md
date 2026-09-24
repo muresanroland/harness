@@ -39,4 +39,4 @@ PR: https://github.com/owner/repo/pull/123
 
 Leave the `PR:` line out when **Open PR** is no. If a fix item cannot be applied, say so here and carry on with the rest; that is still done. Write `STATUS: failed` with the reason only when the tests cannot be made to pass or the PR cannot be opened.
 
-To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then one line per option starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then its options as the last lines, one per line starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.

@@ -610,8 +610,8 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
                 lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
             }
         }
-        About::Asked(Ask::Plan { plan, .. } | Ask::Question { question: plan, .. }) => {
-            let rows: Vec<String> = plan.lines().flat_map(|line| wrap(line, width)).collect();
+        About::Asked(Ask::Plan { plan: text, .. } | Ask::StageQuestion { question: text, .. }) => {
+            let rows: Vec<String> = text.lines().flat_map(|line| wrap(line, width)).collect();
             // Scrolled by rows at this width, and kept inside the plan.
             let from = q.scroll.get().min(rows.len().saturating_sub(fit));
             q.scroll.set(from);

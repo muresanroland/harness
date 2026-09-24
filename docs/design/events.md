@@ -13,7 +13,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 - Every Ticket event shows on the panel, except `prompted` (log only).
 - Run-level errors show: state not saved, bd list failed, bd ready failed, Epic done, stopped.
-- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file, an answer that came after its session moved on (dropped your park: that session has moved on), a Stage that could not be resumed (not resumed: `err`, starting it fresh), a Judgment that could not be had (no Judgment: `err`, the key never in it).
+- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file, an answer that came after its session moved on (dropped your park: that session has moved on), a Stage that could not be resumed (not resumed: `err`, starting it fresh), a Judgment that could not be had (no Judgment: `err`, the key never in it), a bd comment that could not be added for a question asked while Away (no bd comment: `err`).
 - A Judgment below the floor logs its judged line only: its scores show in the Wake's Question, and a panel line would close that Question.
 
 ## Vocabulary
@@ -46,7 +46,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR · address refused: not an Epic run |
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
 | Away | *(harness)* away: on, a Stage's question parks its Ticket · away: off *(/away again, or /continue @ticket)* |
-| /continue @ticket refused | *(harness)* refused: Ticket 5 is not parked · continue refused: not an Epic run |
+| /continue @ticket refused | *(harness)* refused: Ticket 5 is not parked · *(on the Ticket, in a single-Ticket run)* continue refused: not an Epic run |
 | Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
 | Epic done | *(harness)* Epic done, every Ticket closed |
 | stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
@@ -54,7 +54,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · never took your answer · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
 
 The last five are plan failures: a Question for the user, no Judgment asked.
 
@@ -78,14 +78,14 @@ Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks wh
 
 ## Stage questions
 
-Decided on the map ticket "Delegate skills" (harness-0sx.12, Asks). A Stage writes `STATUS: question`, then the question, then one `- ` line per option, and waits in its session. It is never a Wake and never judged, and no deadline runs while it waits; once the answer goes in, the Stage's deadline starts over.
+Decided on the map ticket "Delegate skills" (harness-0sx.12, Asks). A Stage writes `STATUS: question`, then the question, then its options, one `- ` line each as the last lines, and waits in its session. It is never a Wake and never judged, and no deadline runs while it waits; once the answer goes in, the Stage's deadline starts over.
 
 | Moment | Wording |
 |---|---|
 | a Stage asks | question in implement (pane 2-1) *(a Question: the Stage's options, an answer of your own, open the pane, park)* |
 | answer sent into the pane | sent your answer |
 | answered in the pane instead | carrying on |
-| asked while Away | parked: asked you while away *(a bd comment on the Ticket asks for a manual resume, /continue @ticket; the pane stays open)* |
+| asked while Away | parked: asked you while away *(a bd comment on the Ticket asks for a manual resume, /continue @ticket; the pane stays open; an Address question, its PR open, waits as a Question instead)* |
 
 ## Questions and answers
 
