@@ -118,7 +118,8 @@ fn config_changed_between_two_stages_reaches_the_second() {
 
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
 /// before its session starts: unreadable, naming the file, a field not a
-/// string, or a Stage other than the Review off claude.
+/// string, a Stage other than the Review off claude, or a plan model split
+/// from Implement's model at default.
 #[test]
 fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
     for (body, label, reason) in [
@@ -132,6 +133,12 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             r#"{"moderator": {"app": "codex"}}"#,
             "debate 1",
             "moderator runs on claude only",
+        ),
+        (
+            r#"{"implement": {"plan_model": "fable"}}"#,
+            "implement",
+            "{file}: implement plan_model is set with model default: \
+             the split needs a named model for each half",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);

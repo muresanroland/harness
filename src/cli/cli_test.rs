@@ -89,3 +89,65 @@ fn the_plan_hook_writes_the_plan_and_decides_nothing() {
         "the hidden mode is in the usage"
     );
 }
+
+/// The hidden mode Claude Code runs as a split's PostModelSwitch hook: the
+/// model switched to, from its input on stdin, is a line of the Ticket's
+/// in the log, after the lines already there. Input it cannot read fails
+/// without 2.
+#[test]
+fn the_switch_hook_logs_the_model_it_switched_to() {
+    let dir = TempDir::new();
+    let log = dir.path().join("orchestrator.log");
+    std::fs::write(&log, "2026-09-24 10:00:00 hx-1 plan approved\n").unwrap();
+    let args = [
+        "__switch-hook".to_string(),
+        log.display().to_string(),
+        "hx-1".to_string(),
+    ];
+    let call = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostModelSwitch",
+        "from_model": "claude-fable-5-1", "to_model": "claude-opus-5-5",
+    })
+    .to_string();
+    let mut out = Vec::new();
+    let quiet = |_: &str| String::new();
+    let code = super::run(
+        &args,
+        &mut out,
+        Some(&mut call.as_bytes()),
+        dir.path(),
+        Fake::quiet(),
+        &quiet,
+    );
+    assert_eq!(code, 0);
+    assert!(
+        out.is_empty(),
+        "stdout: {:?}",
+        String::from_utf8_lossy(&out)
+    );
+    let logged = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = logged.lines().collect();
+    assert_eq!(lines.len(), 2, "{logged}");
+    assert_eq!(lines[0], "2026-09-24 10:00:00 hx-1 plan approved");
+    assert!(
+        lines[1].ends_with(" hx-1 implement switched to claude-opus-5-5"),
+        "{logged}"
+    );
+
+    let code = super::run(
+        &args,
+        &mut out,
+        Some(&mut &b"not json"[..]),
+        dir.path(),
+        Fake::quiet(),
+        &quiet,
+    );
+    assert!(code != 0 && code != 2, "exit code {code}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), logged);
+
+    let (_, usage) = run_with(&["bogus"], dir.path(), Fake::quiet(), &quiet);
+    assert!(
+        !usage.contains("switch-hook"),
+        "the hidden mode is in the usage"
+    );
+}

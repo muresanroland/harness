@@ -21,7 +21,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | Moment | Wording |
 |---|---|
 | worktree created | branch `b` created |
-| Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .harness/config.json: implement started: claude opus/high (pane 2-1) |
+| Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .harness/config.json: implement started: claude opus/high (pane 2-1) · on a split, a plan model other than Implement's: implement started: claude fable→opus/high (pane 2-1) |
 | Stage prompted | *log only:* implement prompted, waiting for implement.md |
 | trust dialog | waiting: claude does not trust `dir` yet, open it there once and accept (pane 2-1) |
 | trust accepted | claude trusts `dir` now, carrying on |
@@ -51,9 +51,9 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why`
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
 
-The last four are plan failures: a Question for the user, no Judgment asked.
+The last five are plan failures: a Question for the user, no Judgment asked.
 
 The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 
@@ -70,6 +70,7 @@ Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks wh
 | user feedback delivered | plan sent back with your feedback |
 | feedback not delivered, no Enter sent | feedback not sent: the plan dialog is not on screen (pane 2-1) · feedback not sent: the cursor never reached Tell Claude what to change (pane 2-1) *(then the plan Question again, the feedback kept to resend)* |
 | a plan failure | stuck in implement: `reason` (pane 2-1) *(a Question for you, no Judgment asked: open the pane, park, retry, resend the feedback)* |
+| split session switched model (its PostModelSwitch hook) | *log only:* implement switched to `model` |
 | blocked at another prompt, or at the plan dialog with no new plan.md | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
 
 ## Questions and answers

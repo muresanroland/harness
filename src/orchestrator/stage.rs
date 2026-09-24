@@ -712,8 +712,8 @@ impl Orchestrator {
         let mut agent_args = if st.name == IMPLEMENT.name {
             // Implement plans first (harness-7bj.9), on claude alone
             // (stage_row): its own settings hold the hook that copies each
-            // plan into the run directory.
-            let settings = match self.plan_settings(ticket) {
+            // plan into the run directory, and on a split opusplan's remap.
+            let settings = match self.plan_settings(ticket, &row) {
                 Ok(path) => path,
                 Err(err) => {
                     let reason = format!("has no plan hook: {err}");

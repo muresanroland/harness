@@ -5,13 +5,18 @@
 //! shows: enter on a Yes approves; feedback moves the cursor down, a key a
 //! call, to "Tell Claude what to change", enters it empty, and goes in as a
 //! prompt. esc and 3 are never sent: in the research they approved.
+//!
+//! A split (harness-7nq.8, research/stage-models) plans on one model and
+//! implements on another: opusplan, its halves remapped in the settings,
+//! which show the dialog's clear-context option; approval moves there, so
+//! the implementing model starts from the plan alone.
 
 use std::fs;
-use std::path::Path;
 use std::thread;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
+use super::app::Row;
 use super::judgment::{plan_said, Action, PLAN_FLOOR};
 use super::result::{read_stage_result, ResultRequirements};
 use super::stage::{result_name, Answer, Ask, Held, Orchestrator, Stage, SETTLE_TICKS};
@@ -19,9 +24,13 @@ use crate::tools::RunError;
 
 /// Where the hook copies the plan the session presents.
 const PLAN: &str = "plan.md";
+/// The Implement session's settings file, in the run directory.
+const SETTINGS: &str = "settings.json";
 /// The plan dialog's option that takes feedback; the ones that approve
 /// begin with Yes.
 const FEEDBACK: &str = "Tell Claude what to change";
+/// The approving option a split's settings show, which clears the context.
+const CLEAR: &str = "Yes, clear context";
 
 /// How an approval went.
 enum Approval {
@@ -43,6 +52,16 @@ enum SentBack {
     /// reached the feedback option.
     NotSent(&'static str),
     Failed(String),
+}
+
+/// How moving the dialog's cursor went.
+enum Moved {
+    Reached,
+    /// The cursor never reached the option.
+    Stalled,
+    /// The dialog left the screen.
+    Gone,
+    Failed(RunError),
 }
 
 /// The plan dialog on a pane's visible screen: its options top to bottom
@@ -99,8 +118,11 @@ impl Orchestrator {
     /// Writes the Implement session's settings file and returns its path:
     /// one PreToolUse hook on ExitPlanMode, this binary's hidden mode, which
     /// copies the plan into the run directory and decides nothing, so the
-    /// dialog shows as usual. An earlier session's plan goes.
-    pub(super) fn plan_settings(&self, ticket: &str) -> Result<String, String> {
+    /// dialog shows as usual. An earlier session's plan goes. On a split the
+    /// env remaps opusplan's halves, plan and implement model, the dialog
+    /// shows its clear-context option, and a PostModelSwitch hook logs the
+    /// switch.
+    pub(super) fn plan_settings(&self, ticket: &str, row: &Row) -> Result<String, String> {
         let dir = self.run_dir(ticket);
         let _ = fs::remove_file(dir.join(PLAN));
         self.plans.lock().unwrap().remove(ticket);
@@ -109,14 +131,30 @@ impl Orchestrator {
         }
         let command = format!(
             "{} __plan-hook {}",
-            quoted(&self.cfg.exe),
-            quoted(&dir.join(PLAN))
+            quoted(self.cfg.exe.display()),
+            quoted(dir.join(PLAN).display())
         );
-        let settings = json!({ "hooks": { "PreToolUse": [{
+        let mut settings = json!({ "hooks": { "PreToolUse": [{
             "matcher": "ExitPlanMode",
             "hooks": [{ "type": "command", "command": command }],
         }] } });
-        let path = dir.join("settings.json");
+        if let Some(plan_model) = &row.plan_model {
+            let log = self.cfg.repo.join(".harness").join("orchestrator.log");
+            let command = format!(
+                "{} __switch-hook {} {}",
+                quoted(self.cfg.exe.display()),
+                quoted(log.display()),
+                quoted(ticket)
+            );
+            settings["env"] = json!({
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": plan_model,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": row.model,
+            });
+            settings["showClearContextOnPlanAccept"] = json!(true);
+            settings["hooks"]["PostModelSwitch"] =
+                json!([{ "hooks": [{ "type": "command", "command": command }] }]);
+        }
+        let path = dir.join(SETTINGS);
         fs::write(&path, settings.to_string()).map_err(|err| err.to_string())?;
         Ok(path.display().to_string())
     }
@@ -252,13 +290,25 @@ impl Orchestrator {
     /// with its cursor on a Yes and plan.md holds the plan judged: enter
     /// there leaves plan mode for auto mode, as every other Stage launches,
     /// and the Stage's deadline starts over. The screen is read first: the
-    /// hook writes plan.md before its dialog shows.
+    /// hook writes plan.md before its dialog shows. A split's session, by
+    /// the settings it started with, is approved on the clear-context
+    /// option, the cursor moved there first.
     fn approve(&self, ticket: &str, st: &Stage, pane: &str, judged: &str) -> Approval {
         let blocked = self.agent_status(pane).as_deref() == Some("blocked");
         let dialog = blocked.then(|| plan_dialog(&self.visible(pane))).flatten();
         let plan = fs::read_to_string(self.run_dir(ticket).join(PLAN)).ok();
         match (dialog, plan) {
             (Some(dialog), Some(plan)) if plan == judged && dialog.on("Yes") => {
+                if self.clears_context(ticket) {
+                    match self.cursor_to(pane, dialog, CLEAR) {
+                        Moved::Reached => {}
+                        Moved::Stalled => {
+                            return Approval::Failed(format!("the cursor never reached {CLEAR}"))
+                        }
+                        Moved::Gone => return Approval::Gone,
+                        Moved::Failed(err) => return Approval::Failed(unanswered(err)),
+                    }
+                }
                 if let Err(err) = self.keys(pane, "enter") {
                     return Approval::Failed(unanswered(err));
                 }
@@ -272,42 +322,61 @@ impl Orchestrator {
         }
     }
 
+    /// Whether the session's settings show the clear-context option: a split.
+    fn clears_context(&self, ticket: &str) -> bool {
+        let settings = fs::read_to_string(self.run_dir(ticket).join(SETTINGS)).unwrap_or_default();
+        serde_json::from_str::<Value>(&settings)
+            .is_ok_and(|settings| settings["showClearContextOnPlanAccept"] == true)
+    }
+
+    /// Moves the dialog's cursor down to the option that begins with label,
+    /// a key a call, the pane re-read after each (keys sent together were
+    /// seen to land where the screen did not show): at most one down per
+    /// option and none after a down that did not move it.
+    fn cursor_to(&self, pane: &str, mut dialog: Dialog, label: &str) -> Moved {
+        let mut downs = 0;
+        while !dialog.on(label) {
+            if downs == dialog.options.len() {
+                return Moved::Stalled;
+            }
+            if let Err(err) = self.keys(pane, "down") {
+                return Moved::Failed(err);
+            }
+            downs += 1;
+            // Not stop's sleep: begun, the keys run to their end.
+            thread::sleep(self.cfg.tick);
+            match plan_dialog(&self.visible(pane)) {
+                Some(now) if now.cursor == dialog.cursor => return Moved::Stalled,
+                Some(now) => dialog = now,
+                None => return Moved::Gone,
+            }
+        }
+        Moved::Reached
+    }
+
     /// Sends the plan back with the user's feedback, acting only on what
-    /// the pane shows: with the dialog of the plan judged there, down a key
-    /// a call, the pane re-read after each (keys sent together were seen to
-    /// land where the screen did not show), until the cursor is on the
-    /// feedback option, at most one down per option and none after a down
-    /// that did not move it; then enter, which leaves it empty and keeps
-    /// plan mode. Once the session is idle in plan mode the feedback is its
-    /// prompt, and the Stage's deadline starts over.
+    /// the pane shows: with the dialog of the plan judged there, the cursor
+    /// moved to the feedback option; then enter, which leaves it empty and
+    /// keeps plan mode. Once the session is idle in plan mode the feedback
+    /// is its prompt, and the Stage's deadline starts over.
     fn send_back(&self, ticket: &str, st: &Stage, pane: &str, feedback: &str) -> SentBack {
         let screen = self.visible(pane);
         match plan_dialog(&screen) {
-            Some(mut dialog) => {
+            Some(dialog) => {
                 // read after the screen, as in approve
                 let plan = fs::read_to_string(self.run_dir(ticket).join(PLAN)).unwrap_or_default();
                 if self.plans.lock().unwrap().get(ticket) != Some(&plan) {
                     return SentBack::Changed(plan);
                 }
-                let stalled = "the cursor never reached Tell Claude what to change";
-                let mut downs = 0;
-                while !dialog.on(FEEDBACK) {
-                    if downs == dialog.options.len() {
-                        return SentBack::NotSent(stalled);
+                match self.cursor_to(pane, dialog, FEEDBACK) {
+                    Moved::Reached => {}
+                    Moved::Stalled => {
+                        return SentBack::NotSent(
+                            "the cursor never reached Tell Claude what to change",
+                        )
                     }
-                    if let Err(err) = self.keys(pane, "down") {
-                        return SentBack::Failed(unanswered(err));
-                    }
-                    downs += 1;
-                    // Not stop's sleep: begun, the keys run to their end.
-                    thread::sleep(self.cfg.tick);
-                    match plan_dialog(&self.visible(pane)) {
-                        Some(now) if now.cursor == dialog.cursor => {
-                            return SentBack::NotSent(stalled)
-                        }
-                        Some(now) => dialog = now,
-                        None => return SentBack::NotSent("the plan dialog is not on screen"),
-                    }
+                    Moved::Gone => return SentBack::NotSent("the plan dialog is not on screen"),
+                    Moved::Failed(err) => return SentBack::Failed(unanswered(err)),
                 }
                 if let Err(err) = self.keys(pane, "enter") {
                     return SentBack::Failed(unanswered(err));
@@ -443,7 +512,8 @@ fn unanswered(err: RunError) -> String {
     format!("never took the answer to its plan: {err}")
 }
 
-/// A path as one shell word: the hook command runs under a shell.
-fn quoted(path: &Path) -> String {
-    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+/// A path or a Ticket id as one shell word: the hook commands run under a
+/// shell.
+fn quoted(word: impl std::fmt::Display) -> String {
+    format!("'{}'", word.to_string().replace('\'', r"'\''"))
 }
