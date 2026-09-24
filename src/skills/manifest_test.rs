@@ -808,6 +808,19 @@ fn relocating_away_from_user_level_leaves_the_users_skill_for_other_checkouts() 
 }
 
 #[test]
+fn relocating_keeps_the_links_in_a_skill() {
+    let (repo, home, tools) = installed_at(Location::User);
+    let notes = home.path().join(".agents/skills/tdd/notes.md");
+    std::os::unix::fs::symlink("tests.md", &notes).unwrap();
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Checkout);
+    assert!(said.is_empty(), "{said:?}");
+    let moved = repo.path().join(".harness/skills/tdd/notes.md");
+    assert_eq!(fs::read_link(&moved).unwrap(), Path::new("tests.md"));
+    assert_eq!(fs::read_to_string(&moved).unwrap(), "good tests");
+}
+
+#[test]
 fn relocating_puts_back_the_skills_moved_when_one_cannot_move() {
     use std::os::unix::fs::PermissionsExt;
     let (repo, home, tools) = installed_at(Location::User);

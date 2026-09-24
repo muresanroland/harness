@@ -507,7 +507,7 @@ pub(crate) fn update(
         _ => {}
     }
     let _ = fs::remove_dir_all(&old);
-    let swapped = copy_dir(&from, &fresh).and_then(|()| {
+    let swapped = copy_dir(&from, &fresh, false).and_then(|()| {
         if at.exists() {
             fs::rename(&at, &old)?;
         }
@@ -692,7 +692,8 @@ fn find(clone: &Path, dir: &Path, into: &mut Vec<(String, String)>) {
 }
 
 /// The name of the skill in dir. Its SKILL.md must be a file, not a link:
-/// copy_dir copies no links, so the skill would be installed without it.
+/// copy_dir copies no links from a clone, so the skill would be installed
+/// without it.
 fn skill_in(dir: &Path) -> Option<String> {
     let skill = dir.join("SKILL.md");
     fs::symlink_metadata(&skill)
@@ -728,7 +729,7 @@ fn safe_name(name: &str) -> bool {
 
 /// Copies the skill's folder to its place and links it there.
 fn put(place: &Place, from: &Path, name: &str) -> io::Result<()> {
-    copy_dir(from, &place.skill(name))?;
+    copy_dir(from, &place.skill(name), false)?;
     link(place, name)
 }
 
@@ -760,11 +761,11 @@ fn move_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result<(
     let (old, new) = (from.skill(name), to.skill(name));
     fs::create_dir_all(new.parent().unwrap())?;
     if from.root != repo {
-        copy_dir(&old, &new)?;
+        copy_dir(&old, &new, true)?;
     } else {
         // Across filesystems, as from a checkout to ~, rename cannot.
         fs::rename(&old, &new)
-            .or_else(|_| copy_dir(&old, &new).and_then(|()| fs::remove_dir_all(&old)))?;
+            .or_else(|_| copy_dir(&old, &new, true).and_then(|()| fs::remove_dir_all(&old)))?;
         if let Some(link) = from
             .link(name)
             .filter(|link| fs::read_link(link).is_ok_and(|to| to == from.target(name)))
@@ -794,7 +795,7 @@ fn unmove_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result
             // A copy cut short left old whole, and one removed short has it
             // all at new: copied back over old, either comes out whole.
             fs::rename(&new, &old)
-                .or_else(|_| copy_dir(&new, &old).and_then(|()| fs::remove_dir_all(&new)))?;
+                .or_else(|_| copy_dir(&new, &old, true).and_then(|()| fs::remove_dir_all(&new)))?;
         }
     }
     link(from, name)?;
@@ -868,18 +869,23 @@ pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()
     Ok(())
 }
 
-/// Copies files and folders only, so that a link in the clone cannot pull in
-/// anything from outside it.
-fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+/// Copies files and folders, and links as links when links is set. A clone
+/// is copied without them, so that a link in it cannot pull in anything from
+/// outside it; a skill being moved keeps them, as a rename would.
+fn copy_dir(from: &Path, to: &Path, links: bool) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let kind = entry.file_type()?;
         let dest = to.join(entry.file_name());
         if kind.is_dir() && entry.file_name() != ".git" {
-            copy_dir(&entry.path(), &dest)?;
+            copy_dir(&entry.path(), &dest, links)?;
         } else if kind.is_file() {
             fs::copy(entry.path(), dest)?;
+        } else if links && kind.is_symlink() {
+            // Over the same link, when copied back over the skill it came from.
+            let _ = fs::remove_file(&dest);
+            symlink(fs::read_link(entry.path())?, dest)?;
         }
     }
     Ok(())
