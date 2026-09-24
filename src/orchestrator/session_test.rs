@@ -50,12 +50,7 @@ fn panes_gone(w: &World) {
 
 /// The Stage's agent starts since call `before`.
 fn starts(w: &World, before: usize, stage: &str) -> Vec<String> {
-    let start = format!("herdr agent start h-hx-1-{stage} ");
-    w.calls()[before..]
-        .iter()
-        .filter(|c| c.starts_with(&start))
-        .cloned()
-        .collect()
+    w.since(before, &format!("herdr agent start h-hx-1-{stage} "))
 }
 
 /// The session in `pane` writes its result later, and goes idle.
@@ -122,11 +117,7 @@ fn stopped_run_whose_pane_is_gone_resumes_the_stage_by_its_session_id() {
             starts.len() == 1 && starts[0].contains(&want),
             "{label} starts after the restart = {starts:?}, want one resuming by id: {want:?}"
         );
-        let prompts: Vec<_> = w.calls()[before..]
-            .iter()
-            .filter(|c| c.starts_with(&format!("herdr agent prompt {pane} ")))
-            .cloned()
-            .collect();
+        let prompts = w.since(before, &format!("herdr agent prompt {pane} "));
         assert_eq!(
             prompts,
             [format!("herdr agent prompt {pane} continue")],
@@ -150,11 +141,9 @@ fn a_live_pane_is_watched_even_with_a_saved_session_id() {
 
     w.await_line("hx-1 PR #hx-1 opened");
     let starts = starts(&w, before, "review");
-    let prompted = w.calls()[before..]
-        .iter()
-        .any(|c| c.starts_with(&format!("herdr agent prompt {pane} ")));
+    let prompted = w.since(before, &format!("herdr agent prompt {pane} "));
     assert!(
-        starts.is_empty() && !prompted,
+        starts.is_empty() && prompted.is_empty(),
         "the live Review is watched, not started {starts:?} or prompted"
     );
 }
@@ -221,7 +210,7 @@ fn retry_of_a_parked_ticket_never_resumes() {
     run.wait();
     o.wait_in_flight();
 
-    let starts = starts(&w, 0, "implement");
+    let starts = w.called("herdr agent start h-hx-1-implement ");
     assert!(
         starts.len() == 2 && starts.iter().all(|s| !s.contains("resume")),
         "Implement starts = {starts:?}, want the retry a fresh session"

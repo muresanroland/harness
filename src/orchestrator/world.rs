@@ -301,9 +301,15 @@ impl World {
 
     /// The calls that start with prefix.
     pub(crate) fn called(&self, prefix: &str) -> Vec<String> {
-        self.calls()
-            .into_iter()
+        self.since(0, prefix)
+    }
+
+    /// The calls since call `before` that start with prefix.
+    pub(crate) fn since(&self, before: usize, prefix: &str) -> Vec<String> {
+        self.calls.lock().unwrap()[before..]
+            .iter()
             .filter(|c| c.starts_with(prefix))
+            .cloned()
             .collect()
     }
 
