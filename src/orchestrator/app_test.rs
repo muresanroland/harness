@@ -167,8 +167,9 @@ fn config_changed_between_two_stages_reaches_the_second() {
 
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
 /// before its session starts: unreadable, naming the file, a field not a
-/// string, a Stage other than the Review off claude, or a plan model split
-/// from Implement's model where either is not a full claude- id.
+/// string, a Stage other than the Review off claude, a plan model split
+/// from Implement's model where either is not a full claude- id, none off
+/// the Review's fallback, or both Debate sides on one family.
 #[test]
 fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
     const SPLIT_NOT_FULL: &str = "{file}: implement plan_model splits from model: \
@@ -204,6 +205,16 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             r#"{"side_b": {"app": "pi"}}"#,
             "debate 1",
             r#"{file}: no App named "pi" for side_b"#,
+        ),
+        (
+            r#"{"implement": {"model": "none"}}"#,
+            "implement",
+            "{file}: implement model none: only review_if_limited takes none",
+        ),
+        (
+            r#"{"side_b": {"app": "claude"}}"#,
+            "debate 1",
+            "side_a and side_b both run Anthropic models: the Debate needs two families",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);

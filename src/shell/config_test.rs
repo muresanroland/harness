@@ -202,6 +202,34 @@ fn a_typed_id_whose_probe_fails_keeps_the_old_value_and_shows_the_error() {
     assert!(find(&buf, "opus").is_some(), "the old model is not shown");
 }
 
+/// none, typed for a row other than the Review's fallback, is refused
+/// before any probe: it would run as a model.
+#[test]
+fn none_typed_off_the_fallback_is_refused_unprobed() {
+    let repo = TempDir::new();
+    let tools = apps("");
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+    type_in(&mut s, "type");
+    s.key(key(KeyCode::Enter));
+    type_in(&mut s, "none");
+    let calls = tools.calls().len();
+    s.key(key(KeyCode::Enter));
+    assert!(s.settings.as_ref().unwrap().probe.is_none());
+    assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
+    let file = repo.path().join(".harness/config.json");
+    assert_eq!(
+        note(&s),
+        format!(
+            "Refused: {}: implement model none: only review_if_limited takes none. \
+             Nothing changed.",
+            file.display()
+        )
+    );
+    assert!(!file.exists());
+}
+
 /// During a run a change saves at once and RECENT and the log say so; the
 /// Stage that starts after it runs on it.
 #[test]

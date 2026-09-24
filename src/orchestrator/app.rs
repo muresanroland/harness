@@ -120,13 +120,6 @@ fn codex_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
         .map_err(|err| err.to_string())?;
     let doc: Value =
         serde_json::from_str(&out).map_err(|err| format!("codex debug models: {err}"))?;
-    let strings = |v: &Value, name: &str| -> Vec<String> {
-        v.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|x| x[name].as_str().map(String::from))
-            .collect()
-    };
     Ok(doc["models"]
         .as_array()
         .into_iter()
@@ -134,7 +127,13 @@ fn codex_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
         .filter(|m| m["visibility"] == "list")
         .filter_map(|m| {
             let slug = m["slug"].as_str()?.to_string();
-            Some((slug, strings(&m["supported_reasoning_levels"], "effort")))
+            let efforts = m["supported_reasoning_levels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|level| level["effort"].as_str().map(String::from))
+                .collect();
+            Some((slug, efforts))
         })
         .collect())
 }
@@ -208,14 +207,22 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
 }
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row. The audit runs on side A's.
+/// from its row, the two on Apps of different families. The audit runs on
+/// side A's.
 pub(crate) fn debate_inputs(
     repo: &Path,
     run_dir: &str,
 ) -> Result<Vec<(&'static str, String)>, String> {
+    let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
+    if a.app.family == b.app.family {
+        return Err(format!(
+            "side_a and side_b both run {} models: the Debate needs two families",
+            a.app.family
+        ));
+    }
     Ok(vec![
-        ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
-        ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
+        ("Side A command", a.side_command(run_dir)),
+        ("Side B command", b.side_command(run_dir)),
     ])
 }
 
@@ -298,6 +305,13 @@ pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String>
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
     runs_on(key, app)?;
     let model = field("model")?;
+    // none, no model, is the fallback's alone: elsewhere it would run as one.
+    if model == "none" && key != IF_LIMITED {
+        return Err(format!(
+            "{}: {key} model none: only {IF_LIMITED} takes none",
+            path.display()
+        ));
+    }
     // A split: a plan model other than Implement's, not default.
     let plan_model = match key {
         "implement" => Some(field("plan_model")?),

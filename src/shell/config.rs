@@ -420,14 +420,15 @@ fn refusal(err: &RunError) -> String {
     message.unwrap_or(line).trim_end_matches('.').to_string()
 }
 
-/// config.json read afresh with a row's fields put in, and the row as the
-/// Stage that starts on it will read it.
+/// config.json read afresh: as read, with a row's fields put in, and the
+/// row as the Stage that starts on it will read it.
 fn staged(
     repo: &Path,
     key: &str,
     fields: &[(Field, String)],
-) -> Result<(PathBuf, Value, Row), String> {
-    let (path, mut doc) = app::read(repo)?;
+) -> Result<(PathBuf, Value, Value, Row), String> {
+    let (path, read) = app::read(repo)?;
+    let mut doc = read.clone();
     if !doc.is_object() {
         doc = json!({});
     }
@@ -438,7 +439,7 @@ fn staged(
         doc[key][field.name()] = json!(value);
     }
     let row = app::row_in(&doc, key, &path)?;
-    Ok((path, doc, row))
+    Ok((path, read, doc, row))
 }
 
 impl Screen {
@@ -608,14 +609,13 @@ impl Screen {
         let tools = self.cfg.tools.clone();
         let st = self.settings.as_mut().unwrap();
         let key = ROWS[row].key;
-        let (app, model) = match staged(&repo, key, &fields) {
-            Ok((_, _, staged)) => (staged.app, staged.model),
+        let (now, app, model) = match staged(&repo, key, &fields) {
+            Ok((_, now, _, staged)) => (now, staged.app, staged.model),
             Err(err) => {
                 st.note = Some((format!("Refused: {err}. Nothing changed."), RED));
                 return;
             }
         };
-        let (_, now) = app::read(&repo).unwrap_or_default();
         let same =
             |(field, v): &(Field, String)| app::field(&now, key, field.name()).as_ref() == Ok(v);
         if fields.iter().all(same) {
@@ -666,22 +666,19 @@ impl Screen {
     /// Writes the change into config.json, read afresh; during a run RECENT
     /// and the log say what changed.
     fn save(&mut self, row: usize, fields: &[(Field, String)]) {
-        let repo = &self.cfg.repo;
-        let old = app::read(repo).map(|(_, doc)| said(&doc, row));
-        let saved = staged(repo, ROWS[row].key, fields)
-            .and_then(|(path, doc, _)| app::write(&path, &doc).map(|()| doc));
+        let saved = staged(&self.cfg.repo, ROWS[row].key, fields)
+            .and_then(|(path, old, doc, _)| app::write(&path, &doc).map(|()| (old, doc)));
         let live = self.run.is_some();
         let st = self.settings.as_mut().unwrap();
-        let doc = match saved {
-            Ok(doc) => doc,
+        let (old, doc) = match saved {
+            Ok(docs) => docs,
             Err(err) => {
                 st.note = Some((format!("{err}. Nothing changed."), RED));
                 return;
             }
         };
-        let new = said(&doc, row);
         // as it was on disk, a hand edit since /config opened included
-        let old = old.unwrap_or_else(|_| said(&st.doc, row));
+        let (old, new) = (said(&old, row), said(&doc, row));
         st.doc = doc;
         st.saved = Some(chrono::Local::now().format("%H:%M:%S").to_string());
         let name = ROWS[row].name;

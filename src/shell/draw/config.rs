@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::modal::{dock, wrap_spans};
-use super::{bold, cut, fg};
+use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
 use crate::shell::config::{distinct, Field, Pick, Settings, ROWS, SECTIONS};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
@@ -18,7 +18,6 @@ use crate::shell::Screen;
 /// The ground of the row under the cursor, and of the section whose page has it.
 const SEL_BG: Color = Color::Rgb(44, 36, 78);
 const REST_BG: Color = Color::Rgb(28, 32, 50);
-const SPINNER: [&str; 4] = ["|", "/", "—", "\\"];
 
 pub(super) fn config(f: &mut Frame, s: &Screen) {
     let st = s.settings.as_ref().unwrap();
