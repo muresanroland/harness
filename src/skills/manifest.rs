@@ -774,8 +774,7 @@ fn move_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result<(
         }
     }
     link(to, name)?;
-    relink(repo, name, &old, &new);
-    Ok(())
+    relink(repo, name, &old, &new)
 }
 
 /// Undoes move_skill, finished or cut short: the skill goes back, or its
@@ -799,13 +798,14 @@ fn unmove_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result
         }
     }
     link(from, name)?;
-    relink(repo, name, &new, &old);
-    Ok(())
+    relink(repo, name, &new, &old)
 }
 
 /// Points the Ticket worktrees' and Run directories' links to the skill at
-/// old to new.
-fn relink(repo: &Path, name: &str, old: &Path, new: &Path) {
+/// old to new. Tries them all, and gives the first that failed: that one
+/// still points to old.
+fn relink(repo: &Path, name: &str, old: &Path, new: &Path) -> io::Result<()> {
+    let mut failed = Ok(());
     for kind in ["worktrees", "runs"] {
         for dir in fs::read_dir(repo.join(".harness").join(kind))
             .into_iter()
@@ -814,13 +814,23 @@ fn relink(repo: &Path, name: &str, old: &Path, new: &Path) {
         {
             for sub in SUBS {
                 let link = dir.path().join(sub).join(name);
-                // Moved already, so a link that fails does not undo it.
                 if fs::read_link(&link).is_ok_and(|to| to == old) {
-                    let _ = fs::remove_file(&link).and_then(|()| symlink(new, &link));
+                    // Made beside it and renamed over it, so that a link
+                    // that fails is left as it was, not gone.
+                    let tmp = link.with_file_name(format!(".{name}.relink"));
+                    if let Err(err) = symlink(new, &tmp).and_then(|()| {
+                        fs::rename(&tmp, &link).inspect_err(|_| {
+                            let _ = fs::remove_file(&tmp);
+                        })
+                    }) {
+                        let err = io::Error::new(err.kind(), format!("{}: {err}", link.display()));
+                        failed = failed.and(Err(err));
+                    }
                 }
             }
         }
     }
+    failed
 }
 
 /// Where a Ticket's worktree and Run directory get the checkout's skills.

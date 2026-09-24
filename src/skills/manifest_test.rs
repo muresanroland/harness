@@ -789,6 +789,33 @@ fn relocating_relinks_the_worktrees_linked_to_the_checkouts_skills() {
 }
 
 #[test]
+fn relocating_puts_the_skills_back_when_a_worktree_link_cannot_change() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, home, tools) = installed_at(Location::Checkout);
+    let worktree = repo.path().join(".harness/worktrees/t-1");
+    let run = repo.path().join(".harness/runs/t-1");
+    link_checkout_skills(repo.path(), &[&worktree, &run]).unwrap();
+    let locked = worktree.join(".claude/skills");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Repo);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("tdd could not move"), "{said:?}");
+    assert_eq!(manifest.location, Some(Location::Checkout));
+    for dir in [&worktree, &run] {
+        for sub in [".claude/skills", ".agents/skills"] {
+            let skill = dir.join(sub).join("tdd/SKILL.md");
+            assert_eq!(
+                fs::read_to_string(&skill).ok().as_deref(),
+                Some(TDD),
+                "{skill:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn relocating_away_from_user_level_leaves_the_users_skill_for_other_checkouts() {
     let (repo, home, tools) = installed_at(Location::User);
     let mut manifest = Manifest::load(repo.path()).unwrap();
