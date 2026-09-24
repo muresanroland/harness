@@ -446,7 +446,6 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
             let right = stage.width() + label.width();
             let room = width.saturating_sub(right + 10);
             let name = cut(&format!("{} {}", suffix(&t.id), t.title), room);
-            let pad = width.saturating_sub(name.chars().count() + right + 8);
             let branch = if k + 1 == n {
                 "   └─ "
             } else {
@@ -455,8 +454,7 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
             lines.push(Line::from(vec![
                 Span::styled(branch, fg(dim)),
                 Span::styled(format!("{ind} "), bold(ic)),
-                Span::styled(name, fg(text)),
-                Span::raw(" ".repeat(pad)),
+                Span::styled(format!("{name:<room$}  "), fg(text)),
                 stage,
                 label,
             ]));

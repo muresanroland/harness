@@ -573,7 +573,8 @@ const SECTIONS: &str = r#"[
 
 /// The Shell over SECTIONS from a fake bd list, with the saved run on
 /// harness-a: 1 and 2 merged, 3's PR open, 4 and 6 running, 7 parked.
-fn sections_screen() -> Screen {
+/// `running`, the run is live and 4 is blocked on a question.
+fn sections_screen(running: bool) -> Screen {
     let fake = Fake::new(|_, _| Ok(SECTIONS.to_string()));
     let epics = super::load_epics(Path::new(""), &*fake).unwrap();
     let mut state = State {
@@ -603,13 +604,24 @@ fn sections_screen() -> Screen {
             },
         );
     }
-    Screen::new(
+    let mut s = Screen::new(
         Config::for_tests(fake, Path::new(""), Path::new("")),
         "~/harness".to_string(),
         true,
         epics,
         state,
-    )
+    );
+    if running {
+        s.running = true;
+        s.push(asking(
+            "harness-a.4",
+            "blocked in implement (pane 1-1)",
+            Ask::Blocked {
+                pane: "1-1".to_string(),
+            },
+        ));
+    }
+    s
 }
 
 /// The row where `text` first appears, right-trimmed.
@@ -620,7 +632,7 @@ fn row_of(buf: &Buffer, text: &str) -> String {
 
 #[test]
 fn idle_every_open_epic_is_a_rule_line_in_its_color_by_place_with_its_word() {
-    let s = sections_screen();
+    let s = sections_screen(false);
     let buf = render(&s, 120, 40);
     for (epic, color) in [
         ("▾ harness-a", PURPLE),
@@ -695,15 +707,7 @@ fn idle_every_open_epic_is_a_rule_line_in_its_color_by_place_with_its_word() {
 
 #[test]
 fn live_only_the_runs_epics_are_listed_with_each_label_and_its_stage() {
-    let mut s = sections_screen();
-    s.running = true;
-    s.push(asking(
-        "harness-a.4",
-        "blocked in implement (pane 1-1)",
-        Ask::Blocked {
-            pane: "1-1".to_string(),
-        },
-    ));
+    let s = sections_screen(true);
     let buf = render(&s, 120, 40);
     for other in ["harness-b", "harness-c", "harness-d"] {
         assert!(find(&buf, other).is_none(), "{other} is not in the run");
@@ -746,15 +750,7 @@ fn live_only_the_runs_epics_are_listed_with_each_label_and_its_stage() {
 
 #[test]
 fn the_live_status_row_counts_each_label_and_drops_its_glyphs_then_its_end_when_narrow() {
-    let mut s = sections_screen();
-    s.running = true;
-    s.push(asking(
-        "harness-a.4",
-        "blocked in implement (pane 1-1)",
-        Ask::Blocked {
-            pane: "1-1".to_string(),
-        },
-    ));
+    let mut s = sections_screen(true);
     let full = "| RUNNING  ● 1 working  ◆ 1 needs you  ◇ 1 waiting on a merge  ○ 1 to merge  ◌ 1 parked  ✓ 2 merged";
     let buf = render(&s, 120, 40);
     assert!(
