@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{stage_row, App};
+use super::app::{debate_inputs, stage_row, App};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
@@ -213,6 +213,7 @@ impl Orchestrator {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
+        debate_inputs(&cfg.repo, "").map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -664,6 +665,17 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
+        let run_dir = self.run_dir(ticket).display().to_string();
+        // The Moderator is given each Debate side's command, read now too.
+        let sides = match st.name == DEBATE.name {
+            true => match debate_inputs(&self.cfg.repo, &run_dir) {
+                Ok(sides) => sides,
+                Err(err) => return Held::Woke(err),
+            },
+            false => Vec::new(),
+        };
+        let mut inputs = inputs.to_vec();
+        inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
         let skill_path = self
             .cfg
             .repo
@@ -708,7 +720,6 @@ impl Orchestrator {
             Instant::now() + 6 * self.cfg.tick
         };
 
-        let run_dir = self.run_dir(ticket).display().to_string();
         let mut agent_args = if st.name == IMPLEMENT.name {
             // Implement plans first (harness-7bj.9), on claude alone
             // (stage_row): its own settings hold the hook that copies each
@@ -772,7 +783,7 @@ impl Orchestrator {
         // session still sitting at a dialog reads as idle the moment the call
         // returns, and an idle pane with no result file is indistinguishable
         // from a Stage that finished and forgot to write one.
-        let prompt = stage_prompt(&skill, inputs);
+        let prompt = stage_prompt(&skill, &inputs);
         if let Err(err) = self.herdr(&["agent", "prompt", &pane, &prompt]) {
             return Held::Woke(format!("never took the Stage skill: {err}"));
         }

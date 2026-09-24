@@ -2,10 +2,14 @@
 //! Verdict has no fix items or the cap, then the pull request.
 
 use std::fs;
+use std::path::Path;
 
-use super::result::ResultRequirements;
+use serde_json::json;
+
+use super::result::{read_stage_result, ResultRequirements, StageResult};
 use super::stage::{
-    plural, pr_ref, result_name, Orchestrator, StageError, DEBATE, FIX, IMPLEMENT, REVIEW,
+    plural, pr_ref, result_name, stage_label, Orchestrator, Stage, StageError, DEBATE, FIX,
+    IMPLEMENT, REVIEW,
 };
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
@@ -46,8 +50,9 @@ impl Orchestrator {
 
         let mut verdicts = Vec::new();
         for round in 1..=MAX_ROUNDS {
+            let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
             let review =
-                self.run_stage(ticket, &REVIEW, round, &[], ResultRequirements::default())?;
+                self.run_read_only(ticket, &REVIEW, round, &[], ResultRequirements::default())?;
             self.report(
                 ticket,
                 &format!(
@@ -55,8 +60,7 @@ impl Orchestrator {
                     plural(review.findings, "finding")
                 ),
             );
-            let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
-            let verdict = self.run_stage(
+            let verdict = self.run_read_only(
                 ticket,
                 &DEBATE,
                 round,
@@ -137,6 +141,125 @@ impl Orchestrator {
             self.prune_run_dir(ticket);
             return Ok(());
         }
+        Ok(())
+    }
+
+    /// Runs a Stage that must leave the worktree as it found it: the Review
+    /// and the Debate, whatever their App (not every App has a sandbox). The
+    /// HEAD and tree before it are saved in the Run directory once, before
+    /// the Stage first runs, so a resumed or retried Stage, or one parked by
+    /// its guard and continued, is compared with the tree it started from. A
+    /// Stage already done with no snapshot is not guarded: the tree may hold
+    /// a later Stage's work.
+    fn run_read_only(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        round: usize,
+        inputs: &[(&str, &str)],
+        want: ResultRequirements,
+    ) -> Result<StageResult, StageError> {
+        let label = stage_label(st, round);
+        let snapshot = self
+            .run_dir(ticket)
+            .join(format!("before-{}-{round}.json", st.name));
+        let file = self.run_dir(ticket).join(result_name(st, round));
+        let done = read_stage_result(&file, want).1.is_empty();
+        if !done && !snapshot.exists() {
+            if let Some(head) = self.head(ticket) {
+                let before = json!([head, self.tree(ticket)]).to_string();
+                fs::write(&snapshot, before).map_err(|err| {
+                    StageError::Parked(format!("{label}: worktree snapshot not saved: {err}"))
+                })?;
+            }
+        }
+        let result = self.run_stage(ticket, st, round, inputs, want);
+        if let Err(StageError::Parked(reason)) = &result {
+            // a parked Ticket may never continue: end its session, which
+            // could still write, and put its tree back now. Once back, the
+            // snapshot goes: a parked tree is the user's to edit, and a
+            // continued Stage starts fresh and is compared with what they
+            // left. A tree not put back keeps it, and the reason says so
+            if let Some(pane) = self.ticket(ticket).panes.get(st.name) {
+                let _ = self.herdr(&["pane", "close", pane]);
+                self.update(ticket, |ts| {
+                    ts.panes.remove(st.name);
+                });
+            }
+            if let Err(StageError::Parked(kept)) = self.guard(ticket, &label, &snapshot) {
+                return Err(StageError::Parked(format!("{reason}; {kept}")));
+            }
+            let _ = fs::remove_file(&snapshot);
+        }
+        let result = result?;
+        self.guard(ticket, &label, &snapshot)?;
+        let _ = fs::remove_file(&snapshot);
+        Ok(result)
+    }
+
+    /// The worktree's HEAD; None when git cannot say.
+    fn head(&self, ticket: &str) -> Option<String> {
+        let argv = ["git", "rev-parse", "HEAD"];
+        let head = self.cfg.tools.run(&self.worktree(ticket), &argv).ok()?;
+        Some(head.trim().to_string())
+    }
+
+    /// The worktree beyond its HEAD: `git status --porcelain`, the content
+    /// of each change to a tracked file and each untracked file's path and
+    /// hash, so an edit to a file already changed, or a rename inside an
+    /// untracked directory, shows too. Empty for a clean tree;
+    /// None when git cannot say.
+    fn tree(&self, ticket: &str) -> Option<String> {
+        let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
+        let git = |argv: &[&str]| tools.run(&worktree, argv).ok();
+        let status = git(&["git", "status", "--porcelain"])?;
+        let diff = git(&["git", "diff", "HEAD", "--binary"])?;
+        let untracked = git(&["git", "ls-files", "--others", "--exclude-standard", "-z"])?;
+        let mut hash = vec!["git", "hash-object", "--"];
+        hash.extend(untracked.split('\0').filter(|path| !path.is_empty()));
+        let hashes = match untracked.is_empty() {
+            true => String::new(),
+            false => git(&hash)?,
+        };
+        Some(
+            format!("{status}{diff}{untracked}{hashes}")
+                .trim()
+                .to_string(),
+        )
+    }
+
+    /// Puts back a worktree the Stage changed: a moved HEAD or a changed
+    /// tree is reset to the HEAD and clean tree in its snapshot. A tree
+    /// already dirty before the Stage holds work that is not the Stage's
+    /// (Implement's, a user's), so it is never reset: a change to it parks
+    /// the Ticket, as does a tree that cannot be put back, since Fix would
+    /// commit it. The snapshot is kept: the caller drops it once the tree
+    /// matches or is put back, so a Ticket parked here is guarded again.
+    fn guard(&self, ticket: &str, label: &str, snapshot: &Path) -> Result<(), StageError> {
+        let Some((head, tree)) = fs::read(snapshot)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<(String, Option<String>)>(&raw).ok())
+        else {
+            return Ok(());
+        };
+        let now = self.tree(ticket);
+        if now.is_some() && now == tree && self.head(ticket).as_ref() == Some(&head) {
+            return Ok(());
+        }
+        if tree.as_deref() != Some("") {
+            return Err(StageError::Parked(format!(
+                "{label} changed a worktree already dirty before it, not restored"
+            )));
+        }
+        let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
+        // -fd, not -fdx: ignored build caches stay
+        tools
+            .run(&worktree, &["git", "reset", "--hard", &head])
+            .and_then(|_| tools.run(&worktree, &["git", "clean", "-fd"]))
+            .map_err(|err| {
+                StageError::Parked(format!("{label} changed the worktree, not restored: {err}"))
+            })?;
+        self.report(ticket, &format!("{label} changed the worktree: restored"));
         Ok(())
     }
 
