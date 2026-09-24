@@ -153,10 +153,15 @@ impl Manifest {
         }
     }
 
+    /// Written to a temp file and renamed into place, so that a cut-short
+    /// write never leaves a manifest load() refuses.
     pub(crate) fn save(&self, repo: &Path) -> Result<(), String> {
         let text = serde_json::to_string_pretty(self).unwrap() + "\n";
+        let path = repo.join(MANIFEST);
+        let tmp = path.with_extension("json.tmp");
         fs::create_dir_all(repo.join(".harness"))
-            .and_then(|()| fs::write(repo.join(MANIFEST), text))
+            .and_then(|()| fs::write(&tmp, text))
+            .and_then(|()| fs::rename(&tmp, &path))
             .map_err(|err| format!("{MANIFEST}: {err}"))
     }
 }

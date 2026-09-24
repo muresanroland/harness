@@ -208,14 +208,13 @@ fn update_refetches_the_source_and_records_the_new_commit() {
 
 #[test]
 fn a_failed_save_leaves_update_and_remove_undone() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = TempDir::new();
     let remote = remote("abc123", TWO_SKILLS);
     let tools = git(&remote);
     add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap();
     let manifest = Manifest::load(repo.path()).unwrap();
-    let saved = repo.path().join(".harness/skills.json");
-    fs::set_permissions(&saved, fs::Permissions::from_mode(0o444)).unwrap();
+    // A folder where save writes its temp file makes every save fail.
+    fs::create_dir(repo.path().join(".harness/skills.json.tmp")).unwrap();
 
     *remote.lock().unwrap() = ("def456", vec![("skills/engineering/tdd/SKILL.md", "new")]);
     update(repo.path(), &*tools, "tdd").unwrap_err();
