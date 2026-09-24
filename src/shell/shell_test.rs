@@ -719,16 +719,8 @@ fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
 
     write_file(&file, r#"{"implement": {"app": "codex"}}"#);
     s.command("/start-epic hx");
-    assert_eq!(notice(&s), "Implement off claude needs the two-step Plan");
+    assert_eq!(notice(&s), "implement runs on claude only");
     assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
-
-    write_file(&file, r#"{"address": {"app": "codex"}}"#);
-    s.command("/start-epic hx");
-    assert_eq!(
-        notice(&s),
-        "Fix and Address off claude cannot commit or rebase"
-    );
-    assert!(s.run.is_none());
 }
 
 #[test]

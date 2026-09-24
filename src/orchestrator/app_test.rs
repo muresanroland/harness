@@ -107,19 +107,9 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
     for (body, label, reason) in [
         ("{ not json", "implement", None),
         (
-            r#"{"implement": {"app": "codex"}}"#,
-            "implement",
-            Some("Implement off claude needs the two-step Plan"),
-        ),
-        (
             r#"{"moderator": {"app": "codex"}}"#,
             "debate 1",
-            Some("the Moderator off claude has no network for its subprocesses"),
-        ),
-        (
-            r#"{"fix": {"app": "codex"}}"#,
-            "fix 1",
-            Some("Fix and Address off claude cannot commit or rebase"),
+            Some("moderator runs on claude only"),
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);

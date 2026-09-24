@@ -49,15 +49,6 @@ pub(crate) fn app(name: &str) -> Option<&'static App> {
     APPS.iter().find(|a| a.name == name)
 }
 
-/// The rows of .harness/config.json and the App each starts on.
-const ROWS: [(&str, &str); 5] = [
-    ("implement", "claude"),
-    ("review", "codex"),
-    ("moderator", "claude"),
-    ("fix", "claude"),
-    ("address", "claude"),
-];
-
 /// One Stage's row: its App, model and effort; "default" passes no flag.
 pub(crate) struct Row {
     pub(crate) app: &'static App,
@@ -112,10 +103,7 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     } else {
         st.name
     };
-    let (_, default) = ROWS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .expect("every Stage has a row");
+    let default = if key == "review" { "codex" } else { "claude" };
     let field = |name: &str, default: &str| {
         let value = doc[key][name].as_str().filter(|v| !v.is_empty());
         value.unwrap_or(default).to_string()
@@ -126,15 +114,8 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     // Off claude only the Review runs, until codex has the two-step Plan, the
     // network the Moderator's claude -p, codex exec and TypeSafe calls need,
     // and a Git write path: its sandbox keeps Git metadata read-only.
-    let refused = match key {
-        _ if app.name == "claude" => None,
-        "implement" => Some("Implement off claude needs the two-step Plan"),
-        "moderator" => Some("the Moderator off claude has no network for its subprocesses"),
-        "fix" | "address" => Some("Fix and Address off claude cannot commit or rebase"),
-        _ => None,
-    };
-    if let Some(why) = refused {
-        return Err(why.to_string());
+    if app.name != "claude" && key != "review" {
+        return Err(format!("{key} runs on claude only"));
     }
     Ok(Row {
         app,
