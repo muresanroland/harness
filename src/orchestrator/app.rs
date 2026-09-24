@@ -76,16 +76,20 @@ pub(crate) struct Row {
     pub(crate) app: &'static App,
     pub(crate) model: String,
     pub(crate) effort: String,
+    /// Implement's plan model on a split, one other than its model: the
+    /// session runs opusplan with the halves remapped (plan_settings).
+    pub(crate) plan_model: Option<String>,
 }
 
 impl Row {
     /// The model and effort args.
     pub(crate) fn flags(&self) -> Vec<String> {
+        let model = match self.plan_model {
+            Some(_) => "opusplan",
+            None => &self.model,
+        };
         let mut out = Vec::new();
-        for (form, value) in [
-            (self.app.model, &self.model),
-            (self.app.effort, &self.effort),
-        ] {
+        for (form, value) in [(self.app.model, model), (self.app.effort, &self.effort)] {
             if value != "default" {
                 out.extend(fill(form, value));
             }
@@ -93,9 +97,14 @@ impl Row {
         out
     }
 
-    /// As the started line names it: "claude", "claude opus/high".
+    /// As the started line names it: "claude", "claude opus/high", on a
+    /// split "claude claude-fable-5-1→claude-opus-5-5/high".
     pub(crate) fn said(&self) -> String {
-        match (self.model.as_str(), self.effort.as_str()) {
+        let model = match &self.plan_model {
+            Some(plan) => format!("{plan}→{}", self.model),
+            None => self.model.clone(),
+        };
+        match (model.as_str(), self.effort.as_str()) {
             ("default", "default") => self.app.name.to_string(),
             (model, "default") => format!("{} {model}", self.app.name),
             (model, effort) => format!("{} {model}/{effort}", self.app.name),
@@ -141,9 +150,30 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     if app.name != "claude" && key != "review" {
         return Err(format!("{key} runs on claude only"));
     }
+    let model = field("model", "default")?;
+    // A split: a plan model other than Implement's, not default.
+    let plan_model = match key {
+        "implement" => Some(field("plan_model", "default")?),
+        _ => None,
+    }
+    .filter(|plan| *plan != model && plan != "default");
+    // Full ids: opusplan's remap env takes no alias, and an alias for one
+    // half may resolve through the other's remap to the same model.
+    let full = |m: &str| m.starts_with("claude-");
+    if plan_model
+        .as_deref()
+        .is_some_and(|plan| !full(plan) || !full(&model))
+    {
+        return Err(format!(
+            "{}: implement plan_model splits from model: \
+             the split needs a full claude- model id for each half",
+            path.display()
+        ));
+    }
     Ok(Row {
         app,
-        model: field("model", "default")?,
+        model,
         effort: field("effort", "default")?,
+        plan_model,
     })
 }

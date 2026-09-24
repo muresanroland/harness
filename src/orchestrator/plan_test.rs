@@ -398,6 +398,117 @@ fn feedback_enters_only_on_tell_claude_what_to_change() {
     }
 }
 
+/// A split, a plan model other than Implement's, starts opusplan with its
+/// halves remapped in the settings, which also show the clear-context
+/// option and hold the switch hook; the plan is approved on that option,
+/// the cursor moved to it, up or down. No split keeps plain
+/// --model, today's settings, and enter on option 1.
+#[test]
+fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
+    let split = r#"{"implement": {"model": "claude-opus-5-5", "effort": "high", "plan_model": "claude-fable-5-1"}}"#;
+    let clear_second = [
+        "Yes, and use auto mode",
+        "Yes, clear context and use auto mode",
+        "Yes, manually approve edits",
+        "Tell Claude what to change",
+    ];
+    let mut clear_first = clear_second;
+    clear_first.swap(0, 1);
+    for (config, options, cursor, want) in [
+        (split, clear_second, 0, vec!["down", "enter"]),
+        (split, clear_second, 2, vec!["up", "enter"]),
+        (split, clear_first, 0, vec!["enter"]),
+        (
+            r#"{"implement": {"model": "opus", "effort": "high", "plan_model": "opus"}}"#,
+            clear_second,
+            0,
+            vec!["enter"],
+        ),
+        (
+            r#"{"implement": {"model": "opus", "effort": "high"}}"#,
+            clear_second,
+            0,
+            vec!["enter"],
+        ),
+    ] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        write_file(&w.repo.join(".harness/config.json"), config);
+        plans(&w, "idle");
+        bd_show(&w);
+        o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
+        w.lock().options = options.map(str::to_string).to_vec();
+        w.lock().cursor = cursor;
+        o.run_ticket("hx-1");
+        assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{config}");
+
+        let run = o.run_dir("hx-1");
+        let start = &w.called("herdr agent start h-hx-1-implement")[0];
+        let settings = fs::read_to_string(run.join("settings.json")).unwrap();
+        let settings: Value = serde_json::from_str(&settings).unwrap();
+        let plan_hook = json!([{ "matcher": "ExitPlanMode", "hooks": [{
+            "type": "command",
+            "command": format!("'/opt/the harness/harness' __plan-hook '{}'", run.join("plan.md").display()),
+        }] }]);
+        assert_eq!(keys(&w), want, "{config} {options:?}");
+        if config == split {
+            assert!(
+                start.ends_with(" --model opusplan --effort high"),
+                "{start}"
+            );
+            let log = w.repo.join(".harness/orchestrator.log");
+            assert_eq!(
+                settings,
+                json!({
+                    "env": {
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-fable-5-1",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-opus-5-5",
+                    },
+                    "showClearContextOnPlanAccept": true,
+                    "hooks": {
+                        "PreToolUse": plan_hook,
+                        "PostModelSwitch": [{ "hooks": [{
+                            "type": "command",
+                            "command": format!("'/opt/the harness/harness' __switch-hook '{}' 'hx-1'", log.display()),
+                        }] }],
+                    },
+                })
+            );
+            w.await_line(
+                "hx-1 implement started: claude claude-fable-5-1→claude-opus-5-5/high (pane 1-1)",
+            );
+        } else {
+            assert!(start.ends_with(" --model opus --effort high"), "{start}");
+            assert_eq!(settings, json!({ "hooks": { "PreToolUse": plan_hook } }));
+            w.await_line("hx-1 implement started: claude opus/high (pane 1-1)");
+        }
+    }
+}
+
+/// A split whose dialog shows no clear-context option gets no Enter: the
+/// cursor stops at the last option, and it is a plan failure for the user.
+#[test]
+fn a_split_with_no_clear_context_option_is_a_plan_failure() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "claude-fable-5-1"}}"#,
+    );
+    plans(&w, "idle");
+    o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let stuck =
+        w.await_event("stuck in implement: the cursor never reached Yes, clear context (pane 1-1)");
+    let Some(Ask::PlanFailed { pane, .. }) = stuck.ask else {
+        panic!("not a plan failure's Question: {stuck:?}");
+    };
+    assert_eq!(keys(&w), ["down", "down", "down"]);
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
+    assert_eq!(o.ticket("hx-1").status, STATUS_PARKED);
+}
+
 /// A plan that changes while the Noul judges it gets no Enter: the new one
 /// is judged, and only then approved.
 #[test]
