@@ -234,6 +234,30 @@ fn a_failed_save_leaves_update_and_remove_undone() {
 }
 
 #[test]
+fn update_stops_when_an_earlier_staging_folder_cannot_be_cleared() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = TempDir::new();
+    let remote = remote("abc123", TWO_SKILLS);
+    let tools = git(&remote);
+    add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap();
+    // An interrupted update's staging folder whose stale file cannot go.
+    let locked = repo.path().join(".agents/skills/.tdd.new/locked");
+    write_file(&locked.join("stale.md"), "stale");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+    *remote.lock().unwrap() = ("def456", vec![("skills/engineering/tdd/SKILL.md", TDD)]);
+    let result = update(repo.path(), &*tools, "tdd");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let err = result.unwrap_err();
+    assert!(err.contains(".tdd.new"), "{err}");
+    assert!(!repo.path().join(".agents/skills/tdd/locked").exists());
+    assert_eq!(
+        Manifest::load(repo.path()).unwrap().skills["tdd"].commit,
+        "abc123"
+    );
+}
+
+#[test]
 fn each_job_takes_its_default_until_a_pick_is_recorded() {
     let mut manifest = Manifest::default();
     for (job, default) in [

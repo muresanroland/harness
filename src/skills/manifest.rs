@@ -347,7 +347,14 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
     let at = repo.join(".agents/skills").join(name);
     let fresh = at.with_file_name(format!(".{name}.new"));
     let old = at.with_file_name(format!(".{name}.old"));
-    let _ = fs::remove_dir_all(&fresh);
+    // A staging folder an earlier update left that cannot be cleared would
+    // carry its stale files into the new copy.
+    match fs::remove_dir_all(&fresh) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => {
+            return Err(format!(".agents/skills/.{name}.new: {err}"))
+        }
+        _ => {}
+    }
     let _ = fs::remove_dir_all(&old);
     let swapped = copy_dir(&from, &fresh).and_then(|()| {
         if at.exists() {
