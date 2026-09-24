@@ -25,8 +25,7 @@ fn a_rows_model_and_effort_add_the_flags_on_claude_and_on_codex() {
         r#"{
   "implement": {"app": "claude", "model": "opus", "effort": "high"},
   "review": {"model": "gpt-6-sol", "effort": "low"},
-  "moderator": {"app": "codex"},
-  "fix": {"app": "codex", "model": "gpt-6-luna"}
+  "fix": {"model": "sonnet"}
 }"#,
     );
     o.run_ticket("hx-1");
@@ -41,23 +40,18 @@ fn a_rows_model_and_effort_add_the_flags_on_claude_and_on_codex() {
         argv(&w, "review"),
         "--sandbox workspace-write -m gpt-6-sol -c model_reasoning_effort=low"
     );
-    // A worktree Stage on codex; only Fix and Address get the network.
-    assert_eq!(
-        argv(&w, "debate"),
-        format!("--sandbox workspace-write -a never --add-dir {run}")
-    );
     assert_eq!(
         argv(&w, "fix"),
-        format!("--sandbox workspace-write -a never --add-dir {run} -c sandbox_workspace_write.network_access=true -m gpt-6-luna")
+        format!("--permission-mode auto --add-dir {run} --model sonnet")
     );
-    assert!(w.called("herdr agent start h-hx-1-fix")[0].contains("--kind codex"));
+    assert!(w.called("herdr agent start h-hx-1-review")[0].contains("--kind codex"));
     w.await_line("hx-1 implement started: claude opus/high (pane 1-1)");
     w.await_line("hx-1 review 1 started: codex gpt-6-sol/low (pane 1-2)");
-    w.await_line("hx-1 fix 1 started: codex gpt-6-luna (pane 1-4)");
+    w.await_line("hx-1 fix 1 started: claude sonnet (pane 1-4)");
 }
 
 /// A Review on claude starts in the Run directory with the worktree added,
-/// and each Stage waits on the trust of its own row's App.
+/// and waits on claude's trust, not on codex's, its default App's.
 #[test]
 fn a_review_on_claude_runs_in_the_run_directory_and_trust_is_read_through_the_rows_app() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -70,10 +64,7 @@ fn a_review_on_claude_runs_in_the_run_directory_and_trust_is_read_through_the_ro
         ),
     );
     o.cfg.home = home.path().to_path_buf();
-    config(
-        &w,
-        r#"{"review": {"app": "claude"}, "fix": {"app": "codex"}}"#,
-    );
+    config(&w, r#"{"review": {"app": "claude"}}"#);
     let o = Arc::new(o);
     let _run = spawn_ticket(o.clone(), "hx-1");
 
@@ -88,9 +79,6 @@ fn a_review_on_claude_runs_in_the_run_directory_and_trust_is_read_through_the_ro
         split.contains(&format!("--cwd {} ", o.run_dir("hx-1").display())),
         "{split}"
     );
-    w.await_line(&format!(
-        "hx-1 waiting: codex does not trust {worktree} yet"
-    ));
 }
 
 /// Running Stages keep theirs; the Stages that start after a change use it.
@@ -111,16 +99,27 @@ fn config_changed_between_two_stages_reaches_the_second() {
 }
 
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
-/// before any session starts: unreadable, naming the file, or Implement off
-/// claude.
+/// before its session starts: unreadable, naming the file, or a Stage other
+/// than the Review off claude.
 #[test]
-fn an_unreadable_config_or_implement_off_claude_wakes_the_stage_that_reads_it() {
+fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
     let file = |w: &World| w.repo.join(".harness/config.json").display().to_string();
-    for (body, reason) in [
-        ("{ not json", None),
+    for (body, label, reason) in [
+        ("{ not json", "implement", None),
         (
             r#"{"implement": {"app": "codex"}}"#,
+            "implement",
             Some("Implement off claude needs the two-step Plan"),
+        ),
+        (
+            r#"{"moderator": {"app": "codex"}}"#,
+            "debate 1",
+            Some("the Moderator off claude has no network for its subprocesses"),
+        ),
+        (
+            r#"{"fix": {"app": "codex"}}"#,
+            "fix 1",
+            Some("Fix and Address off claude cannot commit or rebase"),
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -129,7 +128,12 @@ fn an_unreadable_config_or_implement_off_claude_wakes_the_stage_that_reads_it() 
         let _run = spawn_ticket(o.clone(), "hx-1");
 
         let reason = reason.map_or_else(|| format!("{}: ", file(&w)), str::to_string);
-        w.await_line(&format!("hx-1 stuck in implement: {reason}"));
-        assert!(w.called("herdr agent start").is_empty(), "{body}");
+        w.await_line(&format!("hx-1 stuck in {label}: {reason}"));
+        let stage = label.split(' ').next().unwrap();
+        assert!(
+            w.called(&format!("herdr agent start h-hx-1-{stage}"))
+                .is_empty(),
+            "{body}"
+        );
     }
 }

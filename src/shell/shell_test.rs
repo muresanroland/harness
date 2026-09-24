@@ -704,7 +704,7 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
 /// .harness/config.json is read when a run starts: one no Stage can start
 /// on refuses the run, naming the file.
 #[test]
-fn an_unreadable_config_or_implement_off_claude_refuses_the_run() {
+fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     let file = w.repo.join(".harness/config.json");
     let mut s = shell(&w);
@@ -721,6 +721,14 @@ fn an_unreadable_config_or_implement_off_claude_refuses_the_run() {
     s.command("/start-epic hx");
     assert_eq!(notice(&s), "Implement off claude needs the two-step Plan");
     assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
+
+    write_file(&file, r#"{"address": {"app": "codex"}}"#);
+    s.command("/start-epic hx");
+    assert_eq!(
+        notice(&s),
+        "Fix and Address off claude cannot commit or rebase"
+    );
+    assert!(s.run.is_none());
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::stage::{Stage, DEBATE, IMPLEMENT};
+use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
 
 /// An agent CLI a Stage can run on: one row of the App table. In the arg
@@ -15,10 +15,6 @@ use super::trust::{claude_records, codex_records};
 pub(crate) struct App {
     /// Its name in config.json, and herdr's agent kind.
     pub(crate) name: &'static str,
-    #[allow(dead_code)] // preflight's check that the App is installed (harness-7nq.20)
-    pub(crate) binary: &'static str,
-    #[allow(dead_code)] // /config's not-installed window (harness-7nq.9)
-    pub(crate) homepage: &'static str,
     /// The unattended args of a Stage in the Ticket's worktree; "{}" is the
     /// Run directory.
     pub(crate) worktree_args: &'static [&'static str],
@@ -29,9 +25,6 @@ pub(crate) struct App {
     pub(crate) network: &'static [&'static str],
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
-    /// How a Stage skill names a Delegate skill.
-    #[allow(dead_code)] // the Stage skills' {{job}} lines (harness-7nq.19)
-    pub(crate) mention: &'static str,
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
@@ -40,20 +33,15 @@ pub(crate) struct App {
 pub(crate) static APPS: [App; 2] = [
     App {
         name: "claude",
-        binary: "claude",
-        homepage: "https://claude.com/product/claude-code",
         worktree_args: &["--permission-mode", "auto", "--add-dir", "{}"],
         run_dir_args: &["--permission-mode", "auto", "--add-dir", "{}"],
         network: &[],
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
-        mention: "the {} skill",
         trust: claude_records,
     },
     App {
         name: "codex",
-        binary: "codex",
-        homepage: "https://developers.openai.com/codex",
         worktree_args: &[
             "--sandbox",
             "workspace-write",
@@ -68,7 +56,6 @@ pub(crate) static APPS: [App; 2] = [
         network: &["-c", "sandbox_workspace_write.network_access=true"],
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
-        mention: "${}",
         trust: codex_records,
     },
 ];
@@ -79,15 +66,10 @@ pub(crate) fn app(name: &str) -> Option<&'static App> {
 }
 
 /// The rows of .harness/config.json and the App each starts on.
-const ROWS: [(&str, &str); 8] = [
+const ROWS: [(&str, &str); 5] = [
     ("implement", "claude"),
     ("review", "codex"),
-    ("review_if_limited", "none"), // read by Limited on the Review (harness-7nq.15)
     ("moderator", "claude"),
-    // the Debate's sides, read by harness-7nq.11; side A also runs the
-    // ponytail audit
-    ("side_a", "claude"),
-    ("side_b", "codex"),
     ("fix", "claude"),
     ("address", "claude"),
 ];
@@ -157,8 +139,18 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     let name = field("app", default);
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
-    if st.name == IMPLEMENT.name && app.name != "claude" {
-        return Err("Implement off claude needs the two-step Plan".to_string());
+    // Off claude only the Review runs, until codex has the two-step Plan, the
+    // network the Moderator's claude -p, codex exec and TypeSafe calls need,
+    // and a Git write path: its sandbox keeps Git metadata read-only.
+    let refused = match key {
+        _ if app.name == "claude" => None,
+        "implement" => Some("Implement off claude needs the two-step Plan"),
+        "moderator" => Some("the Moderator off claude has no network for its subprocesses"),
+        "fix" | "address" => Some("Fix and Address off claude cannot commit or rebase"),
+        _ => None,
+    };
+    if let Some(why) = refused {
+        return Err(why.to_string());
     }
     Ok(Row {
         app,
