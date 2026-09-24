@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::iter;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
@@ -229,36 +230,56 @@ impl Manifest {
     }
 
     /// Moves every skill the Harness installed here, the Shipped ones too,
-    /// with its link, to `to`, and records `to`. All or none: when a skill's
-    /// new place is taken, yours say, nothing moves, since a skill left
-    /// behind would leave the manifest naming what is there. Gives why
-    /// nothing moved, or each skill a failed move left where it was.
+    /// with its link, to `to`, and records `to`. A Shipped skill the repo has
+    /// committed stays, where init goes on writing it: moved, it would leave
+    /// deletions in the working tree. All or none otherwise: when a skill's
+    /// new place or its link is taken, yours say, nothing moves, since a
+    /// skill left behind would leave the manifest naming what is there. Gives
+    /// why nothing moved, or each skill left where it was and why.
     // ponytail: a user-level skill leaves ~ though another checkout may use
     // it too, and worktrees already prepared keep links to the old place;
     // copy, and relink them, should either bite.
-    pub(crate) fn relocate(&mut self, repo: &Path, home: &Path, to: Location) -> Vec<String> {
+    pub(crate) fn relocate(
+        &mut self,
+        repo: &Path,
+        home: &Path,
+        tools: &dyn Tools,
+        to: Location,
+    ) -> Vec<String> {
         let (from, place) = (self.place(repo, home), to.place(repo, home));
         if let Some(dir) = place.unowned(repo) {
             return vec![format!(
                 "{dir} is not the checkout's own folder: the skills stay where they were"
             )];
         }
-        let names: Vec<&String> = self
+        let (kept, names): (Vec<&String>, Vec<&String>) = self
             .skills
             .keys()
             .filter(|name| safe_name(name) && fs::symlink_metadata(from.skill(name)).is_ok())
-            .collect();
-        if let Some(taken) = names
-            .iter()
-            .map(|name| place.skill(name))
-            .find(|new| fs::symlink_metadata(new).is_ok())
-        {
+            .partition(|name| self.skills[*name].shipped && committed(repo, tools, &from, name));
+        // A link already to the new place is the Harness's own, left over.
+        if let Some(taken) = names.iter().find_map(|name| {
+            let link = place
+                .link(name)
+                .filter(|link| !fs::read_link(link).is_ok_and(|to| to == place.target(name)));
+            iter::once(place.skill(name))
+                .chain(link)
+                .find(|new| fs::symlink_metadata(new).is_ok())
+        }) {
             return vec![format!(
                 "{} is there already: the skills stay where they were",
                 taken.display()
             )];
         }
-        let mut stayed = Vec::new();
+        let mut stayed: Vec<String> = kept
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name} stays at {}: the repo has it committed",
+                    from.skill(name).display()
+                )
+            })
+            .collect();
         for name in names {
             if let Err(err) = move_skill(&from, &place, name) {
                 stayed.push(format!(
@@ -417,9 +438,8 @@ pub(crate) fn add(
         ));
     }
     let (at, link) = (place.skill(&name), place.link(&name));
-    if let Some(there) = [Some(&at), link.as_ref()]
-        .into_iter()
-        .flatten()
+    if let Some(there) = iter::once(&at)
+        .chain(&link)
         .find(|path| fs::symlink_metadata(path).is_ok())
     {
         return Err(format!(
@@ -534,12 +554,10 @@ pub(crate) fn remove(repo: &Path, home: &Path, name: &str) -> Result<(), String>
     // Only the link put makes is removed, not one the user put there instead,
     // and a failed save puts it back.
     let link = place.link(name).filter(|link| fs::read_link(link).is_ok());
-    if let (Some(_), Some(dir)) = (&link, place.links) {
-        if !place.owns(repo, dir) {
-            return Err(format!(
-                "{dir} is not the checkout's own folder: the Harness will not touch {name}"
-            ));
-        }
+    if let (Some(_), Some(dir)) = (&link, place.unowned(repo)) {
+        return Err(format!(
+            "{dir} is not the checkout's own folder: the Harness will not touch {name}"
+        ));
     }
     let link = link.filter(|link| fs::read_link(link).is_ok_and(|to| to == place.target(name)));
     if let Some(link) = &link {
@@ -709,7 +727,7 @@ fn put(place: &Place, from: &Path, name: &str) -> io::Result<()> {
 }
 
 /// Links the skill from its place's links folder, unless something is there.
-fn link(place: &Place, name: &str) -> io::Result<()> {
+pub(crate) fn link(place: &Place, name: &str) -> io::Result<()> {
     match place.link(name) {
         Some(link) if fs::symlink_metadata(&link).is_err() => {
             fs::create_dir_all(link.parent().unwrap())?;
@@ -717,6 +735,15 @@ fn link(place: &Place, name: &str) -> io::Result<()> {
         }
         _ => Ok(()),
     }
+}
+
+/// Whether git tracks the skill's folder at place, in the checkout.
+fn committed(repo: &Path, tools: &dyn Tools, place: &Place, name: &str) -> bool {
+    let dir = format!("{}/{name}", place.files);
+    place.root == repo
+        && tools
+            .run(repo, &["git", "ls-files", "--", &dir])
+            .is_ok_and(|files| !files.trim().is_empty())
 }
 
 /// Moves a skill's folder from one place to another, and its link with it.

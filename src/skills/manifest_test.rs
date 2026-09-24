@@ -1,6 +1,6 @@
 use super::manifest::{
-    add, list, parse_source, remove, update, update_all, Added, Installed, Manifest, Source, JOBS,
-    NONE,
+    add, list, parse_source, remove, update, update_all, Added, Installed, Location, Manifest,
+    Source, JOBS, NONE,
 };
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
@@ -722,4 +722,27 @@ fn add_installs_nothing_through_a_linked_agents_or_claude_folder() {
         );
         assert!(Manifest::load(repo.path()).unwrap().skills.is_empty());
     }
+}
+
+#[test]
+fn relocating_stops_at_a_claude_skill_of_yours_in_the_new_links_folder() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let tools = git(&remote("abc123", TWO_SKILLS));
+    add(
+        repo.path(),
+        home.path(),
+        &*tools,
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    let mine = home.path().join(".claude/skills/tdd/SKILL.md");
+    write_file(&mine, "mine");
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::User);
+    assert!(said[0].contains("is there already"), "{said:?}");
+    assert_eq!(manifest.location, None);
+    assert!(repo.path().join(".agents/skills/tdd/SKILL.md").exists());
+    assert!(!home.path().join(".agents/skills/tdd").exists());
+    assert_eq!(fs::read_to_string(&mine).unwrap(), "mine");
 }

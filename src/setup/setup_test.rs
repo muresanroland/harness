@@ -26,7 +26,16 @@ fn install(repo: &Path, answer: &str) -> String {
     let mut out = Vec::new();
     let home = TempDir::new();
     let mut keys = b"2".chain(answer.as_bytes());
-    install_skills(repo, home.path(), false, &mut out, &mut keys, false).unwrap();
+    install_skills(
+        repo,
+        home.path(),
+        &*Fake::quiet(),
+        false,
+        &mut out,
+        &mut keys,
+        false,
+    )
+    .unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -110,6 +119,7 @@ fn install_skills_force_skips_the_questions_and_keeps_the_repos_own_create_pr() 
     install_skills(
         repo.path(),
         home.path(),
+        &*Fake::quiet(),
         true,
         &mut out,
         &mut "2\n".as_bytes(),
@@ -150,6 +160,47 @@ fn install_skills_overwrite_keeps_the_repos_own_create_pr_beside_the_recorded_on
             .unwrap()
             .contains("name: harness-create-pr"),
         "overwrite left the edited harness-create-pr"
+    );
+}
+
+#[test]
+fn moving_an_older_install_leaves_the_shipped_skills_the_repo_committed() {
+    let repo = TempDir::new();
+    install(repo.path(), ""); // the repo Location: no gate yet
+                              // An older init kept only its record.
+    fs::remove_file(repo.path().join(".harness/skills.json")).unwrap();
+    // git tracks stage-fix alone.
+    let git = Fake::new(|_, argv| {
+        Ok(match argv {
+            ["git", "ls-files", "--", ".agents/skills/stage-fix"] => STAGE_FIX.to_string(),
+            _ => String::new(),
+        })
+    });
+    let (mut out, home) = (Vec::new(), TempDir::new());
+    // This checkout, then the gate on a closed stdin: cancel.
+    let went_on = install_skills(
+        repo.path(),
+        home.path(),
+        &*git,
+        false,
+        &mut out,
+        &mut "1".as_bytes(),
+        false,
+    )
+    .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(!went_on, "{out}");
+    assert!(out.contains("stage-fix stays at"), "{out}");
+    assert!(repo.path().join(STAGE_FIX).exists(), "{out}");
+    assert!(
+        repo.path()
+            .join(".harness/skills/stage-implement/SKILL.md")
+            .exists(),
+        "{out}"
+    );
+    assert_eq!(
+        Manifest::load(repo.path()).unwrap().location,
+        Some(Location::Checkout)
     );
 }
 

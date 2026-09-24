@@ -219,6 +219,7 @@ pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
     install_skills(
         &repo,
         &home,
+        &*crate::tools::fake::Fake::quiet(),
         false,
         &mut std::io::sink(),
         &mut std::io::empty(),

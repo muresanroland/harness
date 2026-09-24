@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{symlink, OpenOptionsExt};
+use std::iter;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::skills::manifest::{self, Installed, Location, Manifest, Place, JOBS, NONE};
@@ -25,7 +26,8 @@ enum Mode {
 }
 
 /// Asks where the skills go (Location), the current place the default, and
-/// moves the ones the Harness installed when the answer changes. Then writes
+/// moves the ones the Harness installed when the answer changes, but those
+/// the repo has committed (`tools` asks git). Then writes
 /// the Harness's skills there. When the shipped skills are already installed
 /// the gate asks first: cancel (false: nothing more touched), refresh only
 /// the files unedited since install (by the record), or overwrite
@@ -39,6 +41,7 @@ enum Mode {
 pub(crate) fn install_skills(
     repo: &Path,
     home: &Path,
+    tools: &dyn Tools,
     force: bool,
     out: &mut dyn Write,
     input: &mut dyn Read,
@@ -75,7 +78,7 @@ pub(crate) fn install_skills(
         ));
     }
     if location != current {
-        for stayed in manifest.relocate(repo, home, location) {
+        for stayed in manifest.relocate(repo, home, tools, location) {
             write!(out, "init: {stayed}\r\n")?;
         }
         manifest.save(repo).map_err(io::Error::other)?;
@@ -153,23 +156,17 @@ pub(crate) fn install_skills(
             record.insert(rel, body);
             manifest.skills.insert(name.to_string(), shipped());
         }
-        let Some(link) = at.link(name) else {
-            continue;
-        };
-        match fs::symlink_metadata(&link) {
-            Ok(meta) if name == pr && !meta.file_type().is_symlink() => {
-                writeln!(
-                    out,
-                    "init: {} is its own copy, not a link: remove it to use the shipped skill",
-                    link.display()
-                )?;
-            }
-            Ok(_) => {}
-            Err(_) => {
-                fs::create_dir_all(link.parent().unwrap())?;
-                symlink(at.target(name), link)?;
-            }
+        if let Some(link) = at.link(name).filter(|link| {
+            name == pr
+                && fs::symlink_metadata(link).is_ok_and(|meta| !meta.file_type().is_symlink())
+        }) {
+            writeln!(
+                out,
+                "init: {} is its own copy, not a link: remove it to use the shipped skill",
+                link.display()
+            )?;
         }
+        manifest::link(at, name)?;
     }
     fs::create_dir_all(repo.join(".harness"))?;
     fs::write(
@@ -242,9 +239,8 @@ pub(crate) fn install_defaults(
             continue;
         }
         if manifest.location == Some(Location::User)
-            && [Some(place.skill(name)), place.link(name)]
-                .into_iter()
-                .flatten()
+            && iter::once(place.skill(name))
+                .chain(place.link(name))
                 .any(|path| fs::symlink_metadata(path).is_ok())
         {
             writeln!(out, "init: keeping your {name} at user level")?;
@@ -553,15 +549,14 @@ pub(crate) fn warnings(
 /// Whether the skill is in the repo's .agents/skills or .claude/skills, or at
 /// the place init puts skills.
 fn has_skill(repo: &Path, place: &Place, name: &str) -> bool {
-    let repo_dirs = [".agents/skills", ".claude/skills"].map(|dir| repo.join(dir).join(name));
-    repo_dirs
-        .into_iter()
-        .chain(
-            [Some(place.skill(name)), place.link(name)]
-                .into_iter()
-                .flatten(),
-        )
-        .any(|dir| dir.join("SKILL.md").exists())
+    [
+        repo.join(".agents/skills").join(name),
+        repo.join(".claude/skills").join(name),
+        place.skill(name),
+    ]
+    .into_iter()
+    .chain(place.link(name))
+    .any(|dir| dir.join("SKILL.md").exists())
 }
 
 /// Prints each missing prerequisite and returns the exit code.

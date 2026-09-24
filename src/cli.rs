@@ -48,14 +48,15 @@ pub fn run(
                 None => &mut silent,
             };
             let home = PathBuf::from(env("HOME"));
-            let asked = match setup::install_skills(repo, &home, force, out, &mut *input, tty) {
-                Ok(false) => return 0, // cancelled at the gate: nothing else runs
-                Ok(true) => {
-                    setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input, tty)
-                        .and_then(|()| setup::install_defaults(repo, &home, &*tools, out))
-                }
-                Err(err) => Err(err),
-            };
+            let asked =
+                match setup::install_skills(repo, &home, &*tools, force, out, &mut *input, tty) {
+                    Ok(false) => return 0, // cancelled at the gate: nothing else runs
+                    Ok(true) => {
+                        setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input, tty)
+                            .and_then(|()| setup::install_defaults(repo, &home, &*tools, out))
+                    }
+                    Err(err) => Err(err),
+                };
             if let Err(err) = asked {
                 let _ = writeln!(out, "init: {err}");
                 return 1;

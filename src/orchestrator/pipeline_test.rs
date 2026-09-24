@@ -253,3 +253,20 @@ fn a_prepared_worktree_links_the_checkouts_skills_and_hides_the_links() {
         assert!(exclude.lines().any(|l| l == line), "{line}:\n{exclude}");
     }
 }
+
+#[test]
+fn a_resumed_tickets_worktree_is_linked_too() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    // Made before init put the skills in the checkout, say.
+    std::fs::create_dir_all(o.worktree("hx-1")).unwrap();
+    w.session(succeed);
+
+    o.run_ticket("hx-1");
+
+    let link = o.worktree("hx-1").join(".claude/skills/stage-implement");
+    assert_eq!(
+        std::fs::read_link(&link).ok(),
+        Some(w.repo.join(".harness/skills/stage-implement")),
+        "{link:?}"
+    );
+}
