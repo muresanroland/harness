@@ -1,6 +1,6 @@
 use super::herdr::PaneInfo;
 use super::state::STATUS_PR_OPEN;
-use super::world::{new_world, succeed, BdTicket, Prompt, World};
+use super::world::{new_world, spawn_ticket, succeed, BdTicket, Prompt, World};
 use super::write_file;
 use std::sync::{Arc, Mutex};
 
@@ -257,6 +257,41 @@ fn a_review_or_debate_that_dirties_or_commits_the_worktree_is_restored_and_says_
             w.await_line("hx-1 PR #hx-1 opened");
         }
     }
+}
+
+/// A Review parked after it dirtied the worktree has the tree put back at
+/// once, since the Ticket may never continue; the snapshot stays for the
+/// resumed Review's guard.
+#[test]
+fn a_review_parked_after_dirtying_the_worktree_is_restored_at_once() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    let status = Arc::new(Mutex::new(String::new()));
+    let changed = status.clone();
+    w.session(move |p| {
+        if p.stage != "review" {
+            return succeed(p);
+        }
+        *changed.lock().unwrap() = " M src/lib.rs\n".to_string();
+        (String::new(), "blocked".to_string())
+    });
+    w.hook(move |_, argv| match argv {
+        ["git", "status", "--porcelain"] => Some(Ok(status.lock().unwrap().clone())),
+        ["git", "reset", "--hard", _] => {
+            status.lock().unwrap().clear();
+            Some(Ok(String::new()))
+        }
+        _ => None,
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 waiting at a prompt in review 1");
+    o.command("park-hx-1");
+    run.wait();
+
+    w.await_line("hx-1 review 1 changed the worktree: restored");
+    w.await_line("hx-1 parked: by you at review 1");
+    assert_eq!(w.called("git clean -fd").len(), 1);
+    assert!(o.run_dir("hx-1").join("before-review-1.json").exists());
 }
 
 /// A Ticket parked because its Review changed a worktree already dirty is
