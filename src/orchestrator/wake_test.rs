@@ -463,3 +463,23 @@ fn a_blocked_session_is_parked_by_you_or_carries_on() {
     run.wait();
     assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
 }
+
+/// An unreadable preferred Stage skill wakes with its path, rather than
+/// falling through to a lower copy or reading as missing.
+#[test]
+fn an_unreadable_stage_skill_wakes_naming_it() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    let skill = w.repo.join(".agents/skills/stage-implement/SKILL.md");
+    std::fs::create_dir_all(&skill).unwrap(); // a directory cannot be read
+    w.session(succeed);
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    w.await_line(&format!(
+        "hx-1 stuck in implement: cannot read {}",
+        skill.display()
+    ));
+    o.command("park-hx-1");
+    run.wait();
+    assert_eq!(o.ticket("hx-1").status, STATUS_PARKED);
+}

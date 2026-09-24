@@ -218,6 +218,59 @@ fn open_pr_prunes_build_scratch_and_keeps_evidence() {
     }
 }
 
+#[test]
+fn a_prepared_worktree_links_the_checkouts_skills_and_hides_the_links() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    // The Review runs in the Run directory, pruned once the PR is open: look
+    // while it runs.
+    let review = o.run_dir("hx-1").join(".agents/skills/stage-review");
+    let seen = Arc::new(Mutex::new(false));
+    let saw = seen.clone();
+    w.session(move |p| {
+        *saw.lock().unwrap() |= review.join("SKILL.md").exists();
+        succeed(p)
+    });
+
+    o.run_ticket("hx-1");
+
+    assert!(*seen.lock().unwrap(), "the Run directory got no links");
+
+    // The fake world's init put the skills in the checkout.
+    let skill = w.repo.join(".harness/skills/stage-implement");
+    for sub in [".claude/skills", ".agents/skills"] {
+        let link = o.worktree("hx-1").join(sub).join("stage-implement");
+        assert_eq!(
+            std::fs::read_link(&link).ok(),
+            Some(skill.clone()),
+            "{link:?}"
+        );
+    }
+    let exclude = std::fs::read_to_string(w.repo.join(".git/info/exclude")).unwrap_or_default();
+    for line in [
+        "/.claude/skills/stage-implement",
+        "/.agents/skills/stage-implement",
+    ] {
+        assert!(exclude.lines().any(|l| l == line), "{line}:\n{exclude}");
+    }
+}
+
+#[test]
+fn a_resumed_tickets_worktree_is_linked_too() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    // Made before init put the skills in the checkout, say.
+    std::fs::create_dir_all(o.worktree("hx-1")).unwrap();
+    w.session(succeed);
+
+    o.run_ticket("hx-1");
+
+    let link = o.worktree("hx-1").join(".claude/skills/stage-implement");
+    assert_eq!(
+        std::fs::read_link(&link).ok(),
+        Some(w.repo.join(".harness/skills/stage-implement")),
+        "{link:?}"
+    );
+}
+
 /// A Review or a Debate that leaves the worktree dirty, or commits, is put
 /// back to the HEAD recorded before it through git, and said on RECENT.
 #[test]

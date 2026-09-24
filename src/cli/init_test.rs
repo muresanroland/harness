@@ -1,10 +1,12 @@
 use super::run;
+use crate::orchestrator::write_file;
+use crate::skills::manifest::{Location, Manifest, JOBS};
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
 use crate::tools::Tools;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const SKILL_NAMES: [&str; 5] = [
@@ -25,14 +27,116 @@ pub(super) fn prepared_repo() -> TempDir {
     repo
 }
 
+/// Every prerequisite there, and a git whose every clone holds every job's
+/// default at its path in the source, at commit abc123.
 pub(super) fn ok_tools() -> Arc<dyn Tools> {
     Fake::new(|_, argv| {
-        Ok(if argv.join(" ") == "git remote" {
-            "origin\n".to_string()
-        } else {
-            String::new()
-        })
+        if argv.contains(&"clone") {
+            let dest = Path::new(argv.last().unwrap());
+            for (_, suggestions) in JOBS {
+                let (name, source) = suggestions[0];
+                if let Some(path) = source.splitn(3, '/').nth(2) {
+                    write_file(
+                        &dest.join(path).join("SKILL.md"),
+                        &format!("---\nname: {name}\n---\n"),
+                    );
+                }
+            }
+        }
+        Ok(match argv.join(" ").as_str() {
+            "git remote" => "origin\n",
+            "git rev-parse HEAD" => "abc123\n",
+            _ => "",
+        }
+        .to_string())
     })
+}
+
+/// herdr_env with HOME at home.
+fn env_home(home: &Path) -> impl Fn(&str) -> String {
+    let home = home.display().to_string();
+    move |key: &str| {
+        if key == "HOME" {
+            home.clone()
+        } else {
+            herdr_env(key)
+        }
+    }
+}
+
+/// init with each key its own read, as a terminal delivers them.
+fn init_keys(repo: &Path, home: &Path, keys: &[&str]) -> (i32, String) {
+    let mut input: Box<dyn Read> = Box::new(std::io::empty());
+    for key in keys.iter().rev() {
+        input = Box::new(key.as_bytes().chain(input));
+    }
+    let mut out = Vec::new();
+    let code = run(
+        &["init".to_string()],
+        &mut out,
+        Some(&mut input),
+        repo,
+        ok_tools(),
+        &env_home(home),
+    );
+    (code, String::from_utf8(out).unwrap())
+}
+
+/// Where a Location puts a skill: its folder, and its link if it has one.
+fn placed(repo: &Path, home: &Path, answer: &str, name: &str) -> (PathBuf, Option<PathBuf>) {
+    match answer {
+        "2" => (
+            repo.join(".agents/skills").join(name),
+            Some(repo.join(".claude/skills").join(name)),
+        ),
+        "3" => (
+            home.join(".agents/skills").join(name),
+            Some(home.join(".claude/skills").join(name)),
+        ),
+        _ => (repo.join(".harness/skills").join(name), None),
+    }
+}
+
+#[test]
+fn each_location_writes_where_it_says_and_no_answer_takes_the_checkout() {
+    for (answer, location) in [
+        ("", Location::Checkout),
+        ("1", Location::Checkout),
+        ("2", Location::Repo),
+        ("3", Location::User),
+    ] {
+        let (repo, home) = (prepared_repo(), TempDir::new());
+        let (code, out) = init_keys(repo.path(), home.path(), &[answer]);
+        assert_eq!(code, 0, "{answer:?}: init exit {code}:\n{out}");
+        let manifest = Manifest::load(repo.path()).unwrap();
+        assert_eq!(manifest.location, Some(location), "{answer:?}");
+        // A Shipped skill and a job's default, pinned by its commit.
+        for name in ["stage-implement", "tdd"] {
+            let (dir, link) = placed(repo.path(), home.path(), answer, name);
+            let text = fs::read_to_string(dir.join("SKILL.md"))
+                .unwrap_or_else(|err| panic!("{answer:?}: {name} not in {dir:?}: {err}"));
+            assert!(
+                text.contains(&format!("name: {name}")),
+                "{answer:?}: {text}"
+            );
+            if let Some(link) = link {
+                assert_eq!(
+                    fs::read_to_string(link.join("SKILL.md")).unwrap(),
+                    text,
+                    "{answer:?}: {name} not linked"
+                );
+            }
+        }
+        assert_eq!(manifest.skills["tdd"].commit, "abc123", "{answer:?}");
+        assert!(manifest.skills["stage-implement"].shipped, "{answer:?}");
+        for elsewhere in [
+            ".agents/skills/stage-implement",
+            ".claude/skills/stage-implement",
+        ] {
+            let there = fs::symlink_metadata(repo.path().join(elsewhere)).is_ok();
+            assert_eq!(there, location == Location::Repo, "{answer:?}: {elsewhere}");
+        }
+    }
 }
 
 pub(super) fn herdr_env(key: &str) -> String {
@@ -59,8 +163,8 @@ pub(super) fn run_with(
 
 #[test]
 fn init_installs_skills_with_working_symlinks() {
-    let repo = prepared_repo();
-    let (code, out) = run_with(&["init"], repo.path(), ok_tools(), &herdr_env);
+    let (repo, home) = (prepared_repo(), TempDir::new());
+    let (code, out) = init_keys(repo.path(), home.path(), &["2"]); // in the repo
     assert_eq!(code, 0, "init exit {code}:\n{out}");
     for name in SKILL_NAMES {
         let link = repo.path().join(".claude/skills").join(name);
@@ -87,7 +191,7 @@ fn init_installs_skills_with_working_symlinks() {
 fn init_keeps_edited_skill_unless_forced() {
     let repo = prepared_repo();
     run_with(&["init"], repo.path(), ok_tools(), &herdr_env);
-    let skill = repo.path().join(".agents/skills/stage-fix/SKILL.md");
+    let skill = repo.path().join(".harness/skills/stage-fix/SKILL.md");
     let shipped = fs::read_to_string(&skill).unwrap();
     fs::write(&skill, "edited in the Target repo").unwrap();
     let ignore_before = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
@@ -142,7 +246,7 @@ fn init_installs_create_pr_and_keeps_the_repos_own() {
     fs::remove_dir_all(fresh.path().join(".agents/skills/create-pr")).unwrap();
     let (code, _) = run_with(&["init"], fresh.path(), ok_tools(), &herdr_env);
     assert_eq!(code, 0, "init exit {code}");
-    let got = fs::read_to_string(fresh.path().join(".claude/skills/create-pr/SKILL.md"));
+    let got = fs::read_to_string(fresh.path().join(".harness/skills/create-pr/SKILL.md"));
     assert!(
         got.as_ref()
             .is_ok_and(|got| got.contains("name: create-pr")),
@@ -197,11 +301,12 @@ fn init_asks_for_the_typesafe_key_and_preflight_warns_without_one() {
         "warned with the variable set:\n{out}"
     );
 
-    // Typed on init's stdin after the gate's answer (its own keystroke, as a
-    // terminal delivers it), the key is kept in the repo.
+    // Typed on init's stdin after the answers to where and to the gate (each
+    // its own keystroke, as a terminal delivers them), the key is kept in the
+    // repo.
     let args = ["init".to_string()];
     let mut out = Vec::new();
-    let mut keys = b"2".chain(&b"sk-typed\n"[..]);
+    let mut keys = b"\r".chain(&b"2"[..]).chain(&b"sk-typed\n"[..]);
     let code = run(
         &args,
         &mut out,
@@ -222,4 +327,88 @@ fn init_asks_for_the_typesafe_key_and_preflight_warns_without_one() {
         !out.contains("no TypeSafe key"),
         "warned with the key kept:\n{out}"
     );
+}
+
+#[test]
+fn rerunning_init_with_another_answer_moves_the_installed_skills() {
+    let (repo, home) = (prepared_repo(), TempDir::new());
+    fs::remove_dir_all(repo.path().join(".agents/skills/create-pr")).unwrap(); // the shipped one, then
+    init_keys(repo.path(), home.path(), &["1"]);
+    let mut was = "1";
+    for (answer, location) in [("2", Location::Repo), ("3", Location::User)] {
+        // Asked where, the gate after it takes no answer: cancel.
+        let (code, out) = init_keys(repo.path(), home.path(), &[answer]);
+        assert_eq!(code, 0, "{answer:?}: init exit {code}:\n{out}");
+        assert_eq!(
+            Manifest::load(repo.path()).unwrap().location,
+            Some(location),
+            "{answer:?}"
+        );
+        for name in ["stage-implement", "create-pr", "tdd"] {
+            let (dir, link) = placed(repo.path(), home.path(), answer, name);
+            let via = link.unwrap_or(dir.clone());
+            assert!(
+                fs::read_to_string(via.join("SKILL.md")).is_ok_and(|text| text.contains(name)),
+                "{answer:?}: {name} not moved to {via:?}:\n{out}"
+            );
+            let (old, old_link) = placed(repo.path(), home.path(), was, name);
+            assert!(!old.exists(), "{answer:?}: {name} left at {old:?}");
+            if let Some(old_link) = old_link {
+                assert!(
+                    fs::symlink_metadata(&old_link).is_err(),
+                    "{answer:?}: {old_link:?} stayed"
+                );
+            }
+        }
+        was = answer;
+    }
+}
+
+#[test]
+fn at_user_level_a_skill_of_yours_is_not_overwritten() {
+    let (repo, home) = (prepared_repo(), TempDir::new());
+    let mine = home.path().join(".agents/skills/tdd/SKILL.md");
+    write_file(&mine, "---\nname: tdd\n---\nmine\n");
+    let (code, out) = init_keys(repo.path(), home.path(), &["3"]);
+    assert_eq!(code, 0, "init exit {code}:\n{out}");
+    assert_eq!(
+        fs::read_to_string(&mine).unwrap(),
+        "---\nname: tdd\n---\nmine\n"
+    );
+    assert!(out.contains("keeping your tdd"), "{out}");
+    // Linked for Claude, which reads ~/.claude/skills only.
+    assert_eq!(
+        fs::read_to_string(home.path().join(".claude/skills/tdd/SKILL.md")).unwrap(),
+        "---\nname: tdd\n---\nmine\n"
+    );
+    let manifest = Manifest::load(repo.path()).unwrap();
+    assert!(
+        !manifest.skills.contains_key("tdd"),
+        "{:?}",
+        manifest.skills
+    );
+    assert!(manifest.skills.contains_key("code-review"));
+
+    // Moved there later, yours stays too, and so does everything else: a
+    // skill left behind would leave the manifest naming yours.
+    let (repo, home) = (prepared_repo(), TempDir::new());
+    init_keys(repo.path(), home.path(), &["1"]);
+    let mine = home.path().join(".agents/skills/tdd/SKILL.md");
+    write_file(&mine, "---\nname: tdd\n---\nmine\n");
+    let (_, out) = init_keys(repo.path(), home.path(), &["3"]);
+    assert!(out.contains("is there already"), "{out}");
+    assert_eq!(
+        fs::read_to_string(&mine).unwrap(),
+        "---\nname: tdd\n---\nmine\n"
+    );
+    assert_eq!(
+        Manifest::load(repo.path()).unwrap().location,
+        Some(Location::Checkout)
+    );
+    for name in ["tdd", "stage-implement"] {
+        assert!(
+            repo.path().join(".harness/skills").join(name).exists(),
+            "{name} moved"
+        );
+    }
 }

@@ -221,16 +221,18 @@ pub(crate) struct World {
 pub(crate) fn new_world(tickets: Vec<BdTicket>) -> (Arc<World>, Orchestrator) {
     let repo_dir = TempDir::new();
     let repo = repo_dir.path().to_path_buf();
+    let home_dir = trust_home(&repo);
+    let home = home_dir.path().to_path_buf();
     install_skills(
         &repo,
+        &home,
+        &*crate::tools::fake::Fake::quiet(),
         false,
         &mut std::io::sink(),
         &mut std::io::empty(),
         false,
     )
     .unwrap();
-    let home_dir = trust_home(&repo);
-    let home = home_dir.path().to_path_buf();
     let tickets = tickets
         .into_iter()
         .map(|t| BdTicket {

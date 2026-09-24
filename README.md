@@ -47,10 +47,17 @@ A Target repo is the repository whose Epic you want worked on. Once, from a herd
 harness init
 ```
 
-`init` does three things:
-- It installs the Stage skills and `create-pr` into `.agents/skills`, linked from `.claude/skills`. They are yours to edit from then on, and running `init` again asks before touching them.
+`init` does these things:
+- It asks where the skills go:
+  - this checkout, uncommitted: this is the default, and what a non-interactive `init` takes. The skills go in `.harness/skills`, and each Ticket's worktree gets links to them that git ignores.
+  - the repo, committed: the skills go in `.agents/skills`, linked from `.claude/skills`. You commit them.
+  - user level: the skills go in `~/.agents/skills`, linked from `~/.claude/skills`.
+
+  Running `init` again asks again, with the current place as the default, and moves the skills it installed.
+- It installs the Stage skills and `create-pr` there. They are yours to edit from then on, and running `init` again asks before touching them. If the repo already has them committed in `.agents/skills`, those stay.
 - It asks for the TypeSafe key. Press Enter to use `TYPESAFE_API_KEY`, or paste a key, which it keeps in `.harness/typesafe-key`.
-- It runs a preflight that reports anything still missing: the `bd` workspace, `gh` auth, the git remote, the `create-pr` skill, or herdr.
+- It installs each job's default skill, pinned by commit: `tdd`, `code-review`, `ponytail`, `caveman`, `ponytail-review` and `resolving-merge-conflicts`. At user level, a skill of the same name you already have stays as it is.
+- It runs a preflight that reports anything still missing: the `bd` workspace, `gh` auth, the git remote, the `create-pr` skill, a job's skill, or herdr. It also warns about a personal skill that shadows an installed one on Claude, and about the superpowers plugin being enabled.
 
 `.harness/` is added to `.gitignore`.
 

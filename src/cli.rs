@@ -1,7 +1,7 @@
 //! The harness command line.
 
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::orchestrator::stage::log_line;
@@ -11,7 +11,7 @@ use crate::tools::Tools;
 const USAGE: &str = "usage: harness [command]
 
   (no command)                open the Shell, which runs the Epics
-  init [--force]              install the shipped skills, keep the TypeSafe key and preflight the Target repo
+  init [--force]              install the shipped skills and every job's default, keep the TypeSafe key and preflight the Target repo
   --version                   print the version
 ";
 
@@ -48,13 +48,16 @@ pub fn run(
                 None if tty => &mut stdin,
                 None => &mut silent,
             };
-            let asked = match setup::install_skills(repo, force, out, &mut *input, tty) {
-                Ok(false) => return 0, // cancelled at the gate: nothing else runs
-                Ok(true) => {
-                    setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input, tty)
-                }
-                Err(err) => Err(err),
-            };
+            let home = PathBuf::from(env("HOME"));
+            let asked =
+                match setup::install_skills(repo, &home, &*tools, force, out, &mut *input, tty) {
+                    Ok(false) => return 0, // cancelled at the gate: nothing else runs
+                    Ok(true) => {
+                        setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input, tty)
+                            .and_then(|()| setup::install_defaults(repo, &home, &*tools, out))
+                    }
+                    Err(err) => Err(err),
+                };
             if let Err(err) = asked {
                 let _ = writeln!(out, "init: {err}");
                 return 1;
@@ -134,8 +137,9 @@ fn hook_input(input: &mut dyn Read) -> Result<serde_json::Value, String> {
     serde_json::from_str(&raw).map_err(|err| err.to_string())
 }
 
-/// Prints what is missing and returns the exit code. A missing TypeSafe key is
-/// a warning, not a failure: the run works with the user as the judge.
+/// Prints the warnings and what is missing, and returns the exit code. A
+/// missing TypeSafe key is a warning, not a failure: the run works with the
+/// user as the judge.
 fn preflight(
     out: &mut dyn Write,
     repo: &Path,
@@ -147,6 +151,9 @@ fn preflight(
             out,
             "preflight: no TypeSafe key: every Wake will be a Question"
         );
+    }
+    for warning in setup::warnings(repo, tools, env) {
+        let _ = writeln!(out, "preflight: {warning}");
     }
     setup::report_missing(out, &setup::preflight(repo, tools, env))
 }
