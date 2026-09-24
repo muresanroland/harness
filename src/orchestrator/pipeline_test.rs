@@ -305,6 +305,37 @@ fn a_review_parked_after_dirtying_the_worktree_is_restored_at_once() {
     assert_eq!(w.called("git clean -fd").len(), 1, "user edit reset");
 }
 
+/// A Review parked after changing a worktree it cannot put back says so in
+/// the park reason, and keeps its snapshot for the continued Review.
+#[test]
+fn a_parked_review_whose_tree_is_not_restored_says_so() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    let tree = Arc::new(Mutex::new(" M src/lib.rs\n"));
+    let reviewed = tree.clone();
+    w.session(move |p| {
+        if p.stage != "review" {
+            return succeed(p);
+        }
+        *reviewed.lock().unwrap() = " M src/lib.rs\n M src/main.rs\n";
+        (String::new(), "blocked".to_string())
+    });
+    w.hook(move |_, argv| match argv {
+        ["git", "status", "--porcelain"] => Some(Ok(tree.lock().unwrap().to_string())),
+        _ => None,
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 waiting at a prompt in review 1");
+    o.command("park-hx-1");
+    run.wait();
+
+    w.await_line(
+        "hx-1 parked: by you at review 1; \
+         review 1 changed a worktree already dirty before it, not restored",
+    );
+    assert!(o.run_dir("hx-1").join("before-review-1.json").exists());
+}
+
 /// A Ticket parked because its Review changed a worktree already dirty is
 /// guarded again when continued, though its Review is done: it parks again,
 /// with no Debate, until the tree is put back by hand.

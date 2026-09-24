@@ -174,13 +174,15 @@ impl Orchestrator {
             }
         }
         let result = self.run_stage(ticket, st, round, inputs, want);
-        if matches!(result, Err(StageError::Parked(_))) {
+        if let Err(StageError::Parked(reason)) = &result {
             // a parked Ticket may never continue: put its tree back now. Once
             // back, the snapshot goes: a parked tree is the user's to edit,
-            // and a continued Stage is compared with what they left
-            if self.guard(ticket, &label, &snapshot).is_ok() {
-                let _ = fs::remove_file(&snapshot);
+            // and a continued Stage is compared with what they left. A tree
+            // not put back keeps it, and the reason says so
+            if let Err(StageError::Parked(kept)) = self.guard(ticket, &label, &snapshot) {
+                return Err(StageError::Parked(format!("{reason}; {kept}")));
             }
+            let _ = fs::remove_file(&snapshot);
         }
         let result = result?;
         self.guard(ticket, &label, &snapshot)?;
