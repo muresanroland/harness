@@ -11,6 +11,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -267,6 +268,7 @@ impl Screen {
             max: DEFAULT_MAX,
             log: Arc::new(Mutex::new(Box::new(io::sink()))),
             events: mpsc::channel().0,
+            clock: Arc::new(chrono::Local::now),
             #[cfg(test)]
             timeout: None,
             #[cfg(test)]
@@ -422,7 +424,10 @@ impl Screen {
         self.questions.retain(|q| q.ticket.is_none()); // never saved: derived again on resume
         self.composing = false;
         if run.o.stopping() {
-            self.say("stopped, panes left running, /continue resumes");
+            // a long usage limit has said it closed the panes
+            if !run.o.closed.load(Ordering::SeqCst) {
+                self.say("stopped, panes left running, /continue resumes");
+            }
         } else if run.failed {
             self.state = load_state(&self.cfg.repo).unwrap_or_default();
         } else if run.epic {

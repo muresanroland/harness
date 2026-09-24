@@ -365,7 +365,7 @@ impl Orchestrator {
             Err(StageError::Parked(reason)) => {
                 self.report(ticket, &format!("address gave up: {reason}"));
             }
-            Err(StageError::Stopped) => {}
+            Err(StageError::Stopped) => self.close_on_limit(ticket),
         }
     }
 }

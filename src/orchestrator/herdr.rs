@@ -106,6 +106,26 @@ impl Orchestrator {
         format!("(pane {at})")
     }
 
+    /// The last `lines` lines of the agent's output, its target a pane id
+    /// or an agent's name; empty when herdr cannot say.
+    pub(crate) fn tail(&self, target: &str, lines: usize) -> String {
+        let lines = lines.to_string();
+        let read = [
+            "herdr",
+            "agent",
+            "read",
+            target,
+            "--source",
+            "recent-unwrapped",
+            "--lines",
+            &lines,
+        ];
+        self.cfg
+            .tools
+            .run(&self.cfg.repo, &read)
+            .unwrap_or_default()
+    }
+
     /// The herdr lifecycle state of the agent in a pane; None when no agent
     /// lives there any more.
     pub(crate) fn agent_status(&self, pane_id: &str) -> Option<String> {

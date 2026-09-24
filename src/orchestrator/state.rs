@@ -52,6 +52,9 @@ pub(crate) struct TicketState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub(crate) conflict: bool,
+    /// The App whose usage limit holds the Ticket, while it holds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) limited: String,
 }
 
 /// A Stage's session: the App it runs on, and the id herdr's integration
@@ -69,6 +72,10 @@ pub(crate) struct State {
     pub(crate) epic: String,
     #[serde(default, deserialize_with = "null_is_empty")]
     pub(crate) tickets: BTreeMap<String, TicketState>,
+    /// App name -> when its usage limit resets: no Stage starts on it until
+    /// then, in this run or a /continue after the Harness closed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) limits: BTreeMap<String, chrono::DateTime<chrono::Local>>,
 }
 
 fn is_zero(n: &usize) -> bool {

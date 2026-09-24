@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use serde_json::json;
 
@@ -28,7 +29,8 @@ impl Orchestrator {
     /// stopped.
     pub(crate) fn run_ticket(&self, ticket: &str) {
         match self.pipeline(ticket) {
-            Ok(()) | Err(StageError::Stopped) => {}
+            Ok(()) => {}
+            Err(StageError::Stopped) => self.close_on_limit(ticket),
             Err(StageError::Parked(reason)) => {
                 self.update(ticket, |ts| {
                     ts.status = STATUS_PARKED.to_string();
@@ -144,6 +146,20 @@ impl Orchestrator {
             return Ok(());
         }
         Ok(())
+    }
+
+    /// A Ticket leaving a run a long usage limit ended closes its tab; its
+    /// session ids stay saved, so /continue resumes each Stage by its id.
+    pub(super) fn close_on_limit(&self, ticket: &str) {
+        let tab = self.ticket(ticket).tab;
+        if !self.closed.load(Ordering::SeqCst) || tab.is_empty() {
+            return;
+        }
+        let _ = self.herdr(&["tab", "close", &tab]);
+        self.update(ticket, |ts| {
+            ts.tab.clear();
+            ts.panes.clear();
+        });
     }
 
     /// Runs a Stage that must leave the worktree as it found it: the Review

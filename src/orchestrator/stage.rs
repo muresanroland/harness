@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use super::app::{debate_inputs, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
+use super::limit::{Limit, LAST_LINES};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
 use super::state::{load_state, Session, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
@@ -67,6 +68,8 @@ pub(super) enum Held {
     Stopped,
     /// The Stage cannot advance, for this reason: a Wake.
     Woke(String),
+    /// Its session stopped at this usage limit: never a Wake.
+    Limited(Limit),
 }
 
 /// What a panel line asks of the user; the Shell puts it as a Question.
@@ -170,6 +173,8 @@ pub(crate) struct Config {
     pub(crate) log: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Every Event, for the Shell's RECENT panel; a dropped receiver is tolerated.
     pub(crate) events: Sender<Event>,
+    /// The wall clock usage-limit resets are read against; the tests set it.
+    pub(crate) clock: Arc<dyn Fn() -> chrono::DateTime<chrono::Local> + Send + Sync>,
     /// Every Stage's deadline in the tests; None is the Stage table's.
     #[cfg(test)]
     pub(crate) timeout: Option<Duration>,
@@ -187,6 +192,9 @@ pub(crate) struct Orchestrator {
     pub(crate) state: Mutex<State>,
     /// /stop-work arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
+    /// A long usage limit ended the run: each Ticket closes its tab as it
+    /// leaves.
+    pub(crate) closed: AtomicBool,
     /// The Shell's commands waiting to be consumed: retry-<ticket>,
     /// park-<ticket>, address-<ticket>. Stop is the flag above.
     pub(crate) commands: Mutex<Vec<String>>,
@@ -200,6 +208,9 @@ pub(crate) struct Orchestrator {
     /// with other text is a newer one. In memory, so a restarted run judges
     /// the plan on screen again.
     pub(super) plans: Mutex<BTreeMap<String, String>>,
+    /// Pane -> the limit line its session was resumed from, which is not
+    /// read as a limit again.
+    pub(super) resumed: Mutex<BTreeMap<String, String>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
     /// failure on one fails the test.
     #[cfg(test)]
@@ -225,11 +236,13 @@ impl Orchestrator {
             cfg,
             state: Mutex::new(state),
             stop: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             commands: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
             deadlines: Mutex::new(BTreeMap::new()),
             plans: Mutex::new(BTreeMap::new()),
+            resumed: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             threads: Mutex::new(Vec::new()),
         }
@@ -425,15 +438,23 @@ impl Orchestrator {
 
     /// Changes one Ticket's state and writes the state file.
     pub(crate) fn update(&self, ticket: &str, change: impl FnOnce(&mut TicketState)) {
+        self.change_state(|state| {
+            change(
+                state
+                    .tickets
+                    .entry(ticket.to_string())
+                    .or_insert_with(|| TicketState {
+                        status: STATUS_RUNNING.to_string(),
+                        ..Default::default()
+                    }),
+            )
+        });
+    }
+
+    /// Changes the state and writes the state file.
+    pub(super) fn change_state(&self, change: impl FnOnce(&mut State)) {
         let mut state = self.state.lock().unwrap();
-        let ts = state
-            .tickets
-            .entry(ticket.to_string())
-            .or_insert_with(|| TicketState {
-                status: STATUS_RUNNING.to_string(),
-                ..Default::default()
-            });
-        change(ts);
+        change(&mut state);
         let saved = state.save(&self.cfg.repo);
         drop(state);
         if let Err(err) = saved {
@@ -561,6 +582,11 @@ impl Orchestrator {
             .get(st.name)
             .filter(|s| resumed && live.is_none() && !s.id.is_empty())
         {
+            match self.wait_limit(ticket, &label, &session.app) {
+                Some(Held::Park) => return Err(StageError::Parked(format!("by you at {label}"))),
+                Some(_) => return Err(StageError::Stopped),
+                None => {}
+            }
             match self.resume(ticket, st, &label, session) {
                 Ok(pane) => live = Some(pane),
                 Err(err) => self.log(
@@ -579,7 +605,7 @@ impl Orchestrator {
                 if self.stopping() {
                     return Err(StageError::Stopped);
                 }
-                let reason = match held {
+                let (reason, shown) = match held {
                     Held::Done(result) => return Ok(result),
                     Held::Stopped => return Err(StageError::Stopped),
                     Held::Park => return Err(StageError::Parked(format!("by you at {label}"))),
@@ -588,10 +614,17 @@ impl Orchestrator {
                         retry = true;
                         break;
                     }
-                    Held::Woke(reason) => reason,
+                    Held::Limited(limit) => (String::new(), Some(limit)),
+                    Held::Woke(reason) => (reason, None),
                 };
                 let ts = self.ticket(ticket);
                 let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
+                let tail = self.tail(&name, 120);
+                // A usage limit is never a Wake: the Ticket holds until the reset.
+                if let Some(limit) = shown.or_else(|| self.limit_shown(&ts, st, &pane, &tail)) {
+                    held = self.limited(ticket, st, &label, &pane, &file, want, limit);
+                    continue;
+                }
                 let alive = self.agent_status(&pane).is_some();
                 let actions = offered(&ts, &reason, alive);
                 if actions == [Action::Park] {
@@ -603,21 +636,6 @@ impl Orchestrator {
                 self.consume(&format!("retry-{ticket}"));
                 self.consume(&format!("park-{ticket}"));
                 self.take_answer(ticket, None);
-                let read = [
-                    "herdr",
-                    "agent",
-                    "read",
-                    &name,
-                    "--source",
-                    "recent-unwrapped",
-                    "--lines",
-                    "120",
-                ];
-                let tail = self
-                    .cfg
-                    .tools
-                    .run(&self.cfg.repo, &read)
-                    .unwrap_or_default();
                 let judged = self.judge(ticket, &ts, &reason, &file, &tail, &actions);
                 if self.stopping() {
                     return Err(StageError::Stopped); // a late Judgment is not acted on
@@ -682,6 +700,10 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
+        // No Stage starts on a Limited App.
+        if let Some(held) = self.wait_limit(ticket, label, row.app.name) {
+            return held;
+        }
         let run_dir = self.run_dir(ticket).display().to_string();
         // The Moderator is given each Debate side's command, read now too.
         let sides = match st.name == DEBATE.name {
@@ -970,14 +992,19 @@ impl Orchestrator {
     }
 
     /// A blocked session: Implement at its plan dialog with a plan newer
-    /// than the last judged is a plan ready (plan.rs); anything else is the
-    /// ordinary blocked Question.
+    /// than the last judged is a plan ready (plan.rs); one at a usage limit
+    /// (Claude's options menu) is Limited; anything else is the ordinary
+    /// blocked Question.
     fn wait_unblocked(&self, ticket: &str, st: &Stage, label: &str, pane: &str) -> Option<Held> {
         self.take_answer(ticket, None); // an answer sent before this prompt is not for it
         if st.name == IMPLEMENT.name {
             if let Some(plan) = self.plan_ready(ticket, pane) {
                 return self.plan(ticket, st, label, pane, plan);
             }
+        }
+        let tail = self.tail(pane, LAST_LINES);
+        if let Some(limit) = self.limit_shown(&self.ticket(ticket), st, pane, &tail) {
+            return Some(Held::Limited(limit));
         }
         self.blocked(ticket, st, label, pane, &self.locate(pane))
     }
@@ -1032,7 +1059,7 @@ impl Orchestrator {
     /// or runs out of time, and a prompt it stops at is a blocked session
     /// as in any Stage.
     #[allow(clippy::too_many_arguments)]
-    fn hold(
+    pub(super) fn hold(
         &self,
         ticket: &str,
         st: &Stage,
@@ -1127,7 +1154,7 @@ impl Orchestrator {
     /// /continue resumes it by once the pane is gone. Saved only while herdr
     /// still names the Stage's own agent in that pane, so another agent's
     /// id is never resumed as the Stage's.
-    fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
+    pub(super) fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
         let agent = self.herdr(&["agent", "get", pane]).ok()?.result.agent;
         let id = agent.agent_session.map(|s| s.value).unwrap_or_default();
         if !id.is_empty()
@@ -1268,6 +1295,7 @@ impl Config {
             max: 3,
             log: Arc::new(Mutex::new(Box::new(io::sink()))),
             events: std::sync::mpsc::channel().0,
+            clock: Arc::new(chrono::Local::now),
             timeout: None,
             wait: None,
         }

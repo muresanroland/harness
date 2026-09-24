@@ -1,5 +1,6 @@
 use super::state::{acquire_lock, load_state, lock_holder, Session, State, TicketState};
 use crate::tempdir::TempDir;
+use chrono::TimeZone;
 use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -139,8 +140,14 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
             waits: 2,
             feedback: "cover y too".to_string(),
             conflict: true,
+            limited: "codex".to_string(),
         },
     );
+    // Each App's limit, kept for a /continue after the Harness closed.
+    let reset = chrono::Local
+        .with_ymd_and_hms(2026, 9, 28, 0, 0, 0)
+        .unwrap();
+    state.limits.insert("claude".to_string(), reset);
     state.save(repo.path()).unwrap();
     let raw = fs::read_to_string(repo.path().join(".harness/state.json")).unwrap();
     for field in [
@@ -153,6 +160,8 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
         "\"waits\"",
         "\"feedback\"",
         "\"conflict_reported\"",
+        "\"limited\"",
+        "\"limits\"",
     ] {
         assert!(raw.contains(field), "saved state lacks {field}:\n{raw}");
     }
