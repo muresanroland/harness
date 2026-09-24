@@ -221,8 +221,19 @@ fn open_pr_prunes_build_scratch_and_keeps_evidence() {
 #[test]
 fn a_prepared_worktree_links_the_checkouts_skills_and_hides_the_links() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    // The Review runs in the Run directory, pruned once the PR is open: look
+    // while it runs.
+    let review = o.run_dir("hx-1").join(".agents/skills/stage-review");
+    let seen = Arc::new(Mutex::new(false));
+    let saw = seen.clone();
+    w.session(move |p| {
+        *saw.lock().unwrap() |= review.join("SKILL.md").exists();
+        succeed(p)
+    });
 
     o.run_ticket("hx-1");
+
+    assert!(*seen.lock().unwrap(), "the Run directory got no links");
 
     // The fake world's init put the skills in the checkout.
     let skill = w.repo.join(".harness/skills/stage-implement");

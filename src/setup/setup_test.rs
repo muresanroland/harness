@@ -393,10 +393,22 @@ fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
         Vec::<String>::new()
     );
 
-    // A pick you have anywhere, at user level here, is there.
+    // A pick you have anywhere, at user level here, is there. One not a
+    // job's default is /config's to install.
     manifest.picks.insert("test-first".into(), "tdd".into());
+    manifest
+        .picks
+        .insert("prose".into(), "caveman-commit".into());
     manifest.save(repo.path()).unwrap();
-    assert_eq!(picks_missing(repo.path(), home.path()).len(), 1);
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        [
+            "the test first skill tdd is missing: harness init installs it, or /config picks another",
+            "the prose skill caveman-commit is missing: /config installs it, or picks another",
+        ]
+    );
+    manifest.picks.insert("prose".into(), NONE.into());
+    manifest.save(repo.path()).unwrap();
     write_file(&home.path().join(".claude/skills/tdd/SKILL.md"), "yours");
     assert_eq!(
         picks_missing(repo.path(), home.path()),

@@ -383,4 +383,27 @@ fn at_user_level_a_skill_of_yours_is_not_overwritten() {
         manifest.skills
     );
     assert!(manifest.skills.contains_key("code-review"));
+
+    // Moved there later, yours stays too, and so does everything else: a
+    // skill left behind would leave the manifest naming yours.
+    let (repo, home) = (prepared_repo(), TempDir::new());
+    init_keys(repo.path(), home.path(), &["1"]);
+    let mine = home.path().join(".agents/skills/tdd/SKILL.md");
+    write_file(&mine, "---\nname: tdd\n---\nmine\n");
+    let (_, out) = init_keys(repo.path(), home.path(), &["3"]);
+    assert!(out.contains("is there already"), "{out}");
+    assert_eq!(
+        fs::read_to_string(&mine).unwrap(),
+        "---\nname: tdd\n---\nmine\n"
+    );
+    assert_eq!(
+        Manifest::load(repo.path()).unwrap().location,
+        Some(Location::Checkout)
+    );
+    for name in ["tdd", "stage-implement"] {
+        assert!(
+            repo.path().join(".harness/skills").join(name).exists(),
+            "{name} moved"
+        );
+    }
 }

@@ -69,6 +69,11 @@ pub(crate) fn install_skills(
     } else {
         ask_location(out, &mut *input, tty, current)?
     };
+    if location == Location::User && home.as_os_str().is_empty() {
+        return Err(io::Error::other(
+            "no HOME, so no user level to put the skills in",
+        ));
+    }
     if location != current {
         for stayed in manifest.relocate(repo, home, location) {
             write!(out, "init: {stayed}\r\n")?;
@@ -491,10 +496,13 @@ pub(crate) fn preflight(
                     .iter()
                     .any(|&(name, source)| name == pick && source.is_empty());
                 if pick != NONE && !built_in && !have.iter().any(|name| name == pick) {
-                    missing.push(format!(
-                        "the {} skill {pick} is missing: harness init installs it, or /config picks another",
-                        said(job)
-                    ));
+                    // init installs only the default
+                    let fix = if pick == suggestions[0].0 {
+                        "harness init installs it, or /config picks another"
+                    } else {
+                        "/config installs it, or picks another"
+                    };
+                    missing.push(format!("the {} skill {pick} is missing: {fix}", said(job)));
                 }
             }
         }

@@ -229,9 +229,10 @@ impl Manifest {
     }
 
     /// Moves every skill the Harness installed here, the Shipped ones too,
-    /// with its link, to `to`, and records `to`. A skill whose new place is
-    /// taken, or that cannot be moved, stays where it was: each such is given
-    /// with why.
+    /// with its link, to `to`, and records `to`. All or none: when a skill's
+    /// new place is taken, yours say, nothing moves, since a skill left
+    /// behind would leave the manifest naming what is there. Gives why
+    /// nothing moved, or each skill a failed move left where it was.
     // ponytail: a user-level skill leaves ~ though another checkout may use
     // it too, and worktrees already prepared keep links to the old place;
     // copy, and relink them, should either bite.
@@ -242,14 +243,28 @@ impl Manifest {
                 "{dir} is not the checkout's own folder: the skills stay where they were"
             )];
         }
+        let names: Vec<&String> = self
+            .skills
+            .keys()
+            .filter(|name| safe_name(name) && fs::symlink_metadata(from.skill(name)).is_ok())
+            .collect();
+        if let Some(taken) = names
+            .iter()
+            .map(|name| place.skill(name))
+            .find(|new| fs::symlink_metadata(new).is_ok())
+        {
+            return vec![format!(
+                "{} is there already: the skills stay where they were",
+                taken.display()
+            )];
+        }
         let mut stayed = Vec::new();
-        for name in self.skills.keys().filter(|name| safe_name(name)) {
-            let old = from.skill(name);
-            if fs::symlink_metadata(&old).is_err() {
-                continue; // nothing there to move
-            }
+        for name in names {
             if let Err(err) = move_skill(&from, &place, name) {
-                stayed.push(format!("{name} stays at {}: {err}", old.display()));
+                stayed.push(format!(
+                    "{name} stays at {}: {err}",
+                    from.skill(name).display()
+                ));
             }
         }
         self.location = Some(to);
@@ -461,7 +476,7 @@ pub(crate) fn update(
     // carry its stale files into the new copy.
     match fs::remove_dir_all(&fresh) {
         Err(err) if err.kind() != io::ErrorKind::NotFound => {
-            return Err(format!("{}/.{name}.new: {err}", place.files))
+            return Err(format!("{}: {err}", fresh.display()))
         }
         _ => {}
     }
@@ -476,7 +491,7 @@ pub(crate) fn update(
     });
     if let Err(err) = swapped {
         let _ = fs::remove_dir_all(&fresh);
-        return Err(format!("{}/{name}: {err}", place.files));
+        return Err(format!("{}: {err}", at.display()));
     }
     // The old copy goes only once the manifest records the new commit: a
     // failed save puts it back.
@@ -546,7 +561,7 @@ pub(crate) fn remove(repo: &Path, home: &Path, name: &str) -> Result<(), String>
     } else {
         Ok(())
     }
-    .map_err(|err| format!("{}/{name}: {err}", place.files))
+    .map_err(|err| format!("{}: {err}", at.display()))
     .and_then(|()| {
         manifest.save(repo).inspect_err(|_| {
             let _ = fs::rename(&old, &at);
@@ -707,12 +722,6 @@ fn link(place: &Place, name: &str) -> io::Result<()> {
 /// Moves a skill's folder from one place to another, and its link with it.
 fn move_skill(from: &Place, to: &Place, name: &str) -> io::Result<()> {
     let (old, new) = (from.skill(name), to.skill(name));
-    if fs::symlink_metadata(&new).is_ok() {
-        return Err(io::Error::other(format!(
-            "{} is there already",
-            new.display()
-        )));
-    }
     fs::create_dir_all(new.parent().unwrap())?;
     // Across filesystems, as from a checkout to ~, rename cannot.
     fs::rename(&old, &new)
@@ -741,9 +750,20 @@ pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()
         .filter(|name| safe_name(name)) // not update's staging folders
         .collect();
     names.sort();
-    let mut hidden = Vec::new();
+    const SUBS: [&str; 2] = [".claude/skills", ".agents/skills"];
+    if names.is_empty() {
+        return Ok(());
+    }
+    // Hidden first, so that no link git would see is ever made.
+    // ponytail: a Target checkout whose .git is a file (itself a worktree)
+    // gets no links; ask git rev-parse --git-path info/exclude if one does.
+    let hidden: Vec<String> = names
+        .iter()
+        .flat_map(|name| SUBS.map(|sub| format!("/{sub}/{name}")))
+        .collect();
+    crate::setup::add_lines(&repo.join(".git/info/exclude"), &hidden)?;
     for name in &names {
-        for sub in [".claude/skills", ".agents/skills"] {
+        for sub in SUBS {
             for dir in dirs {
                 let link = dir.join(sub).join(name);
                 if fs::symlink_metadata(&link).is_err() {
@@ -751,13 +771,9 @@ pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()
                     symlink(from.join(name), link)?;
                 }
             }
-            hidden.push(format!("/{sub}/{name}"));
         }
     }
-    if hidden.is_empty() {
-        return Ok(());
-    }
-    crate::setup::add_lines(&repo.join(".git/info/exclude"), &hidden)
+    Ok(())
 }
 
 /// Copies files and folders only, so that a link in the clone cannot pull in

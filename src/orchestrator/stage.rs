@@ -157,7 +157,8 @@ pub(crate) struct Config {
     pub(crate) exe: PathBuf,
     /// The seam to TypeSafe, which the Wake Judgment asks.
     pub(crate) typesafe: Arc<dyn TypeSafe>,
-    /// Where the agents record which directories they trust.
+    /// Where the agents record which directories they trust, and the
+    /// user-level skills are.
     pub(crate) home: PathBuf,
     /// How often holds, commands and bd are polled.
     pub(crate) tick: Duration,
