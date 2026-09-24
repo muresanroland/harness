@@ -396,18 +396,7 @@ fn list_keys(s: &Screen) -> Vec<&str> {
 fn the_slash_list_filters_the_command_table_and_fills_in() {
     let mut s = screen();
     type_in(&mut s, "/");
-    let all = [
-        "/start-epic",
-        "/start-ticket",
-        "/continue",
-        "/stop-work",
-        "/retry",
-        "/park",
-        "/address",
-        "/questions",
-        "/exit",
-    ];
-    assert_eq!(list_keys(&s), all);
+    assert_eq!(list_keys(&s), super::COMMANDS.map(|c| c.0));
     type_in(&mut s, "pa");
     assert_eq!(list_keys(&s), ["/park"]);
     s.key(key(KeyCode::Tab));
