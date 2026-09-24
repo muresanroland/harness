@@ -25,6 +25,10 @@ pub(crate) struct TicketState {
     /// Stage name -> pane id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) panes: BTreeMap<String, String>,
+    /// Stage name -> the session its pane runs, which /continue resumes by
+    /// id once the pane is gone.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) sessions: BTreeMap<String, Session>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) pr: String,
     /// Why it is Parked.
@@ -48,6 +52,15 @@ pub(crate) struct TicketState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub(crate) conflict: bool,
+}
+
+/// A Stage's session: the App it runs on, and the id herdr's integration
+/// reports for it (empty without one).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Session {
+    pub(crate) app: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) id: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

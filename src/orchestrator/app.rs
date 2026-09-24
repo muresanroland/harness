@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
 
@@ -20,6 +21,11 @@ pub(crate) struct App {
     pub(crate) run_dir_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
+    pub(crate) resume: &'static [&'static str],
+    /// The headless read-only command a Debate side and the audit run,
+    /// before the model and effort args; the brief follows. "{}" is the Run
+    /// directory, where the diff is.
+    pub(crate) side: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
@@ -53,6 +59,23 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
+        resume: &["--resume", "{}"],
+        // Only the read-only tools, named, so a tool added later is out too:
+        // a shell or other code-running tool runs unsandboxed here and can
+        // write an ignored file or a path outside the worktree that the
+        // Moderator's git guard cannot put back. The tool list takes every
+        // arg up to the next flag: before -p it cannot take the brief as a
+        // tool. It starts in the worktree: the Run directory, a sibling that
+        // holds the diff, is granted on its own, as the Moderator's grant is
+        // not passed on.
+        side: &[
+            "claude",
+            "--tools",
+            "Read,Grep,Glob,Skill",
+            "--add-dir",
+            "{}",
+            "-p",
+        ],
         trust: claude_records,
     },
     App {
@@ -62,6 +85,8 @@ pub(crate) static APPS: [App; 2] = [
         run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
+        resume: &["resume", "{}"],
+        side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
     },
 ];
@@ -97,6 +122,23 @@ impl Row {
         out
     }
 
+    /// The args that resume session `id`, ahead of the Stage's own.
+    pub(crate) fn resume(&self, id: &str) -> Vec<String> {
+        fill(self.app.resume, id)
+    }
+
+    /// The headless read-only command, as one shell line: every arg single
+    /// quoted, since a model id like claude-opus-5-5[1m] is a glob to the
+    /// shell.
+    pub(crate) fn side_command(&self, run_dir: &str) -> String {
+        fill(self.app.side, run_dir)
+            .into_iter()
+            .chain(self.flags())
+            .map(|arg| quoted(&arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// As the started line names it: "claude", "claude opus/high", on a
     /// split "claude claude-fable-5-1→claude-opus-5-5/high".
     pub(crate) fn said(&self) -> String {
@@ -117,10 +159,32 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
 }
 
+/// The Moderator's Inputs, read as the Debate starts: each side's command
+/// from its row. The audit runs on side A's.
+pub(crate) fn debate_inputs(
+    repo: &Path,
+    run_dir: &str,
+) -> Result<Vec<(&'static str, String)>, String> {
+    Ok(vec![
+        ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
+        ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
+    ])
+}
+
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
 /// change reaches the Stages that start after it. A missing file, row or
 /// field, or an empty one, is the default; a field not a string refuses.
 pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
+    let key = if st.name == DEBATE.name {
+        "moderator"
+    } else {
+        st.name
+    };
+    row(repo, key)
+}
+
+/// The row under key: a Stage's, or a Debate side's (side_a, side_b).
+fn row(repo: &Path, key: &str) -> Result<Row, String> {
     let path = repo.join(".harness").join("config.json");
     let doc: Value = match fs::read(&path) {
         Ok(raw) => {
@@ -129,12 +193,11 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Value::Null,
         Err(err) => return Err(format!("{}: {err}", path.display())),
     };
-    let key = if st.name == DEBATE.name {
-        "moderator"
+    let default = if matches!(key, "review" | "side_b") {
+        "codex"
     } else {
-        st.name
+        "claude"
     };
-    let default = if key == "review" { "codex" } else { "claude" };
     let field = |name: &str, default: &str| match &doc[key][name] {
         Value::Null => Ok(default.to_string()),
         Value::String(v) if v.is_empty() => Ok(default.to_string()),
@@ -144,10 +207,11 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     let name = field("app", default)?;
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
-    // Off claude only the Review runs, until codex has the two-step Plan, the
-    // network the Moderator's claude -p, codex exec and TypeSafe calls need,
-    // and a Git write path: its sandbox keeps Git metadata read-only.
-    if app.name != "claude" && key != "review" {
+    // Off claude only the Review and the Debate's sides run, until codex has
+    // the two-step Plan, the network the Moderator's side commands and
+    // TypeSafe calls need, and a Git write path: its sandbox keeps Git
+    // metadata read-only.
+    if app.name != "claude" && !matches!(key, "review" | "side_a" | "side_b") {
         return Err(format!("{key} runs on claude only"));
     }
     let model = field("model", "default")?;

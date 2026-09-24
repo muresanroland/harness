@@ -1,9 +1,9 @@
 use super::judgment::fake::Fake;
 use super::judgment::Action;
 use super::judgment_test::{choose, criteria};
-use super::stage::{Answer, Ask, Config, Orchestrator};
-use super::state::{load_state, STATUS_PARKED, STATUS_PR_OPEN};
-use super::world::{new_world, spawn_ticket, succeed, working, BdTicket, Prompt, World};
+use super::stage::{Answer, Ask, Orchestrator};
+use super::state::{STATUS_PARKED, STATUS_PR_OPEN};
+use super::world::{new_world, restarted, spawn_ticket, succeed, working, BdTicket, Prompt, World};
 use super::write_file;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -347,13 +347,6 @@ fn a_nudge_is_sent_to_its_session_and_re_arms_the_hold() {
     );
     assert!(o.answers.lock().unwrap().is_empty());
     drop(run);
-}
-
-/// A new process over the saved state, its Events to the same panel.
-fn restarted(w: &Arc<World>, o: &Orchestrator) -> Arc<Orchestrator> {
-    let mut cfg = Config::for_tests(w.clone(), &w.repo, &w.home);
-    cfg.events = o.cfg.events.clone();
-    Arc::new(Orchestrator::with_state(cfg, load_state(&w.repo).unwrap()))
 }
 
 /// Starts hx-1 with a session that keeps working, and stops the run once

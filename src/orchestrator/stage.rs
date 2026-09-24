@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{stage_row, App};
+use super::app::{debate_inputs, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
-use super::state::{load_state, State, TicketState, STATUS_RUNNING};
+use super::state::{load_state, Session, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
 use crate::tools::{RunError, Tools};
 
@@ -214,6 +214,7 @@ impl Orchestrator {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
+        debate_inputs(&cfg.repo, "").map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -523,6 +524,7 @@ impl Orchestrator {
                 ts.stage = st.name.to_string();
                 ts.round = round;
                 ts.retried = false; // a resumed Stage keeps its spent retry
+                ts.sessions.remove(st.name); // an earlier Round's is never resumed
             }
         });
         let (round_s, worktree, run_dir, file_s) = (
@@ -552,6 +554,21 @@ impl Orchestrator {
                     .herdr(&["agent", "get", &name])
                     .is_ok_and(|reply| reply.result.agent.pane_id == *pane)
         });
+        // Its pane gone, it is resumed by its saved session id instead, and
+        // watched as a live one; failing that it starts fresh.
+        if let Some(session) = saved
+            .sessions
+            .get(st.name)
+            .filter(|s| resumed && live.is_none() && !s.id.is_empty())
+        {
+            match self.resume(ticket, st, &label, session) {
+                Ok(pane) => live = Some(pane),
+                Err(err) => self.log(
+                    ticket,
+                    &format!("{label} not resumed: {err}, starting it fresh"),
+                ),
+            }
+        }
         let mut retry = false;
         loop {
             let mut held = match live.take() {
@@ -665,6 +682,17 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
+        let run_dir = self.run_dir(ticket).display().to_string();
+        // The Moderator is given each Debate side's command, read now too.
+        let sides = match st.name == DEBATE.name {
+            true => match debate_inputs(&self.cfg.repo, &run_dir) {
+                Ok(sides) => sides,
+                Err(err) => return Held::Woke(err),
+            },
+            false => Vec::new(),
+        };
+        let mut inputs = inputs.to_vec();
+        inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
         // Wherever init put it: a copy committed in the repo first, then the
         // checkout's, then the user's.
         let (repo, home) = (&self.cfg.repo, &self.cfg.home);
@@ -681,7 +709,11 @@ impl Orchestrator {
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());
         }
-        let pane = match self.fresh_pane(ticket, st) {
+        let session = Session {
+            app: row.app.name.to_string(),
+            id: String::new(),
+        };
+        let pane = match self.fresh_pane(ticket, st, session) {
             Ok(pane) => pane,
             Err(err) => return Held::Woke(format!("got no pane: {err}")),
         };
@@ -709,52 +741,16 @@ impl Orchestrator {
             Instant::now() + 6 * self.cfg.tick
         };
 
-        let run_dir = self.run_dir(ticket).display().to_string();
-        let mut agent_args = if st.name == IMPLEMENT.name {
-            // Implement plans first (harness-7bj.9), on claude alone
-            // (stage_row): its own settings hold the hook that copies each
-            // plan into the run directory, and on a split opusplan's remap.
-            let settings = match self.plan_settings(ticket, &row) {
-                Ok(path) => path,
-                Err(err) => {
-                    let reason = format!("has no plan hook: {err}");
-                    let failed =
-                        self.plan_failed(ticket, st, label, &pane, &at, reason.clone(), None);
-                    return failed.unwrap_or(Held::Woke(reason));
-                }
-            };
-            [
-                "--permission-mode",
-                "plan",
-                "--settings",
-                &settings,
-                "--add-dir",
-                &run_dir,
-            ]
-            .map(String::from)
-            .to_vec()
-        } else if st.name == REVIEW.name {
-            (row.app.run_dir_args)(&self.worktree(ticket).display().to_string())
-        } else {
-            // Debate, Fix and Address run on claude alone (stage_row).
-            ["--permission-mode", "auto", "--add-dir", &run_dir]
-                .map(String::from)
-                .to_vec()
+        let agent_args = match self.stage_args(ticket, st, &row) {
+            Ok(args) => args,
+            Err(reason) => {
+                let failed = self.plan_failed(ticket, st, label, &pane, &at, reason.clone(), None);
+                return failed.unwrap_or(Held::Woke(reason));
+            }
         };
-        agent_args.extend(row.flags());
-        let name = agent_name(ticket, st.name);
-        let mut start = vec![
-            "agent",
-            "start",
-            &name,
-            "--kind",
-            row.app.name,
-            "--pane",
-            &pane,
-            "--",
-        ];
-        start.extend(agent_args.iter().map(String::as_str));
-        let start_err = self.start_agent(&start, patience).err();
+        let start_err = self
+            .start_agent(ticket, st, row.app, &pane, &agent_args, patience)
+            .err();
         if let Some(err) = &start_err {
             if !err.to_string().contains("agent_not_ready") {
                 return Held::Woke(format!("session did not start: {err}"));
@@ -773,7 +769,7 @@ impl Orchestrator {
         // session still sitting at a dialog reads as idle the moment the call
         // returns, and an idle pane with no result file is indistinguishable
         // from a Stage that finished and forgot to write one.
-        let prompt = stage_prompt(&skill, inputs);
+        let prompt = stage_prompt(&skill, &inputs);
         if let Err(err) = self.herdr(&["agent", "prompt", &pane, &prompt]) {
             return Held::Woke(format!("never took the Stage skill: {err}"));
         }
@@ -795,7 +791,7 @@ impl Orchestrator {
             if self.park_arrived(ticket, &pane) {
                 return Held::Park;
             }
-            match self.agent_status(&pane).as_deref() {
+            match self.watch(ticket, st, &pane).as_deref() {
                 None => return Held::Woke("session died".to_string()),
                 Some("blocked") => {
                     if let Some(held) = self.wait_unblocked(ticket, st, label, &pane) {
@@ -825,6 +821,68 @@ impl Orchestrator {
             let timeout = wait_for(self.deadline(ticket, st), self.cfg.tick);
             let _ = self.herdr(&["agent", "wait", &pane, "--timeout", &timeout]);
         }
+    }
+
+    /// The args a Stage's session starts with, the row's model and effort
+    /// last. Only Implement's can fail: it has no plan hook.
+    fn stage_args(&self, ticket: &str, st: &Stage, row: &Row) -> Result<Vec<String>, String> {
+        let run_dir = self.run_dir(ticket).display().to_string();
+        let mut args = if st.name == IMPLEMENT.name {
+            // Implement plans first (harness-7bj.9), on claude alone
+            // (stage_row): its own settings hold the hook that copies each
+            // plan into the run directory, and on a split opusplan's remap.
+            let settings = self
+                .plan_settings(ticket, row)
+                .map_err(|err| format!("has no plan hook: {err}"))?;
+            [
+                "--permission-mode",
+                "plan",
+                "--settings",
+                &settings,
+                "--add-dir",
+                &run_dir,
+            ]
+            .map(String::from)
+            .to_vec()
+        } else if st.name == REVIEW.name {
+            (row.app.run_dir_args)(&self.worktree(ticket).display().to_string())
+        } else {
+            // Debate, Fix and Address run on claude alone (stage_row).
+            ["--permission-mode", "auto", "--add-dir", &run_dir]
+                .map(String::from)
+                .to_vec()
+        };
+        args.extend(row.flags());
+        Ok(args)
+    }
+
+    /// Resumes a stopped run's Stage whose pane is gone: its saved session
+    /// in a fresh pane, by id with the Stage's own args (Implement plans
+    /// again, so its plan is judged again), told to continue. Only while
+    /// the Stage's App is unchanged; an error starts it fresh.
+    fn resume(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        label: &str,
+        session: &Session,
+    ) -> Result<String, String> {
+        let row = stage_row(&self.cfg.repo, st)?;
+        if row.app.name != session.app {
+            return Err(format!("its App is now {}", row.app.name));
+        }
+        let pane = self
+            .fresh_pane(ticket, st, session.clone())
+            .map_err(|err| format!("got no pane: {err}"))?;
+        let mut args = row.resume(&session.id);
+        args.extend(self.stage_args(ticket, st, &row)?);
+        let patience = Instant::now() + 6 * self.cfg.tick;
+        self.start_agent(ticket, st, row.app, &pane, &args, patience)
+            .and_then(|()| self.herdr(&["agent", "prompt", &pane, "continue"]))
+            .map_err(|err| err.to_string())?;
+        let at = self.locate(&pane);
+        self.report(ticket, &format!("{label} resumed: {} {at}", row.said()));
+        Ok(pane)
     }
 
     /// Holds a Stage until its agent trusts the directory its pane started
@@ -872,13 +930,26 @@ impl Orchestrator {
         }
     }
 
-    /// Starts the Stage's session, giving a pane that has just been created
-    /// the moment it needs to get a shell: until it has one herdr refuses with
-    /// agent_pane_busy, which is not the pane being unusable. `give_up` bounds
-    /// that patience; stop ends it.
-    fn start_agent(&self, argv: &[&str], give_up: Instant) -> Result<(), RunError> {
+    /// Starts the Stage's session on `app` in `pane` with `args`, giving a
+    /// pane that has just been created the moment it needs to get a shell:
+    /// until it has one herdr refuses with agent_pane_busy, which is not the
+    /// pane being unusable. `give_up` bounds that patience; stop ends it.
+    fn start_agent(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        app: &App,
+        pane: &str,
+        args: &[String],
+        give_up: Instant,
+    ) -> Result<(), RunError> {
+        let name = agent_name(ticket, st.name);
+        let mut argv = vec![
+            "agent", "start", &name, "--kind", app.name, "--pane", pane, "--",
+        ];
+        argv.extend(args.iter().map(String::as_str));
         loop {
-            let err = match self.herdr(argv) {
+            let err = match self.herdr(&argv) {
                 Ok(_) => return Ok(()),
                 Err(err) => err,
             };
@@ -1014,7 +1085,7 @@ impl Orchestrator {
             }
             // The status before the result, as in attempt: a result written
             // between the two reads must not look like idle without one.
-            let status = self.agent_status(pane);
+            let status = self.watch(ticket, st, pane);
             let (result, reason) = read_stage_result(file, want);
             if reason.is_empty() && matches!(status.as_deref(), None | Some("idle" | "done")) {
                 return Held::Done(result);
@@ -1044,6 +1115,33 @@ impl Orchestrator {
         }
     }
 
+    /// The herdr state of the agent in the Stage's pane, as agent_status,
+    /// saving the session id herdr reports there as the Stage's: the id
+    /// /continue resumes it by once the pane is gone. Saved only while herdr
+    /// still names the Stage's own agent in that pane, so another agent's
+    /// id is never resumed as the Stage's.
+    fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
+        let agent = self.herdr(&["agent", "get", pane]).ok()?.result.agent;
+        let id = agent.agent_session.map(|s| s.value).unwrap_or_default();
+        if !id.is_empty()
+            && self
+                .ticket(ticket)
+                .sessions
+                .get(st.name)
+                .is_some_and(|s| s.id != id)
+            && self
+                .herdr(&["agent", "get", &agent_name(ticket, st.name)])
+                .is_ok_and(|reply| reply.result.agent.pane_id == pane)
+        {
+            self.update(ticket, |ts| {
+                if let Some(session) = ts.sessions.get_mut(st.name) {
+                    session.id = id;
+                }
+            });
+        }
+        Some(agent.status)
+    }
+
     /// One tick of every polling loop. False once /stop-work has arrived.
     pub(crate) fn sleep(&self) -> bool {
         if self.stopping() {
@@ -1057,8 +1155,9 @@ impl Orchestrator {
 
     /// Gives the Stage an empty shell pane in the Ticket tab, replacing the
     /// pane of an earlier session of the same Stage (a previous Round, a
-    /// retry, a resumed run) so every session starts fresh.
-    fn fresh_pane(&self, ticket: &str, st: &Stage) -> Result<String, RunError> {
+    /// retry, a resumed run) so no session starts in an old pane, and records
+    /// the session it will run beside it.
+    fn fresh_pane(&self, ticket: &str, st: &Stage, session: Session) -> Result<String, RunError> {
         let ts = self.ticket(ticket);
         if let Some(old) = ts.panes.get(st.name) {
             let at = self.locate(old);
@@ -1118,6 +1217,7 @@ impl Orchestrator {
         self.update(ticket, |ts| {
             ts.tab = tab;
             ts.panes.insert(st.name.to_string(), pane.clone());
+            ts.sessions.insert(st.name.to_string(), session);
             // a fresh session has its nudge and its waits, and no feedback
             ts.nudged = false;
             ts.waits = 0;

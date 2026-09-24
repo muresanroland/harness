@@ -7,13 +7,13 @@ Every Orchestrator event is one plain-language line, the same words on the Shell
 Panel: `HH:MM:SS  <child suffix> <title, truncated to the column>  <event>`
 Log:   `YYYY-MM-DD HH:MM:SS <bd id> <event>`
 
-Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane locations are always named, as `(pane 2-1)`, on started, retrying, stuck, waiting and blocked lines.
+Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane locations are always named, as `(pane 2-1)`, on started, resumed, retrying, stuck, waiting and blocked lines.
 
 ## What shows
 
 - Every Ticket event shows on the panel, except `prompted` (log only).
 - Run-level errors show: state not saved, bd list failed, bd ready failed, Epic done, stopped.
-- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file, an answer that came after its session moved on (dropped your park: that session has moved on), a Judgment that could not be had (no Judgment: `err`, the key never in it).
+- Housekeeping stays in the log only: dropped a leftover pane, merged but not closed (will retry), scratch left in the run directory, prompted, waiting for the result file, an answer that came after its session moved on (dropped your park: that session has moved on), a Stage that could not be resumed (not resumed: `err`, starting it fresh), a Judgment that could not be had (no Judgment: `err`, the key never in it).
 - A Judgment below the floor logs its judged line only: its scores show in the Wake's Question, and a panel line would close that Question.
 
 ## Vocabulary
@@ -22,6 +22,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 |---|---|
 | worktree created | branch `b` created |
 | Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .harness/config.json: implement started: claude opus/high (pane 2-1) · on a split, a plan model other than Implement's: implement started: claude claude-fable-5-1→claude-opus-5-5/high (pane 2-1) |
+| Stage resumed | *a Stage /continue finds with its pane gone, by its saved session id on an unchanged App:* implement resumed: claude (pane 2-1) · *log only, when it cannot be:* implement not resumed: its App is now claude, starting it fresh |
 | Stage prompted | *log only:* implement prompted, waiting for implement.md |
 | trust dialog | waiting: claude does not trust `dir` yet, open it there once and accept (pane 2-1) |
 | trust accepted | claude trusts `dir` now, carrying on |

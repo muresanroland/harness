@@ -515,8 +515,8 @@ fn unanswered(err: RunError) -> String {
     format!("never took the answer to its plan: {err}")
 }
 
-/// A path or a Ticket id as one shell word: the hook commands run under a
-/// shell.
-fn quoted(word: impl std::fmt::Display) -> String {
+/// One shell word, single quoted: the hook commands and a Debate side's
+/// command run under a shell.
+pub(super) fn quoted(word: impl std::fmt::Display) -> String {
     format!("'{}'", word.to_string().replace('\'', r"'\''"))
 }

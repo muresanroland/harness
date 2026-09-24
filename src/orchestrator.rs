@@ -44,6 +44,8 @@ mod retry_result_test;
 #[cfg(test)]
 mod scheduler_test;
 #[cfg(test)]
+mod session_test;
+#[cfg(test)]
 mod stage_test;
 #[cfg(test)]
 mod state_test;

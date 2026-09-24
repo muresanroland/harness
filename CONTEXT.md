@@ -64,7 +64,7 @@ One claimed problem with a Ticket's changes, raised by the Review or by the over
 _Avoid_: Comment, issue, point
 
 **Moderator**:
-The neutral session that runs the Debate between a Claude side and a GPT side. It never argues a position of its own, and settles Findings the sides still dispute by an outside score.
+The neutral session that runs the Debate between side A and side B. It never argues a position of its own, and settles Findings the sides still dispute by an outside score.
 _Avoid_: Judge, Debby
 
 **Verdict**:
