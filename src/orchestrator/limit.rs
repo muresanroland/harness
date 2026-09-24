@@ -262,16 +262,19 @@ impl Orchestrator {
     }
 
     /// A Ticket leaving a run a long usage limit ended closes its tab; its
-    /// session ids stay saved, so /continue resumes each Stage by its id.
+    /// session ids stay saved, so /continue resumes each Stage by its id. A
+    /// tab that would not close keeps its ids, so /continue watches its live
+    /// panes, as after /stop-work, rather than resuming beside them.
     pub(super) fn close_on_limit(&self, ticket: &str) {
         let tab = self.ticket(ticket).tab;
         if !self.closed() || tab.is_empty() {
             return;
         }
-        let _ = self.herdr(&["tab", "close", &tab]);
-        self.update(ticket, |ts| {
-            ts.tab.clear();
-            ts.panes.clear();
-        });
+        if self.herdr(&["tab", "close", &tab]).is_ok() {
+            self.update(ticket, |ts| {
+                ts.tab.clear();
+                ts.panes.clear();
+            });
+        }
     }
 }

@@ -420,6 +420,36 @@ fn a_long_limit_saves_the_ids_closes_the_tabs_and_ends_the_run_and_continue_resu
 }
 
 #[test]
+fn a_tab_that_would_not_close_at_a_long_limit_keeps_its_ids_and_continue_watches_it() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    let clock = clock(&mut o);
+    hits(
+        &w,
+        "hx-1",
+        "implement",
+        "idle",
+        "You've hit your weekly limit · resets Mon 12:00am",
+    );
+    w.fail_once("herdr tab close ", "herdr is busy");
+    let o = Arc::new(o);
+    spawn_ticket(o.clone(), "hx-1").wait();
+    let ts = o.ticket("hx-1");
+    assert!(
+        !ts.tab.is_empty() && ts.panes.contains_key("implement"),
+        "{ts:?}"
+    );
+
+    // /continue after the reset watches the still-live pane: no second tab
+    *clock.lock().unwrap() = at(28, 0, 2);
+    let o = restarted(&w, &o);
+    let before = w.calls().len();
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 stuck in implement: went idle without a result (pane 1-1)");
+    assert!(w.since(before, "herdr tab create ").is_empty());
+    assert!(w.since(before, "herdr agent start ").is_empty());
+}
+
+#[test]
 fn a_limit_line_past_its_saved_reset_is_not_read_as_tomorrows() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     let clock = clock(&mut o);
