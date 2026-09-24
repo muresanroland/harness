@@ -701,6 +701,28 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     assert!(find(&buf, "saved run").is_none());
 }
 
+/// .harness/config.json is read when a run starts: one no Stage can start
+/// on refuses the run, naming the file.
+#[test]
+fn an_unreadable_config_or_implement_off_claude_refuses_the_run() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    let file = w.repo.join(".harness/config.json");
+    let mut s = shell(&w);
+    write_file(&file, "{ not json");
+    s.command("/start-epic hx");
+    assert!(
+        notice(&s).starts_with(&format!("{}: ", file.display())),
+        "{}",
+        notice(&s)
+    );
+    assert!(s.run.is_none());
+
+    write_file(&file, r#"{"implement": {"app": "codex"}}"#);
+    s.command("/start-epic hx");
+    assert_eq!(notice(&s), "Implement off claude needs the two-step Plan");
+    assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
+}
+
 #[test]
 fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);

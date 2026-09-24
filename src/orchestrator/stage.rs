@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::app::{fill, stage_row, App};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
@@ -23,25 +24,23 @@ use crate::tools::{RunError, Tools};
 pub(crate) struct Stage {
     pub(crate) name: &'static str,
     pub(crate) skill: &'static str,
-    /// herdr agent kind: claude or codex.
-    pub(crate) kind: &'static str,
     pub(crate) timeout: Duration,
 }
 
-const fn stage(name: &'static str, skill: &'static str, kind: &'static str, minutes: u64) -> Stage {
+const fn stage(name: &'static str, skill: &'static str, minutes: u64) -> Stage {
     Stage {
         name,
         skill,
-        kind,
         timeout: Duration::from_secs(minutes * 60),
     }
 }
 
-pub(crate) const IMPLEMENT: Stage = stage("implement", "stage-implement", "claude", 60);
-pub(crate) const REVIEW: Stage = stage("review", "stage-review", "codex", 30);
-pub(crate) const DEBATE: Stage = stage("debate", "stage-moderate", "claude", 30);
-pub(crate) const FIX: Stage = stage("fix", "stage-fix", "claude", 60);
-pub(crate) const ADDRESS: Stage = stage("address", "stage-address", "claude", 60);
+// The App each Stage runs on comes from .harness/config.json (app.rs).
+pub(crate) const IMPLEMENT: Stage = stage("implement", "stage-implement", 60);
+pub(crate) const REVIEW: Stage = stage("review", "stage-review", 30);
+pub(crate) const DEBATE: Stage = stage("debate", "stage-moderate", 30);
+pub(crate) const FIX: Stage = stage("fix", "stage-fix", 60);
+pub(crate) const ADDRESS: Stage = stage("address", "stage-address", 60);
 
 /// How a Stage ends other than with an accepted result.
 #[derive(Debug, PartialEq)]
@@ -207,8 +206,12 @@ pub(crate) struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Loads the Target repo's state file, so a restarted Orchestrator resumes.
+    /// Loads the Target repo's state file, so a restarted Orchestrator
+    /// resumes; a config.json no Stage can start on refuses the run.
     pub(crate) fn new(cfg: Config) -> io::Result<Arc<Self>> {
+        for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX, &ADDRESS] {
+            stage_row(&cfg.repo, st).map_err(io::Error::other)?;
+        }
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -656,6 +659,10 @@ impl Orchestrator {
         inputs: &[(&str, &str)],
         want: ResultRequirements,
     ) -> Held {
+        let row = match stage_row(&self.cfg.repo, st) {
+            Ok(row) => row,
+            Err(err) => return Held::Woke(err),
+        };
         let skill_path = self
             .cfg
             .repo
@@ -683,7 +690,7 @@ impl Orchestrator {
                 &format!("retrying {label} with a fresh session {at}"),
             );
         }
-        let Ok(waited) = self.await_trust(ticket, st, &at) else {
+        let Ok(waited) = self.await_trust(ticket, st, row.app, &at) else {
             return Held::Stopped;
         };
         // The previous session can still write while its pane is closing.
@@ -701,15 +708,11 @@ impl Orchestrator {
         };
 
         let run_dir = self.run_dir(ticket).display().to_string();
-        let settings;
-        let agent_args: &[&str] = if st.kind == "codex" {
-            // The pane's cwd is the run directory, so the sandbox lets Codex
-            // write its result file there and nothing in the worktree.
-            &["--sandbox", "workspace-write"]
-        } else if st.name == IMPLEMENT.name {
-            // Implement plans first (harness-7bj.9): its own settings hold
-            // the hook that copies each plan into the run directory.
-            settings = match self.plan_settings(ticket) {
+        let mut agent_args = if st.name == IMPLEMENT.name {
+            // Implement plans first (harness-7bj.9), on claude alone
+            // (stage_row): its own settings hold the hook that copies each
+            // plan into the run directory.
+            let settings = match self.plan_settings(ticket) {
                 Ok(path) => path,
                 Err(err) => {
                     let reason = format!("has no plan hook: {err}");
@@ -718,7 +721,7 @@ impl Orchestrator {
                     return failed.unwrap_or(Held::Woke(reason));
                 }
             };
-            &[
+            [
                 "--permission-mode",
                 "plan",
                 "--settings",
@@ -726,21 +729,39 @@ impl Orchestrator {
                 "--add-dir",
                 &run_dir,
             ]
+            .map(String::from)
+            .to_vec()
+        } else if st.name == REVIEW.name {
+            fill(
+                row.app.run_dir_args,
+                &self.worktree(ticket).display().to_string(),
+            )
         } else {
-            &["--permission-mode", "auto", "--add-dir", &run_dir]
+            fill(row.app.worktree_args, &run_dir)
         };
+        if st.name == FIX.name || st.name == ADDRESS.name {
+            agent_args.extend(row.app.network.iter().map(|arg| arg.to_string()));
+        }
+        agent_args.extend(row.flags());
         let name = agent_name(ticket, st.name);
         let mut start = vec![
-            "agent", "start", &name, "--kind", st.kind, "--pane", &pane, "--",
+            "agent",
+            "start",
+            &name,
+            "--kind",
+            row.app.name,
+            "--pane",
+            &pane,
+            "--",
         ];
-        start.extend_from_slice(agent_args);
+        start.extend(agent_args.iter().map(String::as_str));
         let start_err = self.start_agent(&start, patience).err();
         if let Some(err) = &start_err {
             if !err.to_string().contains("agent_not_ready") {
                 return Held::Woke(format!("session did not start: {err}"));
             }
         }
-        self.report(ticket, &format!("{label} started: {} {at}", st.kind));
+        self.report(ticket, &format!("{label} started: {} {at}", row.said()));
         if start_err.is_some() {
             // blocked at startup: nothing can be prompted yet
             if let Some(held) = self.wait_unblocked(ticket, st, label, &pane) {
@@ -812,12 +833,12 @@ impl Orchestrator {
     /// the pane, already in that directory, and waits instead of prompting
     /// into one.
     /// Ok(true) when it had to wait.
-    fn await_trust(&self, ticket: &str, st: &Stage, at: &str) -> Result<bool, String> {
+    fn await_trust(&self, ticket: &str, st: &Stage, app: &App, at: &str) -> Result<bool, String> {
         if self.cfg.home.as_os_str().is_empty() {
             return Ok(false); // no home, no trust stores to read: let the Stage try
         }
         let dir = self.stage_cwd(ticket, st);
-        let trusted = || trusts(st.kind, &self.cfg.home, &dir, &self.cfg.repo);
+        let trusted = || trusts(app, &self.cfg.home, &dir, &self.cfg.repo);
         if trusted() {
             return Ok(false);
         }
@@ -825,7 +846,7 @@ impl Orchestrator {
             ticket,
             &format!(
                 "waiting: {} does not trust {} yet, open it there once and accept {at}",
-                st.kind,
+                app.name,
                 dir.display()
             ),
         );
@@ -836,15 +857,16 @@ impl Orchestrator {
         }
         self.report(
             ticket,
-            &format!("{} trusts {} now, carrying on", st.kind, dir.display()),
+            &format!("{} trusts {} now, carrying on", app.name, dir.display()),
         );
         Ok(true)
     }
 
     /// The directory a Stage's pane starts in: the Ticket's worktree, or the
-    /// run directory for Codex, whose sandbox may write only where it starts.
+    /// run directory for the Review, whose sandbox may write only where it
+    /// starts.
     fn stage_cwd(&self, ticket: &str, st: &Stage) -> PathBuf {
-        if st.kind == "codex" {
+        if st.name == REVIEW.name {
             self.run_dir(ticket)
         } else {
             self.worktree(ticket)
