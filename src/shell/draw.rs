@@ -1,7 +1,7 @@
 //! The layout: header, status row, Overall, the TICKETS sections, RECENT
 //! under its rule newest at the bottom (a Question takes its place when one
 //! shows), the MERGE TO UNBLOCK box, the / or @ list, a notice line and the
-//! input line.
+//! input line. A plan Question docks the Shell beside it (draw/modal.rs).
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -14,11 +14,12 @@ use super::logo::{
     PURPLE, RED, REST, TEXT, TICKET_COLORS,
 };
 use super::{suffix, About, Epic, Screen};
-use crate::orchestrator::judgment::plan_said;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
 use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
+
+mod modal;
 
 const PLACEHOLDER: &str = "  / for a command, @ for an Epic or Ticket";
 const COMPOSING: &str = "  your prompt, Enter sends it, Esc goes back";
@@ -61,11 +62,27 @@ pub(crate) fn ticket_color(id: &str) -> Color {
     TICKET_COLORS[n.wrapping_sub(1) % TICKET_COLORS.len()]
 }
 
-/// Header, status row, Overall, the TICKETS sections, RECENT (newest at the
-/// bottom), the boxed QUESTION, the red MERGE TO UNBLOCK box, the / or @
-/// list, notice, input.
+/// The Shell over the whole terminal, or docked beside a plan Question.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
-    let area = f.area();
+    if s.modal() {
+        modal::plan(f, s);
+    } else {
+        s.opened.set(None);
+        shell(f, f.area(), s);
+    }
+    if !s.truecolor {
+        for cell in f.buffer_mut().content.iter_mut() {
+            cell.fg = quantize(cell.fg);
+            cell.bg = quantize(cell.bg);
+        }
+    }
+}
+
+/// The Shell drawn into `area`: header, status row, Overall, the TICKETS
+/// sections, RECENT (newest at the bottom), the boxed QUESTION (a plan
+/// docks in the modal instead), the red MERGE TO UNBLOCK box, the / or @
+/// list, notice, input.
+fn shell(f: &mut Frame, area: Rect, s: &Screen) {
     let tree = sections(s, area.width.saturating_sub(2) as usize);
     let head_h = header_height(area);
     let unblock = unblock_lines(s);
@@ -90,7 +107,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let free = free - list_h;
     let mut tickets_h = (tree.len() as u16).min(free.saturating_sub(4).max(3));
     let width = area.width.saturating_sub(4) as usize;
-    let asked = s.showing().then(|| {
+    let asked = (s.showing() && !s.modal()).then(|| {
         let least = question_lines(s, width, 0).len() as u16 + 2;
         if free.saturating_sub(tickets_h) < least {
             tickets_h = free.saturating_sub(least).max(3).min(tickets_h);
@@ -140,9 +157,6 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
                 "Space toggles resume or reset to Implement, Enter starts, Esc cancels"
             }
             About::Confirm(_) => "y or n, Enter answers, Esc cancels",
-            About::Asked(Ask::Plan { .. }) => {
-                "↑↓ or a number picks, PgUp PgDn scroll the plan, Enter answers, Esc hides"
-            }
             About::Asked(_) => "↑↓ or a number picks, Enter answers, Esc hides",
         };
         let block = boxed(&title).title_bottom(Span::styled(format!(" {hint} "), fg(MUTED)));
@@ -162,12 +176,6 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         );
     }
     input_line(f, input, s);
-    if !s.truecolor {
-        for cell in f.buffer_mut().content.iter_mut() {
-            cell.fg = quantize(cell.fg);
-            cell.bg = quantize(cell.bg);
-        }
-    }
 }
 
 /// `r` less its first column, the one-column gutter every row but the boxes keeps.
@@ -545,9 +553,8 @@ fn scrolled(s: &Screen, tree: Vec<Line<'static>>, height: usize) -> Vec<Line<'st
 }
 
 /// A Question's lines: the question, a Judgment's scores, a Wake's pane
-/// tail or a plan from its scroll row as far as `room` lines allow, and
-/// the numbered options with the cursor on one. Everything but the tail or
-/// plan is always there.
+/// tail as far as `room` lines allow, and the numbered options with the
+/// cursor on one. Everything but the tail is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
     let q = &s.questions[0];
     let head = match &q.ticket {
@@ -560,10 +567,6 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
             judged: Some(judged),
             ..
         }) => Some(judged.said()),
-        About::Asked(Ask::Plan {
-            judged: Some(score),
-            ..
-        }) => Some(plan_said(*score)),
         _ => None,
     };
     if let Some(judged) = judged {
@@ -596,26 +599,11 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
         }
     }
     let fit = room.saturating_sub(lines.len() + options.len());
-    match &q.about {
-        About::Asked(Ask::Wake { tail, .. }) => {
-            let tail: Vec<&str> = tail.lines().collect();
-            for line in &tail[tail.len().saturating_sub(fit)..] {
-                lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
-            }
+    if let About::Asked(Ask::Wake { tail, .. }) = &q.about {
+        let tail: Vec<&str> = tail.lines().collect();
+        for line in &tail[tail.len().saturating_sub(fit)..] {
+            lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
         }
-        About::Asked(Ask::Plan { plan, .. }) => {
-            let rows: Vec<String> = plan.lines().flat_map(|line| wrap(line, width)).collect();
-            // Scrolled by rows at this width, and kept inside the plan.
-            let from = q.scroll.get().min(rows.len().saturating_sub(fit));
-            q.scroll.set(from);
-            lines.extend(
-                rows.into_iter()
-                    .skip(from)
-                    .take(fit)
-                    .map(|row| Line::from(Span::styled(row, fg(TEXT)))),
-            );
-        }
-        _ => {}
     }
     lines.extend(options);
     lines
@@ -728,7 +716,11 @@ fn list_lines(s: &Screen, width: usize, height: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// The input line; feedback typed for the plan shows in the modal instead.
 fn input_line(f: &mut Frame, area: Rect, s: &Screen) {
+    if s.modal() && s.composing {
+        return f.render_widget(Line::from("› ".fg(PURPLE).bold()), area);
+    }
     let mut spans = vec![
         "› ".fg(PURPLE).bold(),
         s.input.as_str().fg(TEXT),
