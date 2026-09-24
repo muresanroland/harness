@@ -115,7 +115,7 @@ impl Orchestrator {
                     // park, and sleep owns stop, in every mode; a Question's
                     // answers, nudge among them, go by Orchestrator::answer
                 } else if kind == "retry" && ts.status == STATUS_PARKED && self.consume(&command) {
-                    // a fresh session: the Parked one is closed, not watched
+                    // a fresh session: the Parked one is closed, not watched or resumed
                     if let Some(old) = ts.panes.get(&ts.stage) {
                         let _ = self.herdr(&["pane", "close", old]);
                     }
@@ -123,6 +123,7 @@ impl Orchestrator {
                         ts.status = STATUS_RUNNING.to_string();
                         let stage = ts.stage.clone();
                         ts.panes.remove(&stage);
+                        ts.sessions.remove(&stage);
                     });
                 } else if kind == "address" && self.consume(&command) {
                     launch(ticket, Orchestrator::address);
@@ -334,8 +335,11 @@ impl Orchestrator {
                 return;
             }
         };
-        // every address run is a new one
+        // every address run is a new one, never an earlier one resumed
         let _ = fs::remove_file(self.run_dir(ticket).join(result_name(&ADDRESS, 0)));
+        self.update(ticket, |ts| {
+            ts.sessions.remove(ADDRESS.name);
+        });
         let inputs = address_inputs(&ts.pr, &feedback);
         let inputs: Vec<(&str, &str)> = inputs
             .iter()
@@ -353,6 +357,7 @@ impl Orchestrator {
                     self.update(ticket, |ts| {
                         ts.tab.clear();
                         ts.panes.clear();
+                        ts.sessions.clear();
                     });
                 }
                 self.report(ticket, &format!("addressed {}", pr_ref(&ts.pr)));

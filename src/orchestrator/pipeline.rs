@@ -119,6 +119,7 @@ impl Orchestrator {
                 ts.pr = fix.pr.clone();
                 ts.tab.clear();
                 ts.panes.clear();
+                ts.sessions.clear();
             });
             if !tab.is_empty() {
                 let _ = self.herdr(&["tab", "close", &tab]);

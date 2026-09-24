@@ -69,6 +69,15 @@ pub(crate) struct Agent {
     pub(crate) status: String,
     /// The pane the agent lives in.
     pub(crate) pane_id: String,
+    /// The session id herdr's integration reports; null or missing without
+    /// one.
+    pub(crate) agent_session: Option<AgentSession>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct AgentSession {
+    pub(crate) value: String,
 }
 
 impl Orchestrator {

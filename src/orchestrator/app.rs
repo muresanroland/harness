@@ -20,6 +20,7 @@ pub(crate) struct App {
     pub(crate) run_dir_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
+    pub(crate) resume: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
@@ -53,6 +54,7 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
+        resume: &["--resume", "{}"],
         trust: claude_records,
     },
     App {
@@ -62,6 +64,7 @@ pub(crate) static APPS: [App; 2] = [
         run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
+        resume: &["resume", "{}"],
         trust: codex_records,
     },
 ];
@@ -95,6 +98,11 @@ impl Row {
             }
         }
         out
+    }
+
+    /// The args that resume session `id`, ahead of the Stage's own.
+    pub(crate) fn resume(&self, id: &str) -> Vec<String> {
+        fill(self.app.resume, id)
     }
 
     /// As the started line names it: "claude", "claude opus/high", on a
