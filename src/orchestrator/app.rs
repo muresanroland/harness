@@ -15,14 +15,9 @@ use super::trust::{claude_records, codex_records};
 pub(crate) struct App {
     /// Its name in config.json, and herdr's agent kind.
     pub(crate) name: &'static str,
-    /// The unattended args of a Stage in the Ticket's worktree; "{}" is the
-    /// Run directory.
-    pub(crate) worktree_args: &'static [&'static str],
     /// The unattended args of the Review, in the Run directory; "{}" is the
     /// worktree.
     pub(crate) run_dir_args: &'static [&'static str],
-    /// Added for Fix and Address, which push and open pull requests.
-    pub(crate) network: &'static [&'static str],
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
@@ -33,27 +28,16 @@ pub(crate) struct App {
 pub(crate) static APPS: [App; 2] = [
     App {
         name: "claude",
-        worktree_args: &["--permission-mode", "auto", "--add-dir", "{}"],
         run_dir_args: &["--permission-mode", "auto", "--add-dir", "{}"],
-        network: &[],
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
         trust: claude_records,
     },
     App {
         name: "codex",
-        worktree_args: &[
-            "--sandbox",
-            "workspace-write",
-            "-a",
-            "never",
-            "--add-dir",
-            "{}",
-        ],
         // The sandbox writes only where the pane starts: the result file
         // there, nothing in the worktree.
         run_dir_args: &["--sandbox", "workspace-write"],
-        network: &["-c", "sandbox_workspace_write.network_access=true"],
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
         trust: codex_records,

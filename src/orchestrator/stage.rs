@@ -737,11 +737,11 @@ impl Orchestrator {
                 &self.worktree(ticket).display().to_string(),
             )
         } else {
-            fill(row.app.worktree_args, &run_dir)
+            // Debate, Fix and Address run on claude alone (stage_row).
+            ["--permission-mode", "auto", "--add-dir", &run_dir]
+                .map(String::from)
+                .to_vec()
         };
-        if st.name == FIX.name || st.name == ADDRESS.name {
-            agent_args.extend(row.app.network.iter().map(|arg| arg.to_string()));
-        }
         agent_args.extend(row.flags());
         let name = agent_name(ticket, st.name);
         let mut start = vec![
