@@ -788,7 +788,7 @@ impl Screen {
         let focus = self
             .cfg
             .tools
-            .run(&self.cfg.repo, &["herdr", "pane", "focus", &pane]);
+            .run(&self.cfg.repo, &["herdr", "agent", "focus", &pane]);
         if let Err(err) = focus {
             self.notice(&err.to_string(), NOTICE_WINDOW);
         }

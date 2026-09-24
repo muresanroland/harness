@@ -1,5 +1,5 @@
 use super::draw::{draw, ticket_color};
-use super::logo::{lerp, quantize, CYAN, GREEN, MUTED, PURPLE};
+use super::logo::{lerp, quantize, CYAN, DARK_ORANGE, GREEN, MUTED, PURPLE};
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
@@ -383,6 +383,14 @@ fn the_overall_bar_counts_the_epics_tickets_and_blends_purple_to_green_by_the_pr
     let buf = render(&s, 80, 24);
     assert!(row(&buf, 9).contains("0/0 PRs"), "{:?}", row(&buf, 9));
     assert!(!row(&buf, 9).contains('█'));
+}
+
+/// The input line's placeholder draws in dark orange.
+#[test]
+fn the_placeholder_draws_in_dark_orange() {
+    let buf = render(&screen(), 120, 40);
+    let (x, y) = find(&buf, "/start-epic").unwrap();
+    assert_eq!(buf[(x, y)].fg, DARK_ORANGE);
 }
 
 #[test]
@@ -1660,8 +1668,8 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
 
     pick(&mut s, 4); // open the pane
     assert_eq!(
-        w.called("herdr pane focus"),
-        [format!("herdr pane focus {pane}")]
+        w.called("herdr agent focus"),
+        [format!("herdr agent focus {pane}")]
     );
     assert_eq!(s.questions.len(), 1, "open the pane answered the Question");
     assert_eq!(
@@ -2230,7 +2238,7 @@ fn kept_feedback_can_be_resent_and_a_failed_plan_step_offers_retry() {
         ]
     );
     pick(&mut s, 1);
-    assert_eq!(fake.calls(), ["herdr pane focus w1:p7"]);
+    assert_eq!(fake.calls(), ["herdr agent focus w1:p7"]);
     assert_eq!(s.questions.len(), 1, "open the pane answered the Question");
     let log = std::fs::read_to_string(repo.path().join(".harness/orchestrator.log")).unwrap();
     for line in [

@@ -134,13 +134,13 @@ fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
 }
 
 /// Blocked at the plan dialog with a fresh plan reaches the Noul over the
-/// plan and the Ticket; yes at 0.9 approves it with enter, each step a line.
+/// plan and the Ticket; yes at 0.76 approves it with enter, each step a line.
 #[test]
 fn a_fresh_plan_at_its_dialog_reaches_the_noul_and_yes_at_the_floor_approves_it() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     plans(&w, "idle");
     bd_show(&w);
-    let fake = typesafe(|_| Ok(noul(0.9)));
+    let fake = typesafe(|_| Ok(noul(0.76)));
     o.cfg.typesafe = fake.clone();
     o.run_ticket("hx-1");
     assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
@@ -169,7 +169,7 @@ fn a_fresh_plan_at_its_dialog_reaches_the_noul_and_yes_at_the_floor_approves_it(
     assert_eq!(
         lines[at + 1..at + 4],
         [
-            "hx-1 judged: plan follows the Ticket 0.90",
+            "hx-1 judged: plan follows the Ticket 0.76",
             "hx-1 plan approved",
             "hx-1 implemented"
         ]
@@ -189,8 +189,8 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
     for (name, answer, said) in [
         (
             "yes below the floor",
-            Ok(0.7),
-            Some("plan follows the Ticket 0.70"),
+            Ok(0.74),
+            Some("plan follows the Ticket 0.74"),
         ),
         ("no", Ok(0.12), Some("plan strays from the Ticket 0.88")),
         ("error", Err("401: bad key sk-test"), None),

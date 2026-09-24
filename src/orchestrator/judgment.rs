@@ -21,7 +21,7 @@ pub(crate) const FLOOR: f64 = 0.7;
 
 /// At or above this score for yes a plan is approved; below it, or a no, the
 /// plan is a Question.
-pub(crate) const PLAN_FLOOR: f64 = 0.8;
+pub(crate) const PLAN_FLOOR: f64 = 0.75;
 
 /// How many waits a session may take.
 const WAITS: usize = 3;

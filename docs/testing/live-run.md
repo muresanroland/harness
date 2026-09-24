@@ -164,7 +164,7 @@ plan approved
 
 The Judgment sent Enter in the pane, and the pane's footer turns from
 `⏸ plan mode on` to `⏵⏵ auto mode on`. If instead it reads
-`judged: plan strays from the Ticket 0.88`, or scores below 0.8, a Question
+`judged: plan strays from the Ticket 0.88`, or scores below 0.75, a Question
 comes up. Handle it as in step 6: read the plan, then approve or send feedback.
 
 For A, check the plan hook's evidence:
