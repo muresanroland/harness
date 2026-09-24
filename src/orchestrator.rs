@@ -1,6 +1,7 @@
 //! The Orchestrator: the deterministic process that owns Ticket state, pane
 //! placement and Stage transitions (ADR 0001). Ported by harness-kqe.2 to .4.
 
+pub(crate) mod app;
 pub(crate) mod herdr;
 pub(crate) mod judgment;
 pub(crate) mod pipeline;
@@ -20,6 +21,8 @@ pub(crate) fn write_file(path: &std::path::Path, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
+#[cfg(test)]
+mod app_test;
 #[cfg(test)]
 mod async_result_test;
 #[cfg(test)]

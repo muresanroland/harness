@@ -10,20 +10,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Whether kind already trusts dir. Both agents record trust against the
+use super::app::App;
+
+/// Whether the App already trusts dir. Both Apps record trust against the
 /// project root they resolved, which for a worktree or a run directory is an
 /// ancestor, so dir's ancestors up to repo answer for it. The nearest recorded
 /// directory decides: a subdirectory recorded as untrusted is untrusted
 /// however its repo is recorded.
-pub(crate) fn trusts(kind: &str, home: &Path, dir: &Path, repo: &Path) -> bool {
-    let recorded = if kind == "codex" {
-        codex_records
-    } else {
-        claude_records
-    };
+pub(crate) fn trusts(app: &App, home: &Path, dir: &Path, repo: &Path) -> bool {
     std::iter::once(dir.to_path_buf())
         .chain(ancestors(dir, repo))
-        .find_map(|candidate| recorded(home, &candidate))
+        .find_map(|candidate| (app.trust)(home, &candidate))
         .unwrap_or(false)
 }
 
@@ -46,7 +43,7 @@ pub(crate) fn ancestors(dir: &Path, repo: &Path) -> Vec<PathBuf> {
 
 /// Reads ~/.claude.json, where an accepted trust dialog is recorded per
 /// project directory: Some(trusted) when dir is recorded, None when not.
-fn claude_records(home: &Path, dir: &Path) -> Option<bool> {
+pub(super) fn claude_records(home: &Path, dir: &Path) -> Option<bool> {
     let raw = fs::read(home.join(".claude.json")).ok()?;
     let doc: serde_json::Value = serde_json::from_slice(&raw).ok()?;
     let entry = doc.get("projects")?.get(dir.to_str()?)?;
@@ -60,7 +57,7 @@ fn claude_records(home: &Path, dir: &Path) -> Option<bool> {
 /// table with trust_level = "trusted".
 // ponytail: a line scan, not a TOML parser; that one table shape is all the
 // Orchestrator reads, and a parser would be a dependency.
-fn codex_records(home: &Path, dir: &Path) -> Option<bool> {
+pub(super) fn codex_records(home: &Path, dir: &Path) -> Option<bool> {
     let raw = fs::read_to_string(home.join(".codex").join("config.toml")).ok()?;
     let want = format!("[projects.\"{}\"]", dir.display());
     let mut in_table = false;

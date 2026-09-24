@@ -1,3 +1,4 @@
+use super::app::{app, APPS};
 use super::trust::trusts;
 use super::write_file;
 use crate::tempdir::TempDir;
@@ -47,25 +48,29 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
     let home = home.path();
     let worktree = repo.join(".harness/worktrees/hx-1");
 
-    for kind in ["claude", "codex"] {
+    for app in &APPS {
         assert!(
-            trusts(kind, home, repo, repo),
-            "{kind}: the repo is trusted in the fixture but did not read as trusted"
+            trusts(app, home, repo, repo),
+            "{}: the repo is trusted in the fixture but did not read as trusted",
+            app.name
         );
         // A worktree and a run directory are new directories every run; the
         // agents resolve them to the project root they sit under.
         assert!(
-            trusts(kind, home, &worktree, repo),
-            "{kind}: a directory under a trusted repo did not read as trusted"
+            trusts(app, home, &worktree, repo),
+            "{}: a directory under a trusted repo did not read as trusted",
+            app.name
         );
         assert!(
-            !trusts(kind, home, &repo.join("untrusted"), repo),
-            "{kind}: an explicitly untrusted directory read as trusted"
+            !trusts(app, home, &repo.join("untrusted"), repo),
+            "{}: an explicitly untrusted directory read as trusted",
+            app.name
         );
         let (a, b) = (TempDir::new(), TempDir::new());
         assert!(
-            !trusts(kind, home, a.path(), b.path()),
-            "{kind}: an unknown directory read as trusted"
+            !trusts(app, home, a.path(), b.path()),
+            "{}: an unknown directory read as trusted",
+            app.name
         );
     }
     // A record that is not a bool is no record: the ancestors answer instead.
@@ -78,16 +83,21 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
         ),
     );
     assert!(
-        trusts("claude", odd.path(), &repo.join("untrusted"), repo),
+        trusts(
+            app("claude").unwrap(),
+            odd.path(),
+            &repo.join("untrusted"),
+            repo
+        ),
         "claude: a non-bool record hid the trusted repo above it"
     );
     let empty = TempDir::new();
     assert!(
-        !trusts("claude", empty.path(), repo, repo),
+        !trusts(app("claude").unwrap(), empty.path(), repo, repo),
         "claude: a home with no .claude.json read as trusted"
     );
     assert!(
-        !trusts("codex", empty.path(), repo, repo),
+        !trusts(app("codex").unwrap(), empty.path(), repo, repo),
         "codex: a home with no config.toml read as trusted"
     );
 }

@@ -949,6 +949,41 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     assert!(find(&buf, "saved run").is_none());
 }
 
+/// .harness/config.json is read when a run starts: one no Pipeline Stage can
+/// start on refuses the run, naming the file.
+#[test]
+fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    let file = w.repo.join(".harness/config.json");
+    let mut s = shell(&w);
+    write_file(&file, "{ not json");
+    s.command("/start-epic hx");
+    assert!(
+        notice(&s).starts_with(&format!("{}: ", file.display())),
+        "{}",
+        notice(&s)
+    );
+    assert!(s.run.is_none());
+
+    write_file(&file, r#"{"implement": {"app": "codex"}}"#);
+    s.command("/start-epic hx");
+    assert_eq!(notice(&s), "implement runs on claude only");
+    assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
+
+    write_file(&file, r#"{"fix": {"app": "codex"}}"#);
+    s.command("/start-epic hx");
+    assert_eq!(notice(&s), "fix runs on claude only");
+    assert!(s.run.is_none());
+
+    // Address runs on demand: its row does not hold up the Pipeline.
+    w.lock().merged = true;
+    write_file(&file, r#"{"address": {"app": "codex"}}"#);
+    s.command("/start-epic hx");
+    assert!(s.run.is_some(), "{:?}", s.notice);
+    await_line(&mut s, "Epic done, every Ticket closed");
+    await_end(&mut s);
+}
+
 #[test]
 fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
