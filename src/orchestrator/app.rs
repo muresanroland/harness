@@ -160,15 +160,19 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
 }
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row. The audit runs on side A's.
+/// from its row, the audit running on side A's, and TypeSafe when off.
 pub(crate) fn debate_inputs(
     repo: &Path,
     run_dir: &str,
 ) -> Result<Vec<(&'static str, String)>, String> {
-    Ok(vec![
+    let mut inputs = vec![
         ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
         ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
-    ])
+    ];
+    if !typesafe(repo) {
+        inputs.push(("TypeSafe", "off".to_string()));
+    }
+    Ok(inputs)
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
@@ -183,16 +187,55 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     row(repo, key)
 }
 
-/// The row under key: a Stage's, or a Debate side's (side_a, side_b).
-fn row(repo: &Path, key: &str) -> Result<Row, String> {
+/// Whether TypeSafe is on: config.json's "typesafe", read at each use so a
+/// change reaches the next Judgment and Debate. Unset, or a config.json that
+/// cannot be read, is on: the key alone decides, as before init asked.
+pub(crate) fn typesafe(repo: &Path) -> bool {
+    config(repo).map_or(true, |doc| doc["typesafe"] != false)
+}
+
+/// Keeps TypeSafe on or off in config.json, the rows as they were; a
+/// config.json that is not an object is refused, not overwritten.
+pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
     let path = repo.join(".harness").join("config.json");
-    let doc: Value = match fs::read(&path) {
-        Ok(raw) => {
-            serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display()))?
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Value::Null,
-        Err(err) => return Err(format!("{}: {err}", path.display())),
+    let mut doc = config(repo)?;
+    if doc.is_null() {
+        doc = json!({});
+    }
+    let Some(fields) = doc.as_object_mut() else {
+        return Err(format!("{}: not a JSON object", path.display()));
     };
+    fields.insert("typesafe".to_string(), Value::Bool(on));
+    fs::create_dir_all(path.parent().unwrap())
+        .and_then(|()| fs::write(&path, format!("{doc:#}\n")))
+        .map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// config.json, Null when there is none.
+fn config(repo: &Path) -> Result<Value, String> {
+    let path = repo.join(".harness").join("config.json");
+    match fs::read(&path) {
+        Ok(raw) => serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Value::Null),
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
+/// Every row of config.json: its key, and its name in words.
+pub(crate) const ROWS: [(&str, &str); 7] = [
+    ("implement", "Implement"),
+    ("review", "Review"),
+    ("moderator", "The Moderator"),
+    ("side_a", "Debate side A"),
+    ("side_b", "Debate side B"),
+    ("fix", "Fix"),
+    ("address", "Address"),
+];
+
+/// The row under key: a Stage's, or a Debate side's (side_a, side_b).
+pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
+    let path = repo.join(".harness").join("config.json");
+    let doc = config(repo)?;
     let default = if matches!(key, "review" | "side_b") {
         "codex"
     } else {
