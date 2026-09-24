@@ -1078,6 +1078,10 @@ impl Orchestrator {
                 None => return Some(Held::Woke("session died".to_string())),
                 Some("idle" | "done") if asked.is_some() => {}
                 Some(_) => {
+                    if asked.is_some() {
+                        // answered in the pane: no longer open, as a sent answer
+                        let _ = fs::remove_file(file);
+                    }
                     if raised {
                         self.report(ticket, "carrying on"); // answered in the pane
                     }
@@ -1231,6 +1235,9 @@ impl Orchestrator {
                     }
                     Some(_) => {}
                 }
+            } else if reason == ASKED && matches!(status.as_deref(), Some("idle" | "done")) {
+                // a session taken up again in its pane after a Wake asks too
+                return Held::Woke(reason);
             }
             if !self.sleep() {
                 return Held::Stopped;

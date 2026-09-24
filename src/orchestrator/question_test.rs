@@ -99,6 +99,65 @@ fn an_answered_question_left_unwritten_is_no_result_not_asked_again() {
 }
 
 #[test]
+fn a_question_answered_in_the_pane_left_unwritten_is_no_result_not_asked_again() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.typesafe = Fake::down();
+    w.session(|p| match p.stage == "implement" {
+        true => (ASKS.to_string(), "idle".to_string()),
+        false => succeed(p),
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let Some(Ask::StageQuestion { pane, .. }) = w.await_event("question in implement").ask else {
+        panic!("no Question raised");
+    };
+    // answered by typing into the pane, then idle, the file not rewritten
+    w.lock().agents.insert(pane.clone(), "working".to_string());
+    w.await_line("hx-1 carrying on");
+    w.lock().agents.insert(pane.clone(), "idle".to_string());
+    w.await_line("hx-1 stuck in implement: went idle without a result");
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
+
+    let asked = w
+        .lines()
+        .iter()
+        .filter(|l| l.contains("question in"))
+        .count();
+    assert_eq!(
+        asked, 1,
+        "the question answered in the pane was asked again"
+    );
+}
+
+#[test]
+fn a_question_written_after_a_wake_is_put_to_you() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.typesafe = Fake::down();
+    w.session(|p| match p.stage == "implement" {
+        true => (String::new(), "idle".to_string()), // no result: a Wake
+        false => succeed(p),
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let woke = w.await_event("stuck in implement: went idle without a result");
+    let Some(Ask::Wake { pane, .. }) = woke.ask else {
+        panic!("no Wake raised: {:?}", woke.ask);
+    };
+    // taken up again in its pane, the session asks
+    write_file(&o.run_dir("hx-1").join("implement.md"), ASKS);
+    let asked = w.await_event("question in implement");
+    let Some(Ask::StageQuestion { question, .. }) = asked.ask else {
+        panic!("a question raised {:?}, not a Question", asked.ask);
+    };
+    assert_eq!(question, "Which parser stays?");
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
+}
+
+#[test]
 fn away_parks_a_question_with_a_bd_comment_and_the_pane_open() {
     for (stage, label) in [("implement", "implement"), ("review", "review 1")] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
