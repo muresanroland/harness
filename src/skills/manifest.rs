@@ -336,21 +336,27 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
     let from = in_clone(clone.path(), &skill.path)
         .filter(|from| skill_in(from).as_deref() == Some(name))
         .ok_or_else(|| format!("{} no longer has {name} at {}", skill.repo, skill.path))?;
-    // The new copy goes beside the old one first, so that a copy that fails
-    // leaves the installed skill whole.
+    // The new copy goes beside the old one first, and the old one is only
+    // moved aside until the new one is in place, so that a copy or a rename
+    // that fails leaves the installed skill whole.
     let at = repo.join(".agents/skills").join(name);
     let fresh = at.with_file_name(format!(".{name}.new"));
+    let old = at.with_file_name(format!(".{name}.old"));
     let _ = fs::remove_dir_all(&fresh);
+    let _ = fs::remove_dir_all(&old);
     let swapped = copy_dir(&from, &fresh).and_then(|()| {
         if at.exists() {
-            fs::remove_dir_all(&at)?;
+            fs::rename(&at, &old)?;
         }
-        fs::rename(&fresh, &at)
+        fs::rename(&fresh, &at).inspect_err(|_| {
+            let _ = fs::rename(&old, &at);
+        })
     });
     if let Err(err) = swapped {
         let _ = fs::remove_dir_all(&fresh);
         return Err(format!(".agents/skills/{name}: {err}"));
     }
+    let _ = fs::remove_dir_all(&old);
     manifest.skills.get_mut(name).unwrap().commit = commit;
     manifest.save(repo)
 }
