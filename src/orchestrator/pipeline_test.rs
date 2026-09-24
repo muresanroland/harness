@@ -381,14 +381,20 @@ fn a_review_already_done_is_not_guarded_again() {
 #[test]
 fn a_worktree_dirty_before_the_review_is_never_reset() {
     let parked = "hx-1 parked: review 1 changed a worktree already dirty before it, not restored";
-    // The tree as git reports it: the status, `git diff HEAD` and the hash
-    // of the one untracked file, notes.txt.
-    let dirty = (" M src/lib.rs\n?? notes.txt\n", "+one\n", "e69de29\n");
+    // The tree as git reports it: the status, `git diff HEAD`, the one
+    // untracked file's path and its hash.
+    let dirty = (
+        " M src/lib.rs\n?? notes/\n",
+        "+one\n",
+        "notes/a.txt\0",
+        "e69de29\n",
+    );
     for (after, want) in [
         (dirty, "hx-1 PR #hx-1 opened"),
-        ((" M src/lib.rs\n", dirty.1, dirty.2), parked),
-        ((dirty.0, "+two\n", dirty.2), parked),
-        ((dirty.0, dirty.1, "d00491f\n"), parked),
+        ((" M src/lib.rs\n", dirty.1, dirty.2, dirty.3), parked),
+        ((dirty.0, "+two\n", dirty.2, dirty.3), parked),
+        ((dirty.0, dirty.1, "notes/b.txt\0", dirty.3), parked),
+        ((dirty.0, dirty.1, dirty.2, "d00491f\n"), parked),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
         let tree = Arc::new(Mutex::new(dirty));
@@ -404,8 +410,8 @@ fn a_worktree_dirty_before_the_review_is_never_reset() {
             match argv {
                 ["git", "status", "--porcelain"] => Some(Ok(tree.0.to_string())),
                 ["git", "diff", "HEAD", "--binary"] => Some(Ok(tree.1.to_string())),
-                ["git", "ls-files", "--others", ..] => Some(Ok("notes.txt\0".to_string())),
-                ["git", "hash-object", "--", "notes.txt"] => Some(Ok(tree.2.to_string())),
+                ["git", "ls-files", "--others", ..] => Some(Ok(tree.2.to_string())),
+                ["git", "hash-object", "--", _] => Some(Ok(tree.3.to_string())),
                 _ => None,
             }
         });

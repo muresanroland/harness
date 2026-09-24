@@ -196,8 +196,9 @@ impl Orchestrator {
     }
 
     /// The worktree beyond its HEAD: `git status --porcelain`, the content
-    /// of each change to a tracked file and each untracked file's hash, so
-    /// an edit to a file already changed shows too. Empty for a clean tree;
+    /// of each change to a tracked file and each untracked file's path and
+    /// hash, so an edit to a file already changed, or a rename inside an
+    /// untracked directory, shows too. Empty for a clean tree;
     /// None when git cannot say.
     fn tree(&self, ticket: &str) -> Option<String> {
         let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
@@ -211,7 +212,11 @@ impl Orchestrator {
             true => String::new(),
             false => git(&hash)?,
         };
-        Some(format!("{status}{diff}{hashes}").trim().to_string())
+        Some(
+            format!("{status}{diff}{untracked}{hashes}")
+                .trim()
+                .to_string(),
+        )
     }
 
     /// Puts back a worktree the Stage changed: a moved HEAD or a changed
