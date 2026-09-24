@@ -213,7 +213,7 @@ impl Orchestrator {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
-        debate_inputs(&cfg.repo).map_err(io::Error::other)?;
+        debate_inputs(&cfg.repo, "").map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -665,9 +665,10 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
+        let run_dir = self.run_dir(ticket).display().to_string();
         // The Moderator is given each Debate side's command, read now too.
         let sides = match st.name == DEBATE.name {
-            true => match debate_inputs(&self.cfg.repo) {
+            true => match debate_inputs(&self.cfg.repo, &run_dir) {
                 Ok(sides) => sides,
                 Err(err) => return Held::Woke(err),
             },
@@ -719,7 +720,6 @@ impl Orchestrator {
             Instant::now() + 6 * self.cfg.tick
         };
 
-        let run_dir = self.run_dir(ticket).display().to_string();
         let mut agent_args = if st.name == IMPLEMENT.name {
             // Implement plans first (harness-7bj.9), on claude alone
             // (stage_row): its own settings hold the hook that copies each

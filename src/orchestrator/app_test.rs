@@ -110,7 +110,9 @@ fn the_moderators_inputs_carry_each_sides_command() {
     for own in ["claude -p", "codex exec"] {
         assert!(!skill.contains(own), "stage-moderate still runs {own:?}");
     }
-    let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '-p'";
+    // Started in the worktree, a claude side is granted the Run directory,
+    // its sibling, which holds the diff.
+    let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '--add-dir' '{run}' '-p'";
     let codex = "'codex' 'exec' '--sandbox' 'read-only'";
     for (body, side_a, side_b) in [
         ("", claude.to_string(), codex.to_string()),
@@ -136,9 +138,10 @@ fn the_moderators_inputs_carry_each_sides_command() {
             .find(|call| call.contains("verdict-1.md"))
             .unwrap();
         let inputs = prompt.split_once("## Inputs").unwrap().1;
+        let run = o.run_dir("hx-1").display().to_string();
         for want in [
-            format!("- Side A command: {side_a}\n"),
-            format!("- Side B command: {side_b}\n"),
+            format!("- Side A command: {side_a}\n").replace("{run}", &run),
+            format!("- Side B command: {side_b}\n").replace("{run}", &run),
         ] {
             assert!(inputs.contains(&want), "{want:?} not in:{inputs}");
         }

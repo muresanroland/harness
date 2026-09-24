@@ -22,7 +22,8 @@ pub(crate) struct App {
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
     /// The headless read-only command a Debate side and the audit run,
-    /// before the model and effort args; the brief follows.
+    /// before the model and effort args; the brief follows. "{}" is the Run
+    /// directory, where the diff is.
     pub(crate) side: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
@@ -62,8 +63,17 @@ pub(crate) static APPS: [App; 2] = [
         // write an ignored file or a path outside the worktree that the
         // Moderator's git guard cannot put back. The tool list takes every
         // arg up to the next flag: before -p it cannot take the brief as a
-        // tool.
-        side: &["claude", "--tools", "Read,Grep,Glob,Skill", "-p"],
+        // tool. It starts in the worktree: the Run directory, a sibling that
+        // holds the diff, is granted on its own, as the Moderator's grant is
+        // not passed on.
+        side: &[
+            "claude",
+            "--tools",
+            "Read,Grep,Glob,Skill",
+            "--add-dir",
+            "{}",
+            "-p",
+        ],
         trust: claude_records,
     },
     App {
@@ -112,11 +122,9 @@ impl Row {
     /// The headless read-only command, as one shell line: every arg single
     /// quoted, since a model id like claude-opus-5-5[1m] is a glob to the
     /// shell.
-    pub(crate) fn side_command(&self) -> String {
-        self.app
-            .side
-            .iter()
-            .map(|arg| arg.to_string())
+    pub(crate) fn side_command(&self, run_dir: &str) -> String {
+        fill(self.app.side, run_dir)
+            .into_iter()
             .chain(self.flags())
             .map(|arg| quoted(&arg))
             .collect::<Vec<_>>()
@@ -145,10 +153,13 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
 /// from its row. The audit runs on side A's.
-pub(crate) fn debate_inputs(repo: &Path) -> Result<Vec<(&'static str, String)>, String> {
+pub(crate) fn debate_inputs(
+    repo: &Path,
+    run_dir: &str,
+) -> Result<Vec<(&'static str, String)>, String> {
     Ok(vec![
-        ("Side A command", row(repo, "side_a")?.side_command()),
-        ("Side B command", row(repo, "side_b")?.side_command()),
+        ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
+        ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
     ])
 }
 
