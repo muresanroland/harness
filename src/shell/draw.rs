@@ -418,25 +418,20 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
         }
         for (k, (t, &st)) in e.tickets.iter().zip(&all).enumerate() {
             let color = ticket_color(&t.id);
-            let (ind, ic, label, lc) = match st {
-                Status::Working if s.running => ("●", color, "WORKING", color),
-                Status::Working => ("●", color, "IN PROGRESS", TEXT),
-                Status::NeedsYou => ("◆", ORANGE, "NEEDS YOU", ORANGE),
-                Status::Waiting => ("◇", MUTED, "WAITING", MUTED),
-                Status::ToMerge => ("○", BLUE, "TO MERGE", BLUE),
-                Status::Merged if s.running => ("✓", GREEN, "MERGED", GREEN),
-                Status::Merged => ("✓", GREEN, "CLOSED", GREEN),
-                Status::Parked => ("◌", MUTED, "PARKED", MUTED),
-                Status::Queued => ("·", BORDER, "", BORDER),
+            let (ind, ic, label, lc, text) = match st {
+                Status::Working if s.running => ("●", color, "WORKING", color, TEXT),
+                Status::Working => ("●", color, "IN PROGRESS", TEXT, TEXT),
+                Status::NeedsYou => ("◆", ORANGE, "NEEDS YOU", ORANGE, TEXT),
+                Status::Waiting => ("◇", MUTED, "WAITING", MUTED, TEXT),
+                Status::ToMerge => ("○", BLUE, "TO MERGE", BLUE, TEXT),
+                Status::Merged if s.running => ("✓", GREEN, "MERGED", GREEN, TEXT),
+                Status::Merged => ("✓", GREEN, "CLOSED", GREEN, MUTED),
+                Status::Parked => ("◌", MUTED, "PARKED", MUTED, TEXT),
+                Status::Queued => ("·", BORDER, "", BORDER, MUTED),
             };
             // a live Ticket's dot pulses, each on its own phase
             let pulsing = s.running && st == Status::Working && (s.ticks / 6 + k as u64) % 12 >= 6;
             let ic = if pulsing { lerp((ic, BORDER), 0.6) } else { ic };
-            let text = if st == Status::Queued || (st == Status::Merged && !s.running) {
-                MUTED
-            } else {
-                TEXT
-            };
             let stage = match (st, s.state.tickets.get(&t.id)) {
                 (Status::Waiting, _) => {
                     format!("waits on {}", pr_ref(waits_on(s, t).unwrap_or_default()))
