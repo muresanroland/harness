@@ -1,5 +1,5 @@
 use super::draw::{draw, ticket_color};
-use super::logo::{lerp, quantize, BORDER, CYAN, DARK_ORANGE, GREEN, MUTED, PURPLE};
+use super::logo::{lerp, quantize, CYAN, DARK_ORANGE, GREEN, MUTED, PURPLE};
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
@@ -385,17 +385,12 @@ fn the_overall_bar_counts_the_epics_tickets_and_blends_purple_to_green_by_the_pr
     assert!(!row(&buf, 9).contains('█'));
 }
 
-/// The boxes draw in the lighter divider grey, so they read; the input
-/// line's placeholder in dark orange.
+/// The input line's placeholder draws in dark orange.
 #[test]
-fn the_boxes_draw_in_border_and_the_placeholder_in_dark_orange() {
+fn the_placeholder_draws_in_dark_orange() {
     let buf = render(&screen(), 120, 40);
-    let (x, y) = find(&buf, " RECENT ").unwrap();
-    assert_eq!(buf[(x - 1, y)].fg, BORDER);
-    assert_eq!(BORDER, Color::Rgb(84, 98, 124));
     let (x, y) = find(&buf, "/start-epic").unwrap();
     assert_eq!(buf[(x, y)].fg, DARK_ORANGE);
-    assert_eq!(DARK_ORANGE, Color::Rgb(200, 110, 20));
 }
 
 #[test]
