@@ -123,6 +123,7 @@ impl Orchestrator {
                 ts.pr = fix.pr.clone();
                 ts.tab.clear();
                 ts.panes.clear();
+                ts.sessions.clear();
             });
             if !tab.is_empty() {
                 let _ = self.herdr(&["tab", "close", &tab]);
@@ -184,6 +185,7 @@ impl Orchestrator {
                 let _ = self.herdr(&["pane", "close", pane]);
                 self.update(ticket, |ts| {
                     ts.panes.remove(st.name);
+                    ts.sessions.remove(st.name);
                 });
             }
             if let Err(StageError::Parked(kept)) = self.guard(ticket, &label, &snapshot) {

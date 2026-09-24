@@ -1,4 +1,4 @@
-use super::state::{acquire_lock, load_state, lock_holder, State, TicketState};
+use super::state::{acquire_lock, load_state, lock_holder, Session, State, TicketState};
 use crate::tempdir::TempDir;
 use std::fs;
 use std::thread;
@@ -124,6 +124,14 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
             round: 2,
             tab: "w1:t1".to_string(),
             panes: [("review".to_string(), "w1:p2".to_string())].into(),
+            sessions: [(
+                "review".to_string(),
+                Session {
+                    app: "codex".to_string(),
+                    id: "019a-review".to_string(),
+                },
+            )]
+            .into(),
             pr: String::new(),
             reason: "review went idle".to_string(),
             retried: true,
@@ -138,6 +146,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
     for field in [
         "\"tab\"",
         "\"panes\"",
+        "\"sessions\"",
         "\"reason\"",
         "\"retried\"",
         "\"nudged\"",

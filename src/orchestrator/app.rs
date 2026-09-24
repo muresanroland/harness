@@ -21,6 +21,7 @@ pub(crate) struct App {
     pub(crate) run_dir_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
+    pub(crate) resume: &'static [&'static str],
     /// The headless read-only command a Debate side and the audit run,
     /// before the model and effort args; the brief follows. "{}" is the Run
     /// directory, where the diff is.
@@ -58,6 +59,7 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
+        resume: &["--resume", "{}"],
         // Only the read-only tools, named, so a tool added later is out too:
         // a shell or other code-running tool runs unsandboxed here and can
         // write an ignored file or a path outside the worktree that the
@@ -83,6 +85,7 @@ pub(crate) static APPS: [App; 2] = [
         run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
+        resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
     },
@@ -117,6 +120,11 @@ impl Row {
             }
         }
         out
+    }
+
+    /// The args that resume session `id`, ahead of the Stage's own.
+    pub(crate) fn resume(&self, id: &str) -> Vec<String> {
+        fill(self.app.resume, id)
     }
 
     /// The headless read-only command, as one shell line: every arg single

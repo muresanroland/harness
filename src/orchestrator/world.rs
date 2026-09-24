@@ -160,6 +160,11 @@ pub(crate) struct Inner {
     pub(crate) agents: BTreeMap<String, String>,
     /// Agent name -> the pane it was started in.
     pub(crate) names: BTreeMap<String, String>,
+    /// herdr's integration is installed: every agent started gets a session
+    /// id, which 'agent get' reports.
+    pub(crate) integration: bool,
+    /// Pane -> the session id its agent reports.
+    pub(crate) sessions: BTreeMap<String, String>,
     /// Width, height in cells of every pane; zero means roomy and square.
     pub(crate) rect: (usize, usize),
     pub(crate) tickets: Vec<BdTicket>,
@@ -296,9 +301,15 @@ impl World {
 
     /// The calls that start with prefix.
     pub(crate) fn called(&self, prefix: &str) -> Vec<String> {
-        self.calls()
-            .into_iter()
+        self.since(0, prefix)
+    }
+
+    /// The calls since call `before` that start with prefix.
+    pub(crate) fn since(&self, before: usize, prefix: &str) -> Vec<String> {
+        self.calls.lock().unwrap()[before..]
+            .iter()
             .filter(|c| c.starts_with(prefix))
+            .cloned()
             .collect()
     }
 
@@ -369,6 +380,10 @@ impl World {
                 w.planning.insert(pane.clone());
             }
             w.names.insert(argv[3].to_string(), pane.clone());
+            if w.integration {
+                let id = w.id("s");
+                w.sessions.insert(pane.clone(), id);
+            }
             w.agents.insert(pane, "idle".to_string());
             return reply(json!({}));
         }
@@ -424,11 +439,14 @@ impl World {
         if cmd.starts_with("herdr agent get") {
             // a target is a pane id or an agent's name
             let pane = w.names.get(argv[3]).map_or(argv[3], String::as_str);
+            let session = w.sessions.get(pane).map(|id| json!({ "value": id }));
             return match w.agents.get(pane) {
                 None => Err(r#"{"error":{"code":"agent_not_found"}}"#.to_string()),
-                Some(status) => {
-                    reply(json!({ "agent": { "agent_status": status, "pane_id": pane } }))
-                }
+                Some(status) => reply(json!({ "agent": {
+                    "agent_status": status,
+                    "pane_id": pane,
+                    "agent_session": session,
+                } })),
             };
         }
 
@@ -682,6 +700,13 @@ impl Tools for World {
             stderr,
         })
     }
+}
+
+/// A new process over the saved state, its Events to the same panel.
+pub(crate) fn restarted(w: &Arc<World>, o: &Orchestrator) -> Arc<Orchestrator> {
+    let mut cfg = Config::for_tests(w.clone(), &w.repo, &w.home);
+    cfg.events = o.cfg.events.clone();
+    Arc::new(Orchestrator::with_state(cfg, load_state(&w.repo).unwrap()))
 }
 
 /// A Ticket running on its own thread, the port of `go o.runTicket(...)`
