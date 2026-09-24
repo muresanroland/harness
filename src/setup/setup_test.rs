@@ -204,6 +204,30 @@ fn moving_an_older_install_leaves_the_shipped_skills_the_repo_committed() {
     );
 }
 
+#[test]
+fn moving_from_user_level_without_home_keeps_the_location() {
+    let repo = TempDir::new();
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    manifest.location = Some(Location::User);
+    manifest.save(repo.path()).unwrap();
+    // This checkout, with no HOME to find the user-level skills in.
+    let err = install_skills(
+        repo.path(),
+        Path::new(""),
+        &*Fake::quiet(),
+        false,
+        &mut Vec::new(),
+        &mut "1".as_bytes(),
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("no HOME"), "{err}");
+    assert_eq!(
+        Manifest::load(repo.path()).unwrap().location,
+        Some(Location::User)
+    );
+}
+
 fn record(repo: &Path) -> BTreeMap<String, String> {
     serde_json::from_str(&read(repo, RECORD)).unwrap()
 }

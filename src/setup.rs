@@ -72,9 +72,10 @@ pub(crate) fn install_skills(
     } else {
         ask_location(out, &mut *input, tty, current)?
     };
-    if location == Location::User && home.as_os_str().is_empty() {
+    // Moving from user level needs HOME too, to find the skills it moves.
+    if [current, location].contains(&Location::User) && home.as_os_str().is_empty() {
         return Err(io::Error::other(
-            "no HOME, so no user level to put the skills in",
+            "no HOME, so no user level to put the skills in or move them from",
         ));
     }
     if location != current {
