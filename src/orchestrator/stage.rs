@@ -208,9 +208,6 @@ pub(crate) struct Orchestrator {
     /// with other text is a newer one. In memory, so a restarted run judges
     /// the plan on screen again.
     pub(super) plans: Mutex<BTreeMap<String, String>>,
-    /// Pane -> the limit line its session was resumed from, which is not
-    /// read as a limit again.
-    pub(super) resumed: Mutex<BTreeMap<String, String>>,
     /// The Ticket threads, which the binary never joins; the tests do, so a
     /// failure on one fails the test.
     #[cfg(test)]
@@ -242,7 +239,6 @@ impl Orchestrator {
             active: Mutex::new(BTreeSet::new()),
             deadlines: Mutex::new(BTreeMap::new()),
             plans: Mutex::new(BTreeMap::new()),
-            resumed: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             threads: Mutex::new(Vec::new()),
         }
@@ -541,6 +537,7 @@ impl Orchestrator {
         let saved = self.ticket(ticket);
         let resumed = saved.stage == st.name && saved.round == round;
         self.update(ticket, |ts| {
+            ts.limited.clear(); // a hold sets it again
             if !resumed {
                 ts.stage = st.name.to_string();
                 ts.round = round;
@@ -605,7 +602,7 @@ impl Orchestrator {
                 if self.stopping() {
                     return Err(StageError::Stopped);
                 }
-                let (reason, shown) = match held {
+                let (reason, at_limit) = match held {
                     Held::Done(result) => return Ok(result),
                     Held::Stopped => return Err(StageError::Stopped),
                     Held::Park => return Err(StageError::Parked(format!("by you at {label}"))),
@@ -621,7 +618,7 @@ impl Orchestrator {
                 let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
                 let tail = self.tail(&name, 120);
                 // A usage limit is never a Wake: the Ticket holds until the reset.
-                if let Some(limit) = shown.or_else(|| self.limit_shown(&ts, st, &pane, &tail)) {
+                if let Some(limit) = at_limit.or_else(|| self.limit_shown(&ts, st, &tail)) {
                     held = self.limited(ticket, st, &label, &pane, &file, want, limit);
                     continue;
                 }
@@ -1003,7 +1000,7 @@ impl Orchestrator {
             }
         }
         let tail = self.tail(pane, LAST_LINES);
-        if let Some(limit) = self.limit_shown(&self.ticket(ticket), st, pane, &tail) {
+        if let Some(limit) = self.limit_shown(&self.ticket(ticket), st, &tail) {
             return Some(Held::Limited(limit));
         }
         self.blocked(ticket, st, label, pane, &self.locate(pane))

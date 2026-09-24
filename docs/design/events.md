@@ -57,14 +57,14 @@ Decided on the map tickets "Limited" (harness-0sx.8) and "Apps per Stage" (harne
 | Moment | Wording |
 |---|---|
 | a Stage's session hits a limit | claude session limit until 3:45pm: implement holds (pane 2-1) · codex usage limit until 3:05pm: review 1 holds (pane 2-2) |
-| a Stage about to start on a Limited App | *log only:* review 1 holds: codex limited until 3:05pm |
+| a Stage about to start on an App at its limit | *log only:* review 1 holds: codex limited until 3:05pm |
 | the reset + 2 minutes | claude session limit over: implement carries on (pane 2-1) *(a pane still idle with no result is sent `continue` first)* |
 | a long limit (a reset more than a day away, or Claude's options menu) | *(harness)* claude weekly limit until Mon 12:00am: sessions saved, panes closed, /continue after the reset *(the run ends; no "stopped" line follows)* |
 | a session that would not take the continue | Wake reason: never took the continue |
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context · never took the continue
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · never took the continue · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
 
 The last five are plan failures: a Question for the user, no Judgment asked.
 

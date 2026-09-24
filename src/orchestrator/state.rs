@@ -72,8 +72,9 @@ pub(crate) struct State {
     pub(crate) epic: String,
     #[serde(default, deserialize_with = "null_is_empty")]
     pub(crate) tickets: BTreeMap<String, TicketState>,
-    /// App name -> when its usage limit resets: no Stage starts on it until
-    /// then, in this run or a /continue after the Harness closed.
+    /// App name -> when its last usage limit resets: no Stage starts on it
+    /// until then, in this run or a /continue after the Harness closed.
+    /// Kept once past, so the old line of a reset limit is no new one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) limits: BTreeMap<String, chrono::DateTime<chrono::Local>>,
 }

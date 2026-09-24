@@ -1,5 +1,6 @@
-//! Limited: a Stage's App at its provider's usage limit, read from the last
-//! lines of its pane. Never a Wake: the App holds until the reset.
+//! Limited: a Ticket held because the App its Stage runs on hit its
+//! provider's usage limit, read from the last lines of the Stage's pane.
+//! Never a Wake: every Stage on that App holds until the reset.
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -17,11 +18,11 @@ use super::state::TicketState;
 pub(super) const LAST_LINES: usize = 20;
 
 /// Claude's usage-limit options menu, which opens instead of its own wait
-/// for a reset more than a day away (docs/research/usage-limits.md).
+/// for a reset more than a day away (the research/usage-limits branch).
 const MENU: &str = "What do you want to do?";
 
-/// Claude carries on by itself at the reset: a session still idle this long
-/// after it is told to, and the App holds until then.
+/// How long after the reset the App still holds: Claude carries on by
+/// itself at the reset, and a session still idle after this is told to.
 const GRACE: Duration = Duration::minutes(2);
 
 /// A usage limit shown in a Stage's pane.
@@ -34,8 +35,6 @@ pub(crate) struct Limit {
     /// A reset more than a day away, or Claude's options menu: the run
     /// ends rather than hold.
     pub(crate) long: bool,
-    /// The line it was read from.
-    pub(crate) line: String,
 }
 
 /// The limit the last lines of `tail` show for `app`: the newest line one
@@ -60,7 +59,6 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
                     .to_string(),
                 reset,
                 long: reset > now + Duration::hours(24) || last.iter().any(|l| l.contains(MENU)),
-                line: line.to_string(),
             });
         }
     }
@@ -131,19 +129,10 @@ pub(crate) fn holds(reset: DateTime<Local>, now: DateTime<Local>) -> bool {
 }
 
 impl Orchestrator {
-    /// When `app`'s usage limit resets, while it holds; a passed one is
-    /// forgotten.
+    /// When `app`'s usage limit resets, while it holds.
     fn limited_until(&self, app: &str) -> Option<DateTime<Local>> {
         let reset = *self.state.lock().unwrap().limits.get(app)?;
-        if holds(reset, (self.cfg.clock)()) {
-            return Some(reset);
-        }
-        self.change_state(|state| {
-            if state.limits.get(app) == Some(&reset) {
-                state.limits.remove(app);
-            }
-        });
-        None
+        holds(reset, (self.cfg.clock)()).then_some(reset)
     }
 
     /// Holds the Ticket while `app` is Limited, its row reading so: a Stage
@@ -174,18 +163,18 @@ impl Orchestrator {
     }
 
     /// The usage limit the last lines of `tail`, the Stage's pane's, show
-    /// for the App its session runs on; not the line the session in `pane`
-    /// was resumed from, which a time alone would read as tomorrow's.
-    pub(super) fn limit_shown(
-        &self,
-        ts: &TicketState,
-        st: &Stage,
-        pane: &str,
-        tail: &str,
-    ) -> Option<Limit> {
+    /// for the App its session runs on. A time alone is its next
+    /// occurrence, so the line of a limit already reset reads a day on: a
+    /// short one at the time of day of the App's last reset, and later, is
+    /// that old line, no limit.
+    pub(super) fn limit_shown(&self, ts: &TicketState, st: &Stage, tail: &str) -> Option<Limit> {
         let app = app(&ts.sessions.get(st.name)?.app)?;
         let limit = find(app, tail, (self.cfg.clock)())?;
-        (self.resumed.lock().unwrap().get(pane) != Some(&limit.line)).then_some(limit)
+        let last = self.state.lock().unwrap().limits.get(app.name).copied();
+        let old = last.is_some_and(|last| {
+            !limit.long && limit.reset > last && limit.reset.time() == last.time()
+        });
+        (!old).then_some(limit)
     }
 
     /// A Stage's session at a usage limit, which holds its App from now. A
@@ -210,7 +199,6 @@ impl Orchestrator {
             what,
             reset,
             long,
-            line,
         } = limit;
         self.change_state(|state| {
             let saved = state.limits.entry(app.to_string()).or_insert(reset);
@@ -236,7 +224,6 @@ impl Orchestrator {
         if let Some(held) = self.wait_limit(ticket, label, app) {
             return held;
         }
-        self.resumed.lock().unwrap().insert(pane.to_string(), line);
         let idle = matches!(
             self.watch(ticket, st, pane).as_deref(),
             Some("idle" | "done")
@@ -251,5 +238,24 @@ impl Orchestrator {
             &format!("{app} {what} over: {label} carries on {at}"),
         );
         self.hold(ticket, st, label, pane, file, want, true, None)
+    }
+
+    /// Whether a long usage limit ended the run.
+    pub(crate) fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// A Ticket leaving a run a long usage limit ended closes its tab; its
+    /// session ids stay saved, so /continue resumes each Stage by its id.
+    pub(super) fn close_on_limit(&self, ticket: &str) {
+        let tab = self.ticket(ticket).tab;
+        if !self.closed() || tab.is_empty() {
+            return;
+        }
+        let _ = self.herdr(&["tab", "close", &tab]);
+        self.update(ticket, |ts| {
+            ts.tab.clear();
+            ts.panes.clear();
+        });
     }
 }

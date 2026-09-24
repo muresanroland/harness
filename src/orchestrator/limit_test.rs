@@ -3,12 +3,13 @@ use super::judgment::fake::Fake as TypeSafeFake;
 use super::limit::{find, until, Limit};
 use super::stage::Orchestrator;
 use super::state::load_state;
-use super::world::{new_world, restarted, spawn_ticket, succeed, BdTicket, World};
+use super::world::{
+    new_world, restarted, set_clock, spawn_ticket, succeed, wait_until, BdTicket, World,
+};
 use super::write_file;
 use chrono::{DateTime, Local, TimeZone};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
 
 /// Friday 25 Sep 2026, 2pm, local time.
 fn now() -> DateTime<Local> {
@@ -20,6 +21,7 @@ fn at(day: u32, hour: u32, min: u32) -> DateTime<Local> {
     Local.with_ymd_and_hms(2026, 9, day, hour, min, 0).unwrap()
 }
 
+/// The limit `tail` shows for the App named `app_name`, at now().
 fn found(app_name: &str, tail: &str) -> Option<Limit> {
     find(app(app_name).unwrap(), tail, now())
 }
@@ -157,19 +159,7 @@ const CODEX: &str = "■ You’ve hit your usage limit. Try again at 3:05 PM.";
 
 /// Sets the Orchestrator's wall clock at now(); the test moves it.
 fn clock(o: &mut Orchestrator) -> Arc<Mutex<DateTime<Local>>> {
-    let at = Arc::new(Mutex::new(now()));
-    let read = at.clone();
-    o.cfg.clock = Arc::new(move || *read.lock().unwrap());
-    at
-}
-
-/// Waits up to 5s for `done`.
-fn until_it(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
-    while !done() {
-        assert!(Instant::now() < deadline, "{what} never happened");
-        thread::sleep(std::time::Duration::from_millis(1));
-    }
+    set_clock(&mut o.cfg, now())
 }
 
 /// Ticket `ticket`'s `stage` session stops at a usage limit: no result, its
@@ -269,7 +259,7 @@ fn a_limited_app_holds_every_tickets_next_stage_on_it_while_the_other_app_runs()
     let _three = spawn_ticket(o.clone(), "hx-3");
 
     w.await_line("hx-3 review 1 started: codex");
-    until_it("hx-2 and hx-3 held on claude", || {
+    wait_until("hx-2 and hx-3 held on claude", || {
         o.ticket("hx-2").limited == "claude" && o.ticket("hx-3").limited == "claude"
     });
     thread::sleep(std::time::Duration::from_millis(20));
@@ -318,8 +308,9 @@ fn the_deadline_holds_off_and_at_the_reset_plus_two_minutes_an_idle_pane_gets_co
     assert_eq!(w.called(&go_on).len(), 1);
     w.await_line("hx-1 claude session limit over: implement carries on (pane 1-1)");
     w.await_line("hx-1 PR #hx-1 opened");
-    assert!(o.state.lock().unwrap().limits.is_empty());
     assert!(o.ticket("hx-1").limited.is_empty());
+    // kept once past: its old line is no new limit
+    assert_eq!(o.state.lock().unwrap().limits["claude"], at(25, 15, 45));
 }
 
 #[test]
@@ -379,7 +370,7 @@ fn a_long_limit_saves_the_ids_closes_the_tabs_and_ends_the_run_and_continue_resu
         let o = restarted(&w, &o);
         let before = w.calls().len();
         let mut run = spawn_ticket(o.clone(), "hx-1");
-        until_it("hx-1 held", || o.ticket("hx-1").limited == "claude");
+        wait_until("hx-1 held", || o.ticket("hx-1").limited == "claude");
         thread::sleep(std::time::Duration::from_millis(20));
         assert!(w.since(before, "herdr agent start ").is_empty());
         *clock.lock().unwrap() = at(28, 0, 2);
@@ -392,4 +383,53 @@ fn a_long_limit_saves_the_ids_closes_the_tabs_and_ends_the_run_and_continue_resu
             "{starts:?}"
         );
     }
+}
+
+#[test]
+fn a_limit_line_past_its_saved_reset_is_not_read_as_tomorrows() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    let clock = clock(&mut o);
+    hits(&w, "hx-1", "implement", "idle", CLAUDE);
+    let o = Arc::new(o);
+    let run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 claude session limit until 3:45pm: implement holds (pane 1-1)");
+    drop(run); // /stop-work during the hold, the pane left as it was
+
+    // /continue after the reset, in a new process: the pane still shows
+    // "resets 3:45pm", which is today's, now past, not tomorrow's
+    *clock.lock().unwrap() = at(25, 15, 50);
+    let o = restarted(&w, &o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 stuck in implement: went idle without a result (pane 1-1)");
+    assert!(o.ticket("hx-1").limited.is_empty());
+}
+
+#[test]
+fn a_limit_with_no_reset_is_looked_at_again_after_an_hour() {
+    let later = "■ You’ve hit your usage limit. Try again later.";
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    let typesafe = TypeSafeFake::down();
+    o.cfg.typesafe = typesafe.clone();
+    let clock = clock(&mut o);
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    let world = w.clone();
+    w.session(move |p| {
+        if p.stage == "review" {
+            world.lock().tails.insert(p.pane.clone(), later.to_string());
+        }
+        (String::new(), "idle".to_string()) // continue changes nothing
+    });
+    let o = Arc::new(o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 codex usage limit until 3:00pm: review 1 holds (pane 1-1)");
+
+    *clock.lock().unwrap() = at(25, 15, 2);
+    w.await_line("hx-1 codex usage limit until 4:02pm: review 1 holds (pane 1-1)");
+    let stuck: Vec<String> = w
+        .lines()
+        .into_iter()
+        .filter(|l| l.contains("stuck"))
+        .collect();
+    assert!(stuck.is_empty(), "a limit Woke: {stuck:?}");
+    assert!(typesafe.requests().is_empty(), "a Judgment was asked");
 }

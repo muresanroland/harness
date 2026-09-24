@@ -711,6 +711,27 @@ impl Tools for World {
     }
 }
 
+/// Sets `cfg`'s wall clock at `at`; the test moves it through what this
+/// gives back.
+pub(crate) fn set_clock(
+    cfg: &mut Config,
+    at: chrono::DateTime<chrono::Local>,
+) -> Arc<Mutex<chrono::DateTime<chrono::Local>>> {
+    let clock = Arc::new(Mutex::new(at));
+    let read = clock.clone();
+    cfg.clock = Arc::new(move || *read.lock().unwrap());
+    clock
+}
+
+/// Waits up to 5s for `done`.
+pub(crate) fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} never happened");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// A new process over the saved state, its Events to the same panel, on
 /// the same clock.
 pub(crate) fn restarted(w: &Arc<World>, o: &Orchestrator) -> Arc<Orchestrator> {

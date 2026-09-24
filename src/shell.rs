@@ -11,7 +11,6 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -425,7 +424,7 @@ impl Screen {
         self.composing = false;
         if run.o.stopping() {
             // a long usage limit has said it closed the panes
-            if !run.o.closed.load(Ordering::SeqCst) {
+            if !run.o.closed() {
                 self.say("stopped, panes left running, /continue resumes");
             }
         } else if run.failed {

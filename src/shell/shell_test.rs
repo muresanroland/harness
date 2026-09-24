@@ -13,7 +13,7 @@ use crate::orchestrator::state::{
     acquire_lock, load_state, State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
     STATUS_RUNNING,
 };
-use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
+use crate::orchestrator::world::{new_world, set_clock, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
@@ -1188,9 +1188,7 @@ fn a_limited_app_is_an_amber_box_and_its_held_tickets_read_limited_until() {
     let now = chrono::Local
         .with_ymd_and_hms(2026, 9, 25, 14, 0, 0)
         .unwrap();
-    let clock = Arc::new(Mutex::new(now));
-    let read = clock.clone();
-    s.cfg.clock = Arc::new(move || *read.lock().unwrap());
+    let clock = set_clock(&mut s.cfg, now);
     let reset = chrono::Local
         .with_ymd_and_hms(2026, 9, 25, 15, 45, 0)
         .unwrap();
@@ -1251,9 +1249,7 @@ fn a_long_limit_ends_the_run_and_continue_after_the_reset_resumes_it() {
     let now = chrono::Local
         .with_ymd_and_hms(2026, 9, 25, 14, 0, 0)
         .unwrap();
-    let clock = Arc::new(Mutex::new(now));
-    let read = clock.clone();
-    s.cfg.clock = Arc::new(move || *read.lock().unwrap());
+    let clock = set_clock(&mut s.cfg, now);
     s.command("/start-ticket hx-1");
     await_line(
         &mut s,
