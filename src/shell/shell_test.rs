@@ -1,6 +1,6 @@
 use super::draw::{draw, ticket_color};
 use super::logo::{
-    lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GREEN, MUTED, ORANGE, PINK, PURPLE, TEXT,
+    lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GREEN, MUTED, ORANGE, PINK, PURPLE, RED, TEXT,
 };
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
@@ -390,46 +390,122 @@ fn the_placeholder_draws_in_dark_orange() {
     assert_eq!(buf[(x, y)].fg, DARK_ORANGE);
 }
 
+/// RECENT under its rule, newest on its last row with blank rows above; the
+/// Ticket column as wide as the longest name shown, up to 34% of the width,
+/// cut with … and colored per Ticket.
 #[test]
-fn recent_is_newest_first_with_the_ticket_column_colored_and_cut_to_22() {
+fn recent_is_newest_at_the_bottom_with_the_ticket_column_as_wide_as_its_longest_name() {
     let mut s = screen();
     s.push(event(None, "started Epic harness-kqe: 3 Tickets", true));
-    s.push(event(Some("harness-kqe.9"), "implement prompted", false));
-    s.push(event(Some("harness-kqe.9"), "implemented", true));
+    s.push(event(Some("harness-kqe.11"), "implement prompted", false));
+    s.push(event(Some("harness-kqe.11"), "implemented", true));
+    // 80x24: RECENT is rows 18 to 21, its rule and three lines, unboxed.
     let buf = render(&s, 80, 24);
-    let (_, y) = find(&buf, " RECENT ").unwrap();
+    assert_eq!(row(&buf, 18), format!(" ── RECENT {} ", "─".repeat(68)));
+    assert!(row(&buf, 19).trim().is_empty(), "{:#?}", rows(&buf));
     assert_eq!(
-        row(&buf, y + 1).trim_matches(|c| c == '│' || c == ' '),
-        "12:04:44  9 The Shell, idle: har  implemented"
+        row(&buf, 20).trim_end(),
+        " 12:04:44  harness       started Epic harness-kqe: 3 Tickets"
     );
     assert_eq!(
-        row(&buf, y + 2).trim_matches(|c| c == '│' || c == ' '),
-        "12:04:44  harness                 started Epic harness-kqe: 3 Tickets"
+        row(&buf, 21).trim_end(),
+        " 12:04:44  11 Questions  implemented"
     );
     assert!(
         find(&buf, "prompted").is_none(),
         "a log-only Event reached the panel"
     );
-    let (x, y) = find(&buf, "9 The Shell, idle: har  implemented").unwrap();
-    assert_eq!(buf[(x, y)].fg, CYAN);
-    assert_eq!(ticket_color("harness-kqe.9"), CYAN);
+    let (x, y) = find(&buf, "11 Questions  implemented").unwrap();
+    assert_eq!(buf[(x, y)].fg, ticket_color("harness-kqe.11"));
     let (x, y) = find(&buf, "harness   ").unwrap();
     assert_eq!(buf[(x, y)].fg, MUTED);
-    // Under 70 terminal columns the Ticket column narrows to 12.
-    let buf = render(&s, 70, 24);
-    let (_, y) = find(&buf, " RECENT ").unwrap();
-    assert!(
-        row(&buf, y + 1).contains("12:04:44  9 The Shell, idle: har  implemented"),
-        "70 columns narrow the column: {:?}",
-        row(&buf, y + 1)
+    // A name longer than 34% of the width is cut there: 27 of 80 columns.
+    s.push(event(Some("harness-kqe.9"), "reviewed", true));
+    let buf = render(&s, 80, 24);
+    assert_eq!(
+        row(&buf, 21).trim_end(),
+        " 12:04:44  9 The Shell, idle: harness…  reviewed"
     );
-    let buf = render(&s, 69, 24);
-    let (_, y) = find(&buf, " RECENT ").unwrap();
-    assert!(
-        row(&buf, y + 1).contains("12:04:44  9 The Shell,  implemented"),
-        "69 columns keep the wide column: {:?}",
-        row(&buf, y + 1)
+    assert_eq!(
+        row(&buf, 20).trim_end(),
+        " 12:04:44  11 Questions                 implemented"
     );
+    let (x, y) = find(&buf, "9 The Shell, idle: harness…").unwrap();
+    assert_eq!(buf[(x, y)].fg, CYAN);
+    assert_eq!(ticket_color("harness-kqe.9"), CYAN);
+    // 40 of 120 columns.
+    assert!(
+        find(
+            &render(&s, 120, 40),
+            " 12:04:44  9 The Shell, idle: harness opens the sc…  reviewed"
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&render(&s, 120, 40))
+    );
+}
+
+/// Up and Down scroll RECENT while the input is empty, the rule counting the
+/// lines hidden older and newer; scrolled up, a new line leaves the view where
+/// it is, and back at the bottom the view follows the newest again.
+#[test]
+fn up_and_down_scroll_recent_and_its_rule_counts_older_and_newer() {
+    let mut s = screen();
+    for n in 0..10 {
+        s.push(event(None, &format!("line {n}"), true));
+    }
+    // 80x24 shows three lines: the rule on row 18, the lines on 19 to 21.
+    let shown = |s: &Screen| {
+        let buf = render(s, 80, 24);
+        let rule = row(&buf, 18).trim_end_matches([' ', '─']).to_string();
+        let lines: Vec<String> = (19..22)
+            .map(|y| {
+                row(&buf, y)
+                    .trim_end()
+                    .rsplit("  ")
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        (rule, lines)
+    };
+    let view = |rule: &str, first: usize| {
+        let lines = (first..first + 3).map(|n| format!("line {n}")).collect();
+        (format!(" ── RECENT{rule}"), lines)
+    };
+    assert_eq!(shown(&s), view("  ↑ 7 older", 7));
+    s.key(key(KeyCode::Up));
+    assert_eq!(shown(&s), view("  ↑ 6 older · ↓ 1 newer", 6));
+    s.push(event(None, "line 10", true));
+    assert_eq!(
+        shown(&s),
+        view("  ↑ 6 older · ↓ 2 newer", 6),
+        "a new line moved the view"
+    );
+    for _ in 0..20 {
+        s.key(key(KeyCode::Up));
+    }
+    assert_eq!(shown(&s), view("  ↓ 8 newer", 0), "kept inside the lines");
+    for _ in 0..8 {
+        s.key(key(KeyCode::Down));
+    }
+    assert_eq!(shown(&s), view("  ↑ 8 older", 8));
+    s.push(event(None, "line 11", true));
+    assert_eq!(shown(&s), view("  ↑ 9 older", 9), "the bottom follows");
+    assert_eq!(s.scroll.get(), 0, "Up and Down scrolled TICKETS");
+    // Text on the input line keeps the arrows off RECENT.
+    s.key(key(KeyCode::Up));
+    s.key(key(KeyCode::Char('x')));
+    s.key(key(KeyCode::Down));
+    assert_eq!(shown(&s), view("  ↑ 8 older · ↓ 1 newer", 8));
+    s.key(key(KeyCode::Up));
+    assert_eq!(shown(&s), view("  ↑ 8 older · ↓ 1 newer", 8));
+    // Fewer lines than rows: nothing to scroll, the rule counts nothing.
+    let mut s = screen();
+    s.push(event(None, "line 0", true));
+    s.key(key(KeyCode::Up));
+    assert_eq!(shown(&s).0, " ── RECENT");
 }
 
 #[test]
@@ -791,6 +867,72 @@ fn the_live_status_row_counts_each_label_and_drops_its_glyphs_then_its_end_when_
     );
 }
 
+/// MERGE TO UNBLOCK: a red box between RECENT (or the Question in its place)
+/// and the input, a line per open PR a waiting Ticket depends on with every
+/// Ticket waiting on it; no box when nothing waits.
+#[test]
+fn merge_to_unblock_lists_each_pr_a_waiting_ticket_depends_on() {
+    let mut s = sections_screen(true);
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 35).starts_with("┌ MERGE TO UNBLOCK ─"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert_eq!(
+        row(&buf, 36).trim_matches(['│', ' ']),
+        "merge to unblock 5: https://github.com/o/r/pull/31"
+    );
+    assert!(row(&buf, 37).starts_with('└'));
+    assert_eq!(buf[(0, 35)].fg, RED);
+    let (x, y) = find(&buf, "merge to unblock").unwrap();
+    assert_eq!(buf[(x, y)].fg, RED);
+    assert!(find(&buf, " QUESTION ").unwrap().1 < 35);
+    // 8 waits on 3's PR and on 6's: 3's line names 5 and 8, 6's names 8;
+    // 2's PR, which nothing waits on, has no line.
+    let pr_open = |s: &mut Screen, n: usize| {
+        let ts = s.state.tickets.get_mut(&format!("harness-a.{n}")).unwrap();
+        ts.status = STATUS_PR_OPEN.to_string();
+        ts.pr = format!("https://github.com/o/r/pull/{}", 28 + n);
+    };
+    pr_open(&mut s, 6);
+    pr_open(&mut s, 2);
+    *s.epics[0]
+        .tickets
+        .iter_mut()
+        .find(|t| t.id == "harness-a.8")
+        .unwrap() = serde_json::from_str(
+        r#"{"id":"harness-a.8","title":"Models","status":"open","issue_type":"task","parent":"harness-a",
+            "dependencies":[{"depends_on_id":"harness-a.3","type":"blocks"},{"depends_on_id":"harness-a.6","type":"blocks"}]}"#,
+    )
+    .unwrap();
+    let buf = render(&s, 120, 40);
+    assert!(row(&buf, 34).starts_with("┌ MERGE TO UNBLOCK ─"));
+    assert_eq!(
+        [35, 36].map(|y| row(&buf, y).trim_matches(['│', ' ']).to_string()),
+        [
+            "merge to unblock 5, 8: https://github.com/o/r/pull/31",
+            "merge to unblock 8: https://github.com/o/r/pull/34",
+        ]
+    );
+    assert!(find(&buf, "pull/30").is_none(), "{:#?}", rows(&buf));
+    // Nothing waits: 3 and 6 merged, or no run live.
+    for n in [3, 6] {
+        s.state
+            .tickets
+            .get_mut(&format!("harness-a.{n}"))
+            .unwrap()
+            .status = STATUS_MERGED.to_string();
+    }
+    assert!(find(&render(&s, 120, 40), "MERGE TO UNBLOCK").is_none());
+    let buf = render(&sections_screen(false), 120, 40);
+    assert!(find(&buf, "MERGE TO UNBLOCK").is_none());
+    assert!(
+        find(&buf, "merge to unblock").is_none(),
+        "idle, a Ticket blocked on an open PR waits on nothing"
+    );
+}
+
 #[test]
 fn a_parked_ticket_of_the_saved_run_reads_parked() {
     let mut s = screen();
@@ -833,18 +975,18 @@ fn a_tall_tree_scrolls_to_its_last_epic_and_one_that_fits_never_scrolls() {
         rows(&buf)
     );
     assert!(find(&buf, "more").is_none(), "the last rows need no tail");
-    for _ in 0..3 {
-        s.key(key(KeyCode::Up));
-    }
-    let buf = render(&s, 80, 24);
-    assert_eq!(s.scroll.get(), 16);
-    assert!(find(&buf, "… 4 more, PgDn").is_some(), "{:#?}", rows(&buf));
-    s.key(key(KeyCode::PageUp));
-    assert_eq!(s.scroll.get(), 6);
-    // Typing takes the arrows back for the input line.
-    s.key(key(KeyCode::Char('/')));
+    // Up and Down are RECENT's.
+    s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Down));
-    assert_eq!(s.scroll.get(), 6);
+    assert_eq!(s.scroll.get(), 19);
+    s.key(key(KeyCode::PageUp));
+    let buf = render(&s, 80, 24);
+    assert_eq!(s.scroll.get(), 9);
+    assert!(find(&buf, "… 11 more, PgDn").is_some(), "{:#?}", rows(&buf));
+    // Typing takes the keys back for the input line.
+    s.key(key(KeyCode::Char('/')));
+    s.key(key(KeyCode::PageUp));
+    assert_eq!(s.scroll.get(), 9);
 }
 
 #[test]
@@ -1686,8 +1828,11 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
     assert!(s.hidden);
     let buf = render(&s, 120, 40);
     assert!(find(&buf, " QUESTION ").is_none());
-    let (_, y) = find(&buf, " RECENT ").unwrap();
-    assert!(row(&buf, y + 1).contains("11 Questions            asking you: stuck in fix 1"));
+    assert!(
+        row(&buf, 37).contains("11 Questions  asking you: stuck in fix 1"),
+        "RECENT's last row, above the notice: {:#?}",
+        rows(&buf)
+    );
     assert!(
         row(&buf, 8).contains("/continue resumes  ·  1 question waiting"),
         "{:?}",
