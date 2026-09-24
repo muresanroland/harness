@@ -424,3 +424,64 @@ fn a_refused_probe_shows_what_the_app_said() {
         assert!(!repo.path().join(".harness/config.json").exists());
     }
 }
+
+/// A model that does not list the row's effort takes it back to default;
+/// picking the value a row already has changes nothing, not even a probe.
+#[test]
+fn a_model_without_the_effort_resets_it_and_the_current_pick_changes_nothing() {
+    let repo = TempDir::new();
+    let file = repo.path().join(".harness/config.json");
+    write_file(
+        &file,
+        r#"{"review": {"model": "gpt-6-sol", "effort": "xhigh"}}"#,
+    );
+    let tools = apps("");
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    keys(
+        &mut s,
+        &[KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter],
+    );
+    type_in(&mut s, "5.6-sol"); // it lists low alone
+    s.key(key(KeyCode::Enter));
+    await_probe(&mut s);
+    assert_eq!(
+        config_json(repo.path()),
+        json!({"review": {"model": "gpt-5.6-sol", "effort": "default"}})
+    );
+    let (calls, saved) = (tools.calls().len(), std::fs::read_to_string(&file).unwrap());
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Enter]); // the cursor opens on the current one
+    assert!(s.settings.as_ref().unwrap().probe.is_none());
+    assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
+    assert_eq!(note(&s), "");
+}
+
+/// A row on an App the table does not have still lists the Apps to move it
+/// to one.
+#[test]
+fn a_row_on_an_unknown_app_can_be_moved_to_a_listed_one() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"fix": {"app": "gemini"}}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    let open_fix = [
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Enter,
+        KeyCode::Enter,
+    ];
+    keys(&mut s, &open_fix);
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "▸ claude").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "  codex").is_some(), "{:#?}", rows(&buf));
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Enter]); // claude, then its default
+    assert_eq!(
+        config_json(repo.path()),
+        json!({"fix": {"app": "claude", "model": "default"}})
+    );
+}

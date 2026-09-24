@@ -762,7 +762,7 @@ impl Screen {
             return;
         }
         if self.settings.is_some() {
-            return self.config_key(key);
+            return self.config_key(key.code, held);
         }
         // With a Question showing and the input line empty the keys are
         // its: arrows or a number pick, Enter answers, Esc hides or cancels,

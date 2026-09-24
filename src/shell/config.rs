@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
 use ratatui::style::Color;
 use serde_json::{json, Value};
 
@@ -146,8 +146,9 @@ pub(crate) struct Pick {
     pub(crate) filter: String,
 }
 
+/// What a pick list's entry picks.
 #[derive(Clone)]
-pub(crate) enum Choice {
+pub(crate) enum Picked {
     App(&'static App),
     /// A model or an effort, as the pick's field says.
     Value(String),
@@ -155,19 +156,19 @@ pub(crate) enum Choice {
     Typed,
 }
 
-/// A line of a pick list; no choice is a heading.
+/// A line of a pick list; one that picks nothing is a heading.
 pub(crate) struct Entry {
     pub(crate) name: String,
     pub(crate) detail: String,
     pub(crate) current: bool,
-    pub(crate) choice: Option<Choice>,
+    pub(crate) picks: Option<Picked>,
 }
 
 /// A named model being tried before its change saves.
 pub(crate) struct Probe {
     result: Receiver<Result<String, RunError>>,
     row: usize,
-    fields: Vec<(&'static str, String)>,
+    fields: Vec<(Field, String)>,
     pub(crate) app: &'static str,
     pub(crate) model: String,
 }
@@ -183,8 +184,8 @@ pub(crate) struct Settings {
     /// The section on the left, and whether the cursor is on its page.
     pub(crate) section: usize,
     pub(crate) open: bool,
-    /// The setting under the cursor on the page.
-    pub(crate) row: usize,
+    /// The setting under the cursor on the page, of Settings::items.
+    pub(crate) setting: usize,
     pub(crate) pick: Option<Pick>,
     /// A model id being typed, for the model list it came from.
     pub(crate) typing: Option<(Pick, String)>,
@@ -195,10 +196,48 @@ pub(crate) struct Settings {
     pub(crate) saved: Option<String>,
 }
 
+/// A row's setting in doc, the default filled in; a field not a string
+/// shows why.
+fn value(doc: &Value, row: usize, field: Field) -> String {
+    app::field(doc, ROWS[row].key, field.name()).unwrap_or_else(|err| err)
+}
+
+/// A row in doc as RECENT's started line names it: "codex gpt-6-sol/high",
+/// or "none" for a fallback that is not set.
+fn said(doc: &Value, row: usize) -> String {
+    let model = value(doc, row, Field::Model);
+    match app(&value(doc, row, Field::App)) {
+        _ if model == "none" => model,
+        None => value(doc, row, Field::App),
+        Some(app) => Row {
+            app,
+            model,
+            effort: value(doc, row, Field::Effort),
+            plan_model: None,
+        }
+        .said(),
+    }
+}
+
+/// The rows of a section.
+fn rows_of(section: usize) -> impl Iterator<Item = usize> {
+    (0..ROWS.len()).filter(move |&r| ROWS[r].section == section)
+}
+
+/// Each once, in the order first met.
+pub(crate) fn distinct(all: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for one in all {
+        if !out.contains(&one) {
+            out.push(one);
+        }
+    }
+    out
+}
+
 impl Settings {
-    /// A row's setting as config.json has it, the default filled in.
     pub(crate) fn value(&self, row: usize, field: Field) -> String {
-        app::field(&self.doc, ROWS[row].key, field.name()).unwrap_or_else(|err| err)
+        value(&self.doc, row, field)
     }
 
     /// The App a row runs on, None for a name no App has.
@@ -206,37 +245,13 @@ impl Settings {
         app(&self.value(row, Field::App))
     }
 
-    /// A row as RECENT's started line names it: "codex gpt-6-sol/high", or
-    /// "none" for a fallback that is not set.
-    pub(crate) fn said(&self, row: usize) -> String {
-        let model = self.value(row, Field::Model);
-        match self.app(row) {
-            _ if model == "none" => model,
-            None => self.value(row, Field::App),
-            Some(app) => Row {
-                app,
-                model,
-                effort: self.value(row, Field::Effort),
-                plan_model: None,
-            }
-            .said(),
-        }
-    }
-
     /// A section's line on the left: its row's App and model; the Debate's
     /// Apps.
     pub(crate) fn summary(&self, section: usize) -> String {
-        let rows = || (0..ROWS.len()).filter(|&r| ROWS[r].section == section);
         if section == 2 {
-            let mut apps: Vec<String> = Vec::new();
-            for app in rows().map(|r| self.value(r, Field::App)) {
-                if !apps.contains(&app) {
-                    apps.push(app);
-                }
-            }
-            return apps.join("+");
+            return distinct(rows_of(section).map(|r| self.value(r, Field::App))).join("+");
         }
-        let row = rows().next().unwrap();
+        let row = rows_of(section).next().unwrap();
         match self.value(row, Field::Model).as_str() {
             "default" => self.value(row, Field::App),
             model => format!("{} {model}", self.value(row, Field::App)),
@@ -245,14 +260,13 @@ impl Settings {
 
     /// A section's settings, row by row.
     pub(crate) fn items(section: usize) -> Vec<(usize, Field)> {
-        (0..ROWS.len())
-            .filter(|&r| ROWS[r].section == section)
+        rows_of(section)
             .flat_map(|r| [Field::App, Field::Model, Field::Effort].map(|f| (r, f)))
             .collect()
     }
 
     /// The App a pick's models and efforts are for.
-    fn pick_app(&self, pick: &Pick) -> Option<&'static App> {
+    pub(crate) fn pick_app(&self, pick: &Pick) -> Option<&'static App> {
         pick.app.or_else(|| self.app(pick.row))
     }
 
@@ -269,16 +283,10 @@ impl Settings {
     /// listed model's.
     fn efforts(&self, app: &App, model: &str) -> Vec<String> {
         let listed = self.listed(app);
-        if let Some((_, efforts)) = listed.iter().find(|(id, _)| id == model) {
-            return efforts.clone();
+        match listed.iter().find(|(id, _)| id == model) {
+            Some((_, efforts)) => efforts.clone(),
+            None => distinct(listed.iter().flat_map(|(_, efforts)| efforts.clone())),
         }
-        let mut all: Vec<String> = Vec::new();
-        for effort in listed.iter().flat_map(|(_, efforts)| efforts) {
-            if !all.contains(effort) {
-                all.push(effort.clone());
-            }
-        }
-        all
     }
 
     /// A pick list's lines, filtered: a heading only unfiltered, 'type an
@@ -290,32 +298,36 @@ impl Settings {
         };
         let filter = pick.filter.to_lowercase();
         let mut out = Vec::new();
-        let mut entry = |name: &str, detail: String, choice: Option<Choice>| {
-            let shown = match &choice {
+        let mut entry = |name: &str, detail: String, picks: Option<Picked>| {
+            let shown = match &picks {
                 None => filter.is_empty(),
-                Some(Choice::Typed) => true,
+                Some(Picked::Typed) => true,
                 Some(_) => name.to_lowercase().contains(&filter),
             };
             if shown {
                 out.push(Entry {
                     name: name.to_string(),
                     detail,
-                    current: choice.is_some() && name == current,
-                    choice,
+                    current: picks.is_some() && name == current,
+                    picks,
                 });
             }
         };
-        let Some(app) = self.pick_app(pick) else {
-            return out;
+        // A row on an App no longer in the table still lists the Apps.
+        let app = match (pick.field, self.pick_app(pick)) {
+            (Field::App, _) => {
+                for a in &APPS {
+                    entry(a.name, a.family.to_string(), Some(Picked::App(a)));
+                }
+                return out;
+            }
+            (_, None) => return out,
+            (_, Some(app)) => app,
         };
         match pick.field {
-            Field::App => {
-                for a in &APPS {
-                    entry(a.name, a.family.to_string(), Some(Choice::App(a)));
-                }
-            }
+            Field::App => {}
             Field::Model => {
-                let value = |m: &str| Some(Choice::Value(m.to_string()));
+                let value = |m: &str| Some(Picked::Value(m.to_string()));
                 if ROWS[pick.row].key == IF_LIMITED {
                     let detail = "no fallback".to_string();
                     entry("none", detail, value("none"));
@@ -329,7 +341,7 @@ impl Settings {
                     entry(id, app.family.to_string(), value(id));
                 }
                 let detail = "probed before it saves".to_string();
-                entry("type an id…", detail, Some(Choice::Typed));
+                entry("type an id…", detail, Some(Picked::Typed));
             }
             Field::Effort => {
                 let model = self.value(pick.row, Field::Model);
@@ -340,7 +352,7 @@ impl Settings {
                     entry(
                         &level,
                         detail.to_string(),
-                        Some(Choice::Value(level.clone())),
+                        Some(Picked::Value(level.clone())),
                     );
                 }
             }
@@ -348,10 +360,10 @@ impl Settings {
         out
     }
 
-    pub(crate) fn choices(&self, pick: &Pick) -> Vec<Choice> {
+    pub(crate) fn choices(&self, pick: &Pick) -> Vec<Picked> {
         self.entries(pick)
             .into_iter()
-            .filter_map(|e| e.choice)
+            .filter_map(|e| e.picks)
             .collect()
     }
 
@@ -376,7 +388,7 @@ impl Settings {
         pick.cursor = self
             .entries(&pick)
             .iter()
-            .filter(|e| e.choice.is_some())
+            .filter(|e| e.picks.is_some())
             .position(|e| e.current)
             .unwrap_or(0);
         self.pick = Some(pick);
@@ -413,7 +425,7 @@ fn refusal(err: &RunError) -> String {
 fn staged(
     repo: &Path,
     key: &str,
-    fields: &[(&str, String)],
+    fields: &[(Field, String)],
 ) -> Result<(PathBuf, Value, Row), String> {
     let (path, mut doc) = app::read(repo)?;
     if !doc.is_object() {
@@ -422,8 +434,8 @@ fn staged(
     if !doc[key].is_object() {
         doc[key] = json!({});
     }
-    for (name, value) in fields {
-        doc[key][*name] = json!(value);
+    for (field, value) in fields {
+        doc[key][field.name()] = json!(value);
     }
     let row = app::row_in(&doc, key, &path)?;
     Ok((path, doc, row))
@@ -432,6 +444,8 @@ fn staged(
 impl Screen {
     /// /config: reads config.json, each App's models and what the summaries
     /// count. An unreadable config.json is a notice: nothing may save over it.
+    // ponytail: the lists and `which` run on the screen thread (codex's
+    // bundled catalog takes ~10 ms); a thread when an App's listing is slow.
     pub(super) fn open_config(&mut self) {
         let repo = &self.cfg.repo;
         let doc = match app::read(repo) {
@@ -452,7 +466,7 @@ impl Screen {
             skills,
             section: 0,
             open: false,
-            row: 0,
+            setting: 0,
             pick: None,
             typing: None,
             probe: None,
@@ -465,21 +479,18 @@ impl Screen {
     /// it; typing an id takes the line; a pick list filters, moves and
     /// picks; the left list and a page move and open, Esc going back and
     /// then closing.
-    pub(super) fn config_key(&mut self, key: KeyEvent) {
-        let held = key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    pub(super) fn config_key(&mut self, code: KeyCode, held: bool) {
         let st = self.settings.as_mut().unwrap();
         st.note = None;
         if st.probe.is_some() {
-            if key.code == KeyCode::Esc {
+            if code == KeyCode::Esc {
                 st.probe = None;
                 st.note = Some(("Probe dropped: nothing changed.".to_string(), MUTED));
             }
             return;
         }
         if let Some((_, text)) = &mut st.typing {
-            match key.code {
+            match code {
                 KeyCode::Esc => st.typing = None,
                 KeyCode::Backspace => _ = text.pop(),
                 KeyCode::Char(c) if !held => text.push(c),
@@ -499,7 +510,7 @@ impl Screen {
         if let Some(pick) = &st.pick {
             let n = st.choices(pick).len();
             let pick = st.pick.as_mut().unwrap();
-            match key.code {
+            match code {
                 KeyCode::Up => pick.cursor = pick.cursor.saturating_sub(1),
                 KeyCode::Down => pick.cursor = (pick.cursor + 1).min(n.saturating_sub(1)),
                 KeyCode::Esc => st.pick = None,
@@ -514,7 +525,7 @@ impl Screen {
                 KeyCode::Enter => {
                     let pick = st.pick.take().unwrap();
                     match st.choices(&pick).into_iter().nth(pick.cursor) {
-                        Some(choice) => self.choose(pick, choice),
+                        Some(picked) => self.choose(pick, picked),
                         None => st.pick = Some(pick),
                     }
                 }
@@ -523,12 +534,12 @@ impl Screen {
             return;
         }
         if !st.open {
-            match key.code {
+            match code {
                 KeyCode::Up => st.section = st.section.saturating_sub(1),
                 KeyCode::Down => st.section = (st.section + 1).min(SECTIONS.len() - 1),
                 KeyCode::Right | KeyCode::Enter => {
                     st.open = true;
-                    st.row = 0;
+                    st.setting = 0;
                 }
                 KeyCode::Esc => self.settings = None,
                 _ => {}
@@ -536,12 +547,12 @@ impl Screen {
             return;
         }
         let items = Settings::items(st.section);
-        match key.code {
-            KeyCode::Up => st.row = st.row.saturating_sub(1),
-            KeyCode::Down => st.row = (st.row + 1).min(items.len() - 1),
+        match code {
+            KeyCode::Up => st.setting = st.setting.saturating_sub(1),
+            KeyCode::Down => st.setting = (st.setting + 1).min(items.len() - 1),
             KeyCode::Left | KeyCode::Esc => st.open = false,
             KeyCode::Enter => {
-                let (row, field) = items[st.row];
+                let (row, field) = items[st.setting];
                 match st.app(row) {
                     Some(app) if field == Field::Effort && app.effort.is_empty() => {
                         let text = format!("{} has no effort flag.", app.name);
@@ -556,45 +567,61 @@ impl Screen {
 
     /// A pick list's choice: a new App leads into its model list, one a
     /// row cannot run on refused; a model or an effort changes the row.
-    fn choose(&mut self, pick: Pick, choice: Choice) {
+    fn choose(&mut self, pick: Pick, picked: Picked) {
         let st = self.settings.as_mut().unwrap();
-        match choice {
-            Choice::App(a) if st.app(pick.row).is_some_and(|now| now.name == a.name) => {}
-            Choice::App(a) => match app::runs_on(ROWS[pick.row].key, a) {
+        match picked {
+            Picked::App(a) if st.app(pick.row).is_some_and(|now| now.name == a.name) => {}
+            Picked::App(a) => match app::runs_on(ROWS[pick.row].key, a) {
                 Ok(()) => st.open_pick(pick.row, Field::Model, Some(a)),
                 Err(err) => st.note = Some((format!("Refused: {err}. Nothing changed."), RED)),
             },
-            Choice::Typed => st.typing = Some((pick, String::new())),
-            Choice::Value(value) if pick.field == Field::Model => self.pick_model(&pick, &value),
-            Choice::Value(value) => self.change(pick.row, vec![("effort", value)]),
+            Picked::Typed => st.typing = Some((pick, String::new())),
+            Picked::Value(value) if pick.field == Field::Model => self.pick_model(&pick, &value),
+            Picked::Value(value) => self.change(pick.row, vec![(Field::Effort, value)]),
         }
     }
 
-    /// A model picked or typed: with the new App it came after, the pair,
-    /// the effort back to default since each App has its own levels.
+    /// A model picked or typed: with the new App it came after, the pair;
+    /// the effort back to default when the model does not list it.
     fn pick_model(&mut self, pick: &Pick, model: &str) {
-        let mut fields = vec![("model", model.to_string())];
-        if let Some(app) = pick.app {
-            fields.insert(0, ("app", app.name.to_string()));
-            fields.push(("effort", "default".to_string()));
+        let st = self.settings.as_ref().unwrap();
+        let mut fields = vec![(Field::Model, model.to_string())];
+        if let Some(app) = st.pick_app(pick) {
+            if pick.app.is_some() {
+                fields.insert(0, (Field::App, app.name.to_string()));
+            }
+            let effort = st.value(pick.row, Field::Effort);
+            if effort != "default" && !st.efforts(app, model).contains(&effort) {
+                fields.push((Field::Effort, "default".to_string()));
+            }
         }
         self.change(pick.row, fields);
     }
 
-    /// A change to a row: refused if the Stage could not start on it; a
-    /// named model is probed first, anything else saves at once.
-    fn change(&mut self, row: usize, fields: Vec<(&'static str, String)>) {
+    /// A change to a row: refused if the Stage could not start on it; one
+    /// that changes nothing is dropped; a named model is probed first,
+    /// anything else saves at once.
+    // ponytail: no timeout on the probe: Esc drops one that hangs, its
+    // process running on to its end (it has no stdin to wait on).
+    fn change(&mut self, row: usize, fields: Vec<(Field, String)>) {
         let repo = self.cfg.repo.clone();
         let tools = self.cfg.tools.clone();
         let st = self.settings.as_mut().unwrap();
-        let (app, model) = match staged(&repo, ROWS[row].key, &fields) {
+        let key = ROWS[row].key;
+        let (app, model) = match staged(&repo, key, &fields) {
             Ok((_, _, staged)) => (staged.app, staged.model),
             Err(err) => {
                 st.note = Some((format!("Refused: {err}. Nothing changed."), RED));
                 return;
             }
         };
-        let picked = fields.iter().any(|(name, _)| *name == "model");
+        let (_, now) = app::read(&repo).unwrap_or_default();
+        let same =
+            |(field, v): &(Field, String)| app::field(&now, key, field.name()).as_ref() == Ok(v);
+        if fields.iter().all(same) {
+            return;
+        }
+        let picked = fields.iter().any(|(field, _)| *field == Field::Model);
         if !picked || model == "default" || model == "none" {
             return self.save(row, &fields);
         }
@@ -638,9 +665,9 @@ impl Screen {
 
     /// Writes the change into config.json, read afresh; during a run RECENT
     /// and the log say what changed.
-    fn save(&mut self, row: usize, fields: &[(&'static str, String)]) {
+    fn save(&mut self, row: usize, fields: &[(Field, String)]) {
         let repo = &self.cfg.repo;
-        let before = app::read(repo).map(|(_, doc)| doc);
+        let old = app::read(repo).map(|(_, doc)| said(&doc, row));
         let saved = staged(repo, ROWS[row].key, fields)
             .and_then(|(path, doc, _)| app::write(&path, &doc).map(|()| doc));
         let live = self.run.is_some();
@@ -652,13 +679,10 @@ impl Screen {
                 return;
             }
         };
-        // what it was on disk, a hand edit since /config opened included
-        if let Ok(before) = before {
-            st.doc = before;
-        }
-        let old = st.said(row);
+        let new = said(&doc, row);
+        // as it was on disk, a hand edit since /config opened included
+        let old = old.unwrap_or_else(|_| said(&st.doc, row));
         st.doc = doc;
-        let new = st.said(row);
         st.saved = Some(chrono::Local::now().format("%H:%M:%S").to_string());
         let name = ROWS[row].name;
         let text = match live {

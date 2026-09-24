@@ -11,7 +11,7 @@ use ratatui::Frame;
 use super::modal::{dock, wrap_spans};
 use super::{bold, cut, fg};
 use crate::orchestrator::app::APPS;
-use crate::shell::config::{Field, Pick, Settings, ROWS, SECTIONS};
+use crate::shell::config::{distinct, Field, Pick, Settings, ROWS, SECTIONS};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
 use crate::shell::Screen;
 
@@ -199,13 +199,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
 fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let (title, _, about) = SECTIONS[st.section];
     let items = Settings::items(st.section);
-    let mut apps: Vec<String> = Vec::new();
-    for (row, _) in &items {
-        let app = st.value(*row, Field::App);
-        if !apps.contains(&app) {
-            apps.push(app);
-        }
-    }
+    let apps = distinct(items.iter().map(|&(row, _)| st.value(row, Field::App)));
     let mut lines = vec![Line::from(vec![
         Span::styled(title, bold(TEXT)),
         Span::styled(format!("  {}", apps.join(", ")), fg(MUTED)),
@@ -222,7 +216,7 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         if field == Field::App {
             lines.push(Line::default());
         }
-        let selected = st.open && i == st.row;
+        let selected = st.open && i == st.setting;
         let mut spans = vec![
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
             Span::styled(
@@ -245,8 +239,7 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
 /// marked; and the cursor's line.
 fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, usize) {
     let row = &ROWS[pick.row];
-    let app = pick.app.or_else(|| st.app(pick.row));
-    let on = match (pick.field, app) {
+    let on = match (pick.field, st.pick_app(pick)) {
         (Field::App, _) | (_, None) => String::new(),
         (_, Some(app)) if pick.app.is_some() => format!(" · {} (new App)", app.name),
         (_, Some(app)) => format!(" · {}", app.name),
@@ -264,7 +257,7 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
     let detail_w = width.saturating_sub(2 + name_w + 10).min(44);
     let (mut at, mut n) = (0, 0);
     for e in st.entries(pick) {
-        if e.choice.is_none() {
+        if e.picks.is_none() {
             lines.push(Line::from(Span::styled(
                 format!("  {}", e.name),
                 bold(MUTED),
@@ -310,7 +303,7 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
         ])];
     }
     if let Some((pick, text)) = &st.typing {
-        let app = pick.app.or_else(|| st.app(pick.row)).map_or("", |a| a.name);
+        let app = st.pick_app(pick).map_or("", |a| a.name);
         let help = match &st.note {
             Some((note, _)) => note.clone(),
             None => format!("A {app} model id: probed with a one-line prompt before it saves."),
@@ -328,7 +321,7 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
         (Some((note, color)), _) => (note.clone(), *color),
         (None, Some(pick)) => (Settings::note_of(pick.row, pick.field), MUTED),
         (None, None) if st.open => {
-            let (row, field) = Settings::items(st.section)[st.row];
+            let (row, field) = Settings::items(st.section)[st.setting];
             (Settings::note_of(row, field), MUTED)
         }
         (None, None) => (
