@@ -218,45 +218,78 @@ fn open_pr_prunes_build_scratch_and_keeps_evidence() {
     }
 }
 
-/// A Review that leaves the worktree dirty, or commits, is put back to the
-/// HEAD recorded before it through git, and said on RECENT.
+/// A Review or a Debate that leaves the worktree dirty, or commits, is put
+/// back to the HEAD recorded before it through git, and said on RECENT.
 #[test]
-fn a_review_that_dirties_or_commits_the_worktree_is_restored_and_says_so() {
-    for (head, status) in [("a11ce", " M src/lib.rs\n"), ("c0ffee", "")] {
-        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-        // The worktree as git reports it: HEAD and the status's output.
-        let tree = Arc::new(Mutex::new(("a11ce".to_string(), String::new())));
-        let reviewed = tree.clone();
-        w.session(move |p| {
-            if p.stage == "review" {
-                *reviewed.lock().unwrap() = (head.to_string(), status.to_string());
-            }
-            succeed(p)
-        });
-        let git = tree.clone();
-        w.hook(move |_, argv| {
-            let mut tree = git.lock().unwrap();
-            match argv {
-                ["git", "rev-parse", "HEAD"] => Some(Ok(format!("{}\n", tree.0))),
-                ["git", "status", "--porcelain"] => Some(Ok(tree.1.clone())),
-                ["git", "reset", "--hard", to] => {
-                    *tree = (to.to_string(), String::new());
-                    Some(Ok(String::new()))
+fn a_review_or_debate_that_dirties_or_commits_the_worktree_is_restored_and_says_so() {
+    // The world names a Stage by its result file: the Debate's is verdict.
+    for (stage, prompt) in [("review", "review"), ("debate", "verdict")] {
+        for (head, status) in [("a11ce", " M src/lib.rs\n"), ("c0ffee", "")] {
+            let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+            // The worktree as git reports it: HEAD and the status's output.
+            let tree = Arc::new(Mutex::new(("a11ce".to_string(), String::new())));
+            let changed = tree.clone();
+            w.session(move |p| {
+                if p.stage == prompt {
+                    *changed.lock().unwrap() = (head.to_string(), status.to_string());
                 }
-                _ => None,
-            }
-        });
-        o.run_ticket("hx-1");
+                succeed(p)
+            });
+            let git = tree.clone();
+            w.hook(move |_, argv| {
+                let mut tree = git.lock().unwrap();
+                match argv {
+                    ["git", "rev-parse", "HEAD"] => Some(Ok(format!("{}\n", tree.0))),
+                    ["git", "status", "--porcelain"] => Some(Ok(tree.1.clone())),
+                    ["git", "reset", "--hard", to] => {
+                        *tree = (to.to_string(), String::new());
+                        Some(Ok(String::new()))
+                    }
+                    _ => None,
+                }
+            });
+            o.run_ticket("hx-1");
 
-        w.await_line("hx-1 review 1 changed the worktree: restored");
-        assert_eq!(
-            w.called("git reset --hard a11ce").len(),
-            1,
-            "{head} {status:?}"
-        );
-        assert_eq!(w.called("git clean -fd").len(), 1, "{head} {status:?}");
-        w.await_line("hx-1 PR #hx-1 opened");
+            w.await_line(&format!("hx-1 {stage} 1 changed the worktree: restored"));
+            let case = format!("{stage} {head} {status:?}");
+            assert_eq!(w.called("git reset --hard a11ce").len(), 1, "{case}");
+            assert_eq!(w.called("git clean -fd").len(), 1, "{case}");
+            w.await_line("hx-1 PR #hx-1 opened");
+        }
     }
+}
+
+/// A Ticket parked because its Review changed a worktree already dirty is
+/// guarded again when continued, though its Review is done: it parks again,
+/// with no Debate, until the tree is put back by hand.
+#[test]
+fn a_continued_ticket_is_guarded_against_its_done_review() {
+    let parked = "hx-1 parked: review 1 changed a worktree already dirty before it, not restored";
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    let tree = Arc::new(Mutex::new(" M src/lib.rs\n"));
+    let reviewed = tree.clone();
+    w.session(move |p| {
+        if p.stage == "review" {
+            *reviewed.lock().unwrap() = " M src/lib.rs\n M src/main.rs\n";
+        }
+        succeed(p)
+    });
+    let git = tree.clone();
+    w.hook(move |_, argv| match argv {
+        ["git", "status", "--porcelain"] => Some(Ok(git.lock().unwrap().to_string())),
+        _ => None,
+    });
+
+    for times in 1..=2 {
+        o.run_ticket("hx-1");
+        let lines = w.lines();
+        assert_eq!(lines.iter().filter(|l| l.contains(parked)).count(), times);
+        assert_eq!(stages_run(&w), ["implement", "review"]);
+    }
+    *tree.lock().unwrap() = " M src/lib.rs\n";
+    o.run_ticket("hx-1");
+    w.await_line("hx-1 PR #hx-1 opened");
+    assert_eq!(stages_run(&w), ["implement", "review", "debate", "fix"]);
 }
 
 #[test]

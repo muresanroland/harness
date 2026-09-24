@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
 
@@ -112,12 +113,14 @@ impl Row {
     /// quoted, since a model id like claude-opus-5-5[1m] is a glob to the
     /// shell.
     pub(crate) fn side_command(&self) -> String {
-        let head = self.app.side.iter().map(|arg| arg.to_string());
-        let words: Vec<String> = head
+        self.app
+            .side
+            .iter()
+            .map(|arg| arg.to_string())
             .chain(self.flags())
-            .map(|arg| format!("'{}'", arg.replace('\'', r"'\''")))
-            .collect();
-        words.join(" ")
+            .map(|arg| quoted(&arg))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// As the started line names it: "claude", "claude opus/high", on a

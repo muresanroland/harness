@@ -4,6 +4,7 @@
 use super::app::app;
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, World};
 use super::write_file;
+use crate::skills::SKILLS;
 use crate::tempdir::TempDir;
 use std::sync::Arc;
 
@@ -99,19 +100,16 @@ fn a_worktree_path_is_escaped_in_the_review_settings_on_claude() {
     );
 }
 
-/// The Moderator's prompt: the Stage skill's body, then its Inputs.
-fn debate_prompt(w: &World) -> (String, String) {
-    let prompt = w
-        .called("herdr agent prompt")
-        .into_iter()
-        .find(|call| call.contains("verdict-1.md"))
-        .unwrap();
-    let (body, inputs) = prompt.split_once("## Inputs").unwrap();
-    (body.to_string(), inputs.to_string())
-}
-
 #[test]
 fn the_moderators_inputs_carry_each_sides_command() {
+    let skill = SKILLS
+        .iter()
+        .find(|(name, _)| *name == "stage-moderate")
+        .unwrap()
+        .1;
+    for own in ["claude -p", "codex exec"] {
+        assert!(!skill.contains(own), "stage-moderate still runs {own:?}");
+    }
     let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '-p'";
     let codex = "'codex' 'exec' '--sandbox' 'read-only'";
     for (body, side_a, side_b) in [
@@ -131,15 +129,18 @@ fn the_moderators_inputs_carry_each_sides_command() {
         }
         o.run_ticket("hx-1");
 
-        let (skill, inputs) = debate_prompt(&w);
+        // The Moderator's prompt: the Stage skill's body, then its Inputs.
+        let prompt = w
+            .called("herdr agent prompt")
+            .into_iter()
+            .find(|call| call.contains("verdict-1.md"))
+            .unwrap();
+        let inputs = prompt.split_once("## Inputs").unwrap().1;
         for want in [
             format!("- Side A command: {side_a}\n"),
             format!("- Side B command: {side_b}\n"),
         ] {
             assert!(inputs.contains(&want), "{want:?} not in:{inputs}");
-        }
-        for own in ["claude -p", "codex exec"] {
-            assert!(!skill.contains(own), "stage-moderate still runs {own:?}");
         }
     }
 }
