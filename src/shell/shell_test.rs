@@ -3856,6 +3856,8 @@ fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
                 issue("hy-1", "Ticket", "hy"),
                 issue("hz", "Epic", ""),
                 issue("hz-1", "Ticket", "hz"),
+                serde_json::json!({ "id": "hw", "title": "Epic hw", "status": "closed", "issue_type": "epic" }),
+                issue("hw-1", "Ticket", "hw"),
             ])
             .to_string())
         });
@@ -3889,6 +3891,24 @@ fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
         "no evidence for hz: none of its Tickets has run"
     );
     assert!(s.summary.is_none());
+    s.command("/summary hy-1");
+    assert_eq!(notice(&s), "no Epic hy-1 in bd");
+
+    // A closed Epic by its id; three Rounds with no PR leave nothing on one.
+    let runs = w.repo.join(".harness/runs/hw-1");
+    for n in 1..=3 {
+        let body = verdict(&["(low) src/w.rs:1 — w"], &[]);
+        write_file(&runs.join(format!("verdict-{n}.md")), &body);
+    }
+    s.command("/summary hw");
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 0).starts_with(" EPIC SUMMARY · hw Epic hw"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "3 Rounds · 3 fixed · 0 skipped · 0 left").is_some());
+    s.key(key(KeyCode::Esc));
 
     // Typed whole, Enter runs it: the saved run's Epic.
     type_in(&mut s, "/summary");

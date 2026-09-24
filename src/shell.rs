@@ -434,7 +434,7 @@ impl Screen {
         }
         let run = self.run.as_ref().unwrap();
         self.state = run.o.state.lock().unwrap().clone();
-        if run.epic && !run.summarized && self.all_out() {
+        if run.epic && !run.summarized && self.all_prs_open() {
             self.run.as_mut().unwrap().summarized = true;
             let epic = self.state.epic.clone();
             self.summarize(&epic);
@@ -462,8 +462,10 @@ impl Screen {
             if let Err(err) = self.state.save(&self.cfg.repo) {
                 self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
-            let title = self.epics.iter().find(|e| e.id == epic).map(|e| &e.title);
-            let text = format!("close Epic {epic} {}?", title.map_or("", String::as_str));
+            let text = match self.epics.iter().find(|e| e.id == epic) {
+                Some(e) => format!("close Epic {epic} {}?", e.title),
+                None => format!("close Epic {epic}?"),
+            };
             self.confirm(&text, Pending::Close(epic.clone()));
             self.last_epic = epic;
         }
@@ -473,8 +475,9 @@ impl Screen {
     }
 
     /// Whether every Ticket of the run's Epic on the bd tree has its PR open
-    /// or merged or is Parked, one at least with its PR.
-    fn all_out(&self) -> bool {
+    /// or merged or is Parked, one at least with its PR: the Epic summary's
+    /// EPIC DONE, from the live State.
+    fn all_prs_open(&self) -> bool {
         let Some(epic) = self.epics.iter().find(|e| e.id == self.state.epic) else {
             return false;
         };
@@ -808,16 +811,7 @@ impl Screen {
         if let Some(summary) = &self.summary {
             match key.code {
                 KeyCode::Esc => self.summary = None,
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::PageUp
-                | KeyCode::PageDown
-                | KeyCode::Char(' ')
-                | KeyCode::Home
-                | KeyCode::End
-                | KeyCode::Tab
-                | KeyCode::BackTab => self.scroll_rows(&summary.scroll, key.code),
-                _ => {}
+                code => self.scroll_rows(&summary.scroll, code),
             }
             return;
         }
@@ -945,7 +939,8 @@ impl Screen {
 
     /// The reading keys of the plan modal and the Epic summary over its
     /// first row shown: a line, a page, either end, the next or previous
-    /// heading (a Ticket, in the summary). The draw keeps the row inside.
+    /// heading (a Ticket, in the summary); any other key none. The draw
+    /// keeps the row inside.
     fn scroll_rows(&self, scroll: &Cell<usize>, code: KeyCode) {
         let (row, page) = (scroll.get(), self.page.get());
         let heads = self.heads.borrow();
@@ -957,7 +952,8 @@ impl Screen {
             KeyCode::End => usize::MAX,
             KeyCode::Tab => heads.iter().copied().find(|&h| h > row).unwrap_or(row),
             KeyCode::BackTab => heads.iter().copied().rfind(|&h| h < row).unwrap_or(0),
-            _ => row.saturating_add(page), // PageDown, Space
+            KeyCode::PageDown | KeyCode::Char(' ') => row.saturating_add(page),
+            _ => row,
         });
     }
 
@@ -1158,7 +1154,7 @@ impl Screen {
                     .filter(|(_, ts)| ts.status == STATUS_RUNNING || ts.status == STATUS_PARKED)
                     .map(|(id, _)| (id.clone(), false))
                     .collect();
-                rows.sort_by_key(|(id, _)| suffix(id).parse::<usize>().unwrap_or(usize::MAX));
+                rows.sort_by_key(|(id, _)| suffix_order(id));
                 if rows.is_empty() && self.state.epic.is_empty() {
                     self.refuse("refused: no saved Ticket to continue");
                 } else if rows.is_empty() {
@@ -1174,13 +1170,10 @@ impl Screen {
                     });
                 }
             }
+            // An Epic by its id, as the @ list fills it in; closed ones too.
             "/summary" => {
                 let epic = if !query.is_empty() {
-                    self.reload_epics();
-                    match self.resolve(query, true) {
-                        Some(id) => id,
-                        None => return,
-                    }
+                    query.to_string()
                 } else if !self.state.epic.is_empty() {
                     self.state.epic.clone()
                 } else if !self.last_epic.is_empty() {
@@ -1454,6 +1447,12 @@ pub(crate) fn suffix(id: &str) -> &str {
     id.rsplit_once('.').map_or(id, |(_, s)| s)
 }
 
+/// Where an id sorts among its siblings: by its child suffix as a number,
+/// one with none last.
+fn suffix_order(id: &str) -> usize {
+    suffix(id).parse().unwrap_or(usize::MAX)
+}
+
 /// '<query words> [--max N]' in any order: the words joined, and N or the default.
 fn parse_args(rest: &str) -> Result<(String, usize), String> {
     let mut words = Vec::new();
@@ -1498,7 +1497,7 @@ fn load_epics(repo: &Path, tools: &dyn Tools) -> Result<Vec<Epic>, String> {
             tickets: Vec::new(),
         })
         .collect();
-    issues.sort_by_key(|i| suffix(&i.id).parse::<usize>().unwrap_or(usize::MAX));
+    issues.sort_by_key(|i| suffix_order(&i.id));
     for issue in issues {
         if issue.issue_type == "epic" {
             continue;

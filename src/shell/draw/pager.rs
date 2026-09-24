@@ -13,14 +13,16 @@ use super::modal::wrap_spans;
 use super::{bold, cut, fg, inset, ticket_color};
 use crate::orchestrator::stage::{plural, pr_ref};
 use crate::shell::logo::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
-use crate::shell::summary::{Done, Summary};
+use crate::shell::summary::{Summary, Ticket};
 use crate::shell::{suffix, Screen};
 
 /// From this many columns the TICKETS outline shows, this wide.
 const OUTLINE: u16 = 100;
 const OUTLINE_WIDTH: u16 = 30;
 
-pub(super) fn pager(f: &mut Frame, s: &Screen, sum: &Summary) {
+/// The summary over the whole terminal, its body from its scroll row; the
+/// totals count the Tickets with a section, not the Parked ones.
+pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
     let area = f.area();
     let [top, lead, mid, foot] = Layout::vertical([
         Constraint::Length(1),
@@ -29,18 +31,17 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, sum: &Summary) {
         Constraint::Length(1),
     ])
     .areas(area);
-    let count = |n: fn(&Done) -> usize| sum.tickets.iter().map(n).sum::<usize>();
+    let listed = || summary.tickets.iter().filter(|t| t.parked.is_none());
+    let count = |n: fn(&Ticket) -> usize| listed().map(n).sum::<usize>();
     let prs = count(|t| usize::from(!t.pr.is_empty()));
-    let parked = count(|t| usize::from(t.parked.is_some()));
-    let done = sum
-        .tickets
-        .iter()
-        .all(|t| !t.pr.is_empty() || t.merged || t.parked.is_some());
+    let parked = summary.tickets.len() - listed().count();
+    // as Screen::all_prs_open, which opens it by itself
+    let done = listed().next().is_some() && listed().all(|t| !t.pr.is_empty() || t.merged);
 
     let word = if done { "EPIC DONE" } else { "EPIC SUMMARY" };
     let mut bar = vec![
         Span::styled(
-            format!(" {word} · {} {} ", sum.epic, sum.title),
+            format!(" {word} · {} {} ", summary.epic, summary.title),
             bold(Color::Black).bg(PURPLE),
         ),
         Span::styled(
@@ -52,7 +53,7 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, sum: &Summary) {
         let text = format!(" · {} waiting", plural(s.questions.len(), "question"));
         bar.push(Span::styled(text, bold(ORANGE)));
     }
-    let new = s.events.iter().filter(|e| e.time >= sum.opened).count();
+    let new = s.events.iter().filter(|e| e.time >= summary.opened).count();
     if new > 0 {
         bar.push(Span::styled(format!(" · {new} new on RECENT"), fg(CYAN)));
     }
@@ -92,12 +93,12 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, sum: &Summary) {
         width: body.width.saturating_sub(2),
         ..inset(body)
     };
-    let (rows, heads) = sections(sum, body.width as usize);
+    let (rows, heads) = sections(summary, body.width as usize);
     let (total, h) = (rows.len(), body.height as usize);
     s.page.set(h.saturating_sub(2).max(1));
     *s.heads.borrow_mut() = heads.iter().map(|(row, _)| *row).collect();
-    let from = sum.scroll.get().min(total.saturating_sub(h));
-    sum.scroll.set(from);
+    let from = summary.scroll.get().min(total.saturating_sub(h));
+    summary.scroll.set(from);
     let shown: Vec<Line> = rows.into_iter().skip(from).take(h).collect();
     f.render_widget(Paragraph::new(shown), body);
 
@@ -140,13 +141,13 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, sum: &Summary) {
 /// The body rows `width` wide, and the row each Ticket starts on: a section
 /// per Ticket not Parked (its rule, its PR, its counts, each Finding skipped
 /// and each left on the PR), then PARKED with each reason.
-fn sections(sum: &Summary, width: usize) -> (Vec<Line<'static>>, Vec<(usize, &Done)>) {
+fn sections(summary: &Summary, width: usize) -> (Vec<Line<'static>>, Vec<(usize, &Ticket)>) {
     let (mut rows, mut heads) = (Vec::new(), Vec::new());
     let item = |rows: &mut Vec<Line<'static>>, first: &str, text: &str, c: Color| {
         let piece = vec![(text.to_string(), fg(c))];
         rows.extend(wrap_spans(piece, width, first, "      ", fg(c)));
     };
-    for t in sum.tickets.iter().filter(|t| t.parked.is_none()) {
+    for t in summary.tickets.iter().filter(|t| t.parked.is_none()) {
         heads.push((rows.len(), t));
         let c = ticket_color(&t.id);
         let (word, wc) = match (t.merged, t.pr.is_empty()) {
@@ -190,7 +191,11 @@ fn sections(sum: &Summary, width: usize) -> (Vec<Line<'static>>, Vec<(usize, &Do
         }
         rows.push(Line::default());
     }
-    let parked: Vec<&Done> = sum.tickets.iter().filter(|t| t.parked.is_some()).collect();
+    let parked: Vec<&Ticket> = summary
+        .tickets
+        .iter()
+        .filter(|t| t.parked.is_some())
+        .collect();
     if !parked.is_empty() {
         rows.push(Line::from(Span::styled("PARKED", bold(MUTED))));
     }

@@ -6,18 +6,20 @@
 use std::cell::Cell;
 use std::path::Path;
 
-use super::suffix;
+use super::suffix_order;
 use crate::orchestrator::pipeline::MAX_ROUNDS;
 use crate::orchestrator::result::{read_stage_result, ResultRequirements, StageResult};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{result_name, run_dir, DEBATE, FIX};
 use crate::orchestrator::state::{State, STATUS_MERGED, STATUS_PARKED};
 
+/// One Epic's summary, as it stood when built.
 pub(crate) struct Summary {
+    /// The Epic's id and title.
     pub(crate) epic: String,
     pub(crate) title: String,
-    /// In suffix order.
-    pub(crate) tickets: Vec<Done>,
+    /// Its child Tickets, in suffix order.
+    pub(crate) tickets: Vec<Ticket>,
     /// The first body row shown; the draw keeps it inside.
     pub(crate) scroll: Cell<usize>,
     /// When it was built, for its count of the lines on RECENT since.
@@ -25,7 +27,8 @@ pub(crate) struct Summary {
 }
 
 /// One Ticket of the Epic summary.
-pub(crate) struct Done {
+pub(crate) struct Ticket {
+    /// The Ticket's id and title.
     pub(crate) id: String,
     pub(crate) title: String,
     /// The Fix result's PR url; empty before one opened.
@@ -34,9 +37,12 @@ pub(crate) struct Done {
     pub(crate) merged: bool,
     /// One per Verdict.
     pub(crate) rounds: usize,
+    /// The fix items a later Review re-checked.
     pub(crate) fixed: usize,
+    /// Every Verdict's skip items, as shown.
     pub(crate) skipped: Vec<String>,
-    /// The cap's last fix items, which no Review re-checked: listed on the PR.
+    /// The fix items of the cap's Verdict, which no Review re-checked, on a
+    /// Ticket whose PR opened: listed on the PR.
     pub(crate) left: Vec<String>,
     /// Why it is Parked.
     pub(crate) parked: Option<String>,
@@ -54,7 +60,7 @@ impl Summary {
     ) -> Result<Summary, String> {
         let title = issues
             .iter()
-            .find(|i| i.id == epic)
+            .find(|i| i.id == epic && i.issue_type == "epic")
             .ok_or(format!("no Epic {epic} in bd"))?
             .title
             .clone();
@@ -62,7 +68,7 @@ impl Summary {
             .iter()
             .filter(|i| i.parent == epic && i.issue_type != "epic")
             .collect();
-        children.sort_by_key(|i| suffix(&i.id).parse::<usize>().unwrap_or(usize::MAX));
+        children.sort_by_key(|i| suffix_order(&i.id));
         let ran = children
             .iter()
             .any(|t| run_dir(repo, &t.id).exists() || state.tickets.contains_key(&t.id));
@@ -74,7 +80,10 @@ impl Summary {
         Ok(Summary {
             epic: epic.to_string(),
             title,
-            tickets: children.into_iter().map(|t| done(repo, state, t)).collect(),
+            tickets: children
+                .into_iter()
+                .map(|t| ticket(repo, state, t))
+                .collect(),
             scroll: Cell::new(0),
             opened: chrono::Local::now(),
         })
@@ -82,8 +91,8 @@ impl Summary {
 }
 
 /// One Ticket from its Run directory: a Round per verdict-N.md, the PR from
-/// the last Fix result with one, merged and parked from bd and the State.
-fn done(repo: &Path, state: &State, t: &BdIssue) -> Done {
+/// the last Round's Fix result, merged and parked from bd and the State.
+fn ticket(repo: &Path, state: &State, t: &BdIssue) -> Ticket {
     let dir = run_dir(repo, &t.id);
     let read = |name: String| read_stage_result(&dir.join(name), ResultRequirements::default()).0;
     let verdicts: Vec<StageResult> = (1..)
@@ -91,18 +100,14 @@ fn done(repo: &Path, state: &State, t: &BdIssue) -> Done {
         .map(|n| read(result_name(&DEBATE, n)))
         .collect();
     let rounds = verdicts.len();
+    let pr = read(result_name(&FIX, rounds)).pr;
     let left = match verdicts.last() {
-        Some(last) if rounds == MAX_ROUNDS => last.fixes.clone(),
+        Some(last) if rounds == MAX_ROUNDS && !pr.is_empty() => last.fixes.clone(),
         _ => Vec::new(),
     };
     let fixes: usize = verdicts.iter().map(|v| v.fixes.len()).sum();
-    let pr = (1..=rounds)
-        .rev()
-        .map(|n| read(result_name(&FIX, n)).pr)
-        .find(|pr| !pr.is_empty())
-        .unwrap_or_default();
     let ts = state.tickets.get(&t.id);
-    Done {
+    Ticket {
         id: t.id.clone(),
         title: t.title.clone(),
         pr,
