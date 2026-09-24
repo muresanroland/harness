@@ -1,18 +1,18 @@
-//! The layout: header, status row, Overall, the TICKETS box, the RECENT box
-//! newest first (a Question takes its place when one shows), a notice line
-//! and the input line.
+//! The layout: header, status row, Overall, the TICKETS sections, the RECENT
+//! box newest first (a Question takes its place when one shows), a notice
+//! line and the input line.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Padding, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Padding, Paragraph};
 use ratatui::Frame;
 
 use super::logo::{
-    banner, lerp, quantize, BORDER, DARK_ORANGE, GRAY, GREEN, HOP, MUTED, ORANGE, PURPLE, REST,
-    TEXT, TICKET_COLORS,
+    banner, lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GRAY, GREEN, HOP, MUTED, ORANGE, PINK,
+    PURPLE, REST, TEXT, TICKET_COLORS,
 };
-use super::{suffix, About, Screen};
+use super::{suffix, About, Epic, Screen};
 use crate::orchestrator::judgment::plan_said;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Ask;
@@ -23,13 +23,17 @@ const PLACEHOLDER: &str =
     "  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit";
 const COMPOSING: &str = "  your prompt, Enter sends it, Esc goes back";
 const SPINNER: [&str; 4] = ["|", "/", "—", "\\"];
+/// An Epic's color, by its place on the tree.
+const EPIC_COLORS: [Color; 6] = [PURPLE, CYAN, ORANGE, PINK, BLUE, GREEN];
 
 /// A Ticket's place on the tree.
 #[derive(Clone, Copy, PartialEq)]
 enum Status {
-    Active,
-    Blocked,
-    Done,
+    Working,
+    NeedsYou,
+    Waiting,
+    ToMerge,
+    Merged,
     Parked,
     Queued,
 }
@@ -55,24 +59,24 @@ pub(crate) fn ticket_color(id: &str) -> Color {
     TICKET_COLORS[n.wrapping_sub(1) % TICKET_COLORS.len()]
 }
 
-/// Header, status row, Overall, boxed TICKETS, boxed RECENT (newest first),
-/// the boxed QUESTION, notice, input.
+/// Header, status row, Overall, the TICKETS sections, boxed RECENT (newest
+/// first), the boxed QUESTION, notice, input.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let area = f.area();
-    let rows = s.rows() as u16;
+    let tree = sections(s, area.width.saturating_sub(2) as usize);
     let head_h = header_height(area);
-    // The TICKETS box takes its rows and RECENT keeps at least four. A
+    // The TICKETS tree takes its rows and RECENT keeps at least four. A
     // Question takes RECENT's space, its pane tail cut first; TICKETS gives
     // up rows only when the question and its options do not fit, and on a
     // screen too short for even that the Question's bottom is cut. A taller
     // tree scrolls (Up, Down, PageUp, PageDown with the input empty).
     let free = area.height.saturating_sub(head_h + 5);
-    let mut tickets_h = (rows + 3).min(free.saturating_sub(4).max(3));
+    let mut tickets_h = (tree.len() as u16).min(free.saturating_sub(4).max(3));
     let width = area.width.saturating_sub(4) as usize;
     let asked = s.showing().then(|| {
         let least = question_lines(s, width, 0).len() as u16 + 2;
         if free.saturating_sub(tickets_h) < least {
-            tickets_h = free.saturating_sub(least).max(3);
+            tickets_h = free.saturating_sub(least).max(3).min(tickets_h);
         }
         let room = free.saturating_sub(tickets_h);
         let lines = question_lines(s, width, room.saturating_sub(2) as usize);
@@ -94,7 +98,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     .areas(area);
     header(f, head, s);
     f.render_widget(
-        status_line(s),
+        status_line(s, top.width.saturating_sub(1) as usize),
         Rect::new(top.x + 1, top.y, top.width.saturating_sub(1), 1),
     );
     f.render_widget(
@@ -102,8 +106,13 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Rect::new(over.x + 1, over.y, over.width.saturating_sub(1), 1),
     );
     f.render_widget(
-        ticket_table(s, area.width, tickets_h.saturating_sub(3) as usize).block(boxed("TICKETS")),
-        tickets,
+        Paragraph::new(scrolled(s, tree, tickets_h as usize)),
+        Rect::new(
+            tickets.x + 1,
+            tickets.y,
+            tickets.width.saturating_sub(1),
+            tickets.height,
+        ),
     );
     let inner = boxed("RECENT").inner(recent);
     f.render_widget(
@@ -197,51 +206,91 @@ fn header(f: &mut Frame, area: Rect, s: &Screen) {
 }
 
 /// The status of a Ticket: the run's State first (a live snapshot or the
-/// saved run), then what bd says.
+/// saved run), then what bd says. Needs you and waiting are a live run's;
+/// live, only the run's State says a Ticket is working.
 fn status(s: &Screen, t: &BdIssue) -> Status {
     match s.state.tickets.get(&t.id).map(|ts| ts.status.as_str()) {
         Some(STATUS_PARKED) => Status::Parked,
-        Some(STATUS_RUNNING) if s.blocked(&t.id) => Status::Blocked,
-        Some(STATUS_RUNNING) => Status::Active,
-        Some(STATUS_PR_OPEN | STATUS_MERGED) => Status::Done,
-        _ if t.status == "closed" => Status::Done,
-        _ if t.status == "in_progress" => Status::Active,
+        Some(STATUS_RUNNING) if s.running && s.blocked(&t.id) => Status::NeedsYou,
+        Some(STATUS_RUNNING) => Status::Working,
+        Some(STATUS_PR_OPEN) => Status::ToMerge,
+        Some(STATUS_MERGED) => Status::Merged,
+        _ if t.status == "closed" => Status::Merged,
+        _ if s.running && waits_on(s, t).is_some() => Status::Waiting,
+        _ if !s.running && t.status == "in_progress" => Status::Working,
         _ => Status::Queued,
     }
 }
 
-/// Live: the spinner, RUNNING (STOPPING while Ticket threads leave) and the
-/// counts over the run's Tickets. Idle:
-/// IDLE, the open Epics and their Tickets, and the saved run when there is one.
-fn status_line(s: &Screen) -> Line<'static> {
-    if s.running {
-        let count = |want: Status| {
-            s.epics
+/// The open PR a Ticket waits on: its bd blocks dependency on a Ticket whose
+/// PR is open (ADR 0002).
+fn waits_on<'a>(s: &'a Screen, t: &BdIssue) -> Option<&'a str> {
+    t.blockers()
+        .filter_map(|id| s.state.tickets.get(id))
+        .find(|ts| ts.status == STATUS_PR_OPEN)
+        .map(|ts| ts.pr.as_str())
+}
+
+/// Idle: every open Epic. Live: only the Epics with a Ticket in the run.
+fn listed(s: &Screen) -> impl Iterator<Item = &Epic> {
+    s.epics.iter().filter(|e| {
+        !s.running
+            || e.id == s.state.epic
+            || e.tickets
                 .iter()
-                .flat_map(|e| &e.tickets)
-                .filter(|t| s.state.tickets.contains_key(&t.id) && status(s, t) == want)
-                .count()
-        };
+                .any(|t| s.state.tickets.contains_key(&t.id))
+    })
+}
+
+/// Live: the spinner, RUNNING (STOPPING while Ticket threads leave) and a
+/// count per label over the listed Epics' Tickets, parked only when there
+/// is one; wider than `width` the glyphs go, then the end is cut. Idle:
+/// IDLE, the open Epics and their Tickets, and the saved run when there is one.
+fn status_line(s: &Screen, width: usize) -> Line<'static> {
+    if s.running {
+        let all: Vec<Status> = listed(s)
+            .flat_map(|e| &e.tickets)
+            .map(|t| status(s, t))
+            .collect();
         let (word, c) = if s.stopping() {
             (" STOPPING", ORANGE)
         } else {
             (" RUNNING", PURPLE)
         };
-        let mut spans = vec![
-            Span::styled(SPINNER[(s.ticks / 4) as usize % SPINNER.len()], bold(c)),
-            Span::styled(word, bold(c)),
-            Span::styled(format!("    {} active", count(Status::Active)), fg(TEXT)),
-            dot(),
-            Span::styled(format!("{} blocked", count(Status::Blocked)), fg(ORANGE)),
-            dot(),
-            Span::styled(format!("{} complete", count(Status::Done)), fg(GREEN)),
+        // Parked before merged, so a narrow screen cuts merged, which the
+        // Overall bar also carries.
+        let parts = [
+            (Status::Working, "●", "working", TEXT),
+            (Status::NeedsYou, "◆", "needs you", ORANGE),
+            (Status::Waiting, "◇", "waiting on a merge", MUTED),
+            (Status::ToMerge, "○", "to merge", BLUE),
+            (Status::Parked, "◌", "parked", MUTED),
+            (Status::Merged, "✓", "merged", GREEN),
         ];
-        let parked = count(Status::Parked);
-        if parked > 0 {
-            spans.push(dot());
-            spans.push(Span::styled(format!("{parked} parked"), fg(MUTED)));
-        }
-        return Line::from(waiting(s, spans));
+        let row = |glyphs: bool| {
+            let mut spans = vec![
+                Span::styled(SPINNER[(s.ticks / 4) as usize % SPINNER.len()], bold(c)),
+                Span::styled(word, bold(c)),
+            ];
+            for (want, glyph, what, c) in parts {
+                let n = all.iter().filter(|st| **st == want).count();
+                if want == Status::Parked && n == 0 {
+                    continue;
+                }
+                spans.push(Span::raw("  "));
+                if glyphs {
+                    spans.push(Span::styled(format!("{glyph} "), bold(c)));
+                }
+                spans.push(Span::styled(format!("{n} {what}"), fg(c)));
+            }
+            Line::from(waiting(s, spans))
+        };
+        let line = row(true);
+        return if line.width() > width {
+            row(false)
+        } else {
+            line
+        };
     }
     let tickets: usize = s.epics.iter().map(|e| e.tickets.len()).sum();
     let mut spans = vec![
@@ -301,92 +350,141 @@ fn overall(s: &Screen, width: u16) -> Line<'static> {
     ])
 }
 
-/// One row per Epic, then one per Ticket: indicator (● pulsing while live,
-/// ◆ blocked, ✓ done, ◌ parked, · queued), suffix and title, the Stage in
-/// muted text, and ACTIVE / BLOCKED / DONE / PARKED in bold; the Epic of the
-/// run reads RUNNING or RESUMABLE. Under 60 terminal columns the label goes
-/// and the indicator carries the status. From `s.scroll`, `visible` rows; a
-/// clipped tree ends in "… N more".
-fn ticket_table(s: &Screen, width: u16, visible: usize) -> Table<'static> {
-    let narrow = width < 60;
-    let label = |text: &'static str, c: Color| {
-        Cell::from(Span::styled(if narrow { "" } else { text }, bold(c)))
-    };
-    let mut rows = Vec::new();
-    for epic in &s.epics {
-        rows.push(Row::new(vec![
-            Cell::from(Span::styled("▾", bold(MUTED))),
-            Cell::from(Span::styled(
-                format!("{}  {}", epic.id, epic.title),
-                bold(TEXT),
-            )),
-            Cell::from(Span::styled(
-                format!("{} Tickets", epic.tickets.len()),
-                fg(MUTED),
-            )),
-            match (epic.id == s.state.epic, s.running) {
-                (false, _) => label("", BORDER),
-                (true, true) => label("RUNNING", PURPLE),
-                (true, false) => label("RESUMABLE", PURPLE),
-            },
+/// Cut to `width` characters, the last one an ellipsis.
+fn cut(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
+/// TICKETS, `width` wide: each listed Epic a rule line in its color, the id
+/// and title, the detail and its word; its Tickets hang under it, each with
+/// its indicator, suffix and title, stage and label. Idle the detail counts
+/// closed, in progress and open, and an Epic with every Ticket closed folds
+/// to its rule; live it counts merged, and a working Ticket's dot pulses.
+fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (i, e) in listed(s).enumerate() {
+        let c = EPIC_COLORS[i % EPIC_COLORS.len()];
+        let dim = lerp((c, BORDER), 0.55);
+        let all: Vec<Status> = e.tickets.iter().map(|t| status(s, t)).collect();
+        let count = |want: Status| all.iter().filter(|st| **st == want).count();
+        let (n, closed, open) = (all.len(), count(Status::Merged), count(Status::Queued));
+        let folded = !s.running && n > 0 && closed == n && e.id != s.state.epic;
+        let (word, wc) = if s.running {
+            ("RUNNING", PURPLE)
+        } else if e.id == s.state.epic {
+            ("RESUMABLE", PURPLE)
+        } else if folded {
+            ("ALL CLOSED", GREEN)
+        } else if open < n {
+            ("IN PROGRESS", TEXT)
+        } else {
+            ("NOT STARTED", MUTED)
+        };
+        let detail = if s.running {
+            format!("{closed}/{n} merged")
+        } else if folded {
+            format!("all {n} closed")
+        } else {
+            [
+                (closed, "closed"),
+                (n - closed - open, "in progress"),
+                (open, "open"),
+            ]
+            .iter()
+            .filter(|(k, _)| *k > 0)
+            .map(|(k, what)| format!("{k} {what}"))
+            .collect::<Vec<_>>()
+            .join(" · ")
+        };
+        let right = format!(" {detail}  {word:<11}");
+        let arrow = if folded { "▸" } else { "▾" };
+        let room = width.saturating_sub(right.chars().count() + 6);
+        let left = cut(&format!("{arrow} {}  {}", e.id, e.title), room);
+        let fill = width.saturating_sub(left.chars().count() + right.chars().count() + 4);
+        lines.push(Line::from(vec![
+            Span::styled("━━ ", fg(dim)),
+            Span::styled(left, bold(c)),
+            Span::styled(format!(" {}", "━".repeat(fill)), fg(dim)),
+            Span::styled(format!(" {detail}  "), fg(MUTED)),
+            Span::styled(format!("{word:<11}"), bold(wc)),
         ]));
-        for (n, t) in epic.tickets.iter().enumerate() {
+        if folded {
+            continue;
+        }
+        for (k, (t, &st)) in e.tickets.iter().zip(&all).enumerate() {
             let color = ticket_color(&t.id);
-            let saved = s.state.tickets.get(&t.id);
-            let (ind, ic, text, status) = match status(s, t) {
-                Status::Parked => ("◌", MUTED, TEXT, label("PARKED", MUTED)),
-                Status::Blocked => ("◆", ORANGE, TEXT, label("BLOCKED", ORANGE)),
-                Status::Done => ("✓", GREEN, TEXT, label("DONE", GREEN)),
-                Status::Active => ("●", color, TEXT, label("ACTIVE", color)),
-                Status::Queued => ("·", BORDER, MUTED, label("", BORDER)),
+            let (ind, ic, label, lc) = match st {
+                Status::Working if s.running => ("●", color, "WORKING", color),
+                Status::Working => ("●", color, "IN PROGRESS", TEXT),
+                Status::NeedsYou => ("◆", ORANGE, "NEEDS YOU", ORANGE),
+                Status::Waiting => ("◇", MUTED, "WAITING", MUTED),
+                Status::ToMerge => ("○", BLUE, "TO MERGE", BLUE),
+                Status::Merged if s.running => ("✓", GREEN, "MERGED", GREEN),
+                Status::Merged => ("✓", GREEN, "CLOSED", GREEN),
+                Status::Parked => ("◌", MUTED, "PARKED", MUTED),
+                Status::Queued => ("·", BORDER, "", BORDER),
             };
             // a live Ticket's dot pulses, each on its own phase
-            let pulsing = s.running && ind == "●" && (s.ticks / 6 + n as u64) % 12 >= 6;
+            let pulsing = s.running && st == Status::Working && (s.ticks / 6 + k as u64) % 12 >= 6;
             let ic = if pulsing { lerp((ic, BORDER), 0.6) } else { ic };
-            let stage = saved.map_or(String::new(), |ts| match ts.status.as_str() {
-                STATUS_PR_OPEN => pr_ref(&ts.pr),
-                STATUS_MERGED => "merged".to_string(),
-                _ if ts.round > 0 => format!("{} {}", ts.stage, ts.round),
-                _ => ts.stage.clone(),
-            });
-            rows.push(Row::new(vec![
-                Cell::from(Span::styled(ind, bold(ic))),
-                Cell::from(Span::styled(
-                    format!("{} {}", suffix(&t.id), t.title),
-                    fg(text),
-                )),
-                Cell::from(Span::styled(stage, fg(MUTED))),
-                status,
+            let text = if st == Status::Queued || (st == Status::Merged && !s.running) {
+                MUTED
+            } else {
+                TEXT
+            };
+            let stage = match (st, s.state.tickets.get(&t.id)) {
+                (Status::Waiting, _) => {
+                    format!("waits on {}", pr_ref(waits_on(s, t).unwrap_or_default()))
+                }
+                (Status::ToMerge, Some(ts)) => pr_ref(&ts.pr),
+                (Status::Merged, Some(ts)) => format!("{} merged", pr_ref(&ts.pr)),
+                (_, Some(ts)) if ts.round > 0 => format!("{} {}", ts.stage, ts.round),
+                (_, Some(ts)) => ts.stage.clone(),
+                (_, None) => String::new(),
+            };
+            let right = format!("{stage:>16}  {label:<11}");
+            let room = width.saturating_sub(right.chars().count() + 10);
+            let name = cut(&format!("{} {}", suffix(&t.id), t.title), room);
+            let pad = width.saturating_sub(name.chars().count() + right.chars().count() + 8);
+            let branch = if k + 1 == n {
+                "   └─ "
+            } else {
+                "   ├─ "
+            };
+            lines.push(Line::from(vec![
+                Span::styled(branch, fg(dim)),
+                Span::styled(format!("{ind} "), bold(ic)),
+                Span::styled(name, fg(text)),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(format!("{stage:>16}  "), fg(MUTED)),
+                Span::styled(format!("{label:<11}"), bold(lc)),
             ]));
         }
     }
-    let mut rows: Vec<Row> = rows.into_iter().skip(s.scroll).collect();
-    if rows.len() > visible {
-        let more = rows.len() - visible.saturating_sub(1);
-        rows.truncate(visible.saturating_sub(1));
-        rows.push(Row::new(vec![
-            Cell::from(""),
-            Cell::from(Span::styled(format!("… {more} more"), fg(MUTED))),
-        ]));
+    lines
+}
+
+/// The tree from `s.scroll`, which it keeps inside the tree, as many rows
+/// as `height`: a tree that fits never scrolls, a clipped one ends in
+/// "… N more, PgDn".
+fn scrolled(s: &Screen, tree: Vec<Line<'static>>, height: usize) -> Vec<Line<'static>> {
+    let from = s.scroll.get().min(tree.len().saturating_sub(height));
+    s.scroll.set(from);
+    let mut lines: Vec<Line> = tree.into_iter().skip(from).collect();
+    if lines.len() > height {
+        let more = lines.len() - height.saturating_sub(1);
+        lines.truncate(height.saturating_sub(1));
+        lines.push(Line::from(Span::styled(
+            format!("   … {more} more, PgDn"),
+            fg(MUTED),
+        )));
     }
-    let widths = if narrow {
-        [
-            Constraint::Length(1),
-            Constraint::Min(12),
-            Constraint::Length(14),
-            Constraint::Length(0),
-        ]
-    } else {
-        [
-            Constraint::Length(1),
-            Constraint::Min(20),
-            Constraint::Length(20),
-            Constraint::Length(9),
-        ]
-    };
-    Table::new(rows, widths)
-        .column_spacing(2)
-        .header(Row::new(vec!["", "TICKET", "STAGE", ""]).style(fg(BORDER)))
+    lines
 }
 
 /// A Question's lines: the question, a Judgment's scores, a Wake's pane

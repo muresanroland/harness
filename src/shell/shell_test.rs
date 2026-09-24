@@ -1,5 +1,7 @@
 use super::draw::{draw, ticket_color};
-use super::logo::{lerp, quantize, CYAN, DARK_ORANGE, GREEN, MUTED, PURPLE};
+use super::logo::{
+    lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GREEN, MUTED, ORANGE, PINK, PURPLE, TEXT,
+};
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
@@ -287,7 +289,7 @@ fn header_at_120x40_shows_the_logo_banner_version_and_folder() {
         "{:?}",
         row(&buf, 8)
     );
-    assert!(find(&buf, " TICKETS ").is_some());
+    assert!(find(&buf, " ━━ ▾ harness-kqe").is_some());
     assert!(find(&buf, " RECENT ").is_some());
     assert!(
         row(&buf, 39).starts_with(
@@ -334,15 +336,10 @@ fn the_fold_under_64_columns_or_18_rows_is_one_plain_line() {
         "the header folds at 80x24, it must not: {:?}",
         row(&buf, 4)
     );
-    assert!(find(&buf, "DONE").is_some(), "80x24 drops the status label");
-    // Under 60 terminal columns the label goes; the indicator carries the status.
     assert!(
-        find(&render(&s, 60, 24), "DONE").is_some(),
-        "60 columns drop the label"
+        find(&buf, "CLOSED").is_some(),
+        "80x24 drops the status label"
     );
-    let buf = render(&s, 59, 24);
-    assert!(find(&buf, "DONE").is_none(), "59 columns keep the label");
-    assert!(find(&buf, "✓  8 Events").is_some());
 }
 
 #[test]
@@ -504,34 +501,36 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
     );
 
     let buf = render(&s, 120, 40);
-    let (_, y) = find(&buf, "▾  harness-kqe  Build: the Rust port").unwrap();
+    let (_, y) = find(&buf, "▾ harness-kqe  Build: the Rust port").unwrap();
     assert!(
-        row(&buf, y).contains("3 Tickets") && row(&buf, y).ends_with("RESUMABLE │"),
+        row(&buf, y)
+            .trim_end()
+            .ends_with("1 closed · 2 in progress  RESUMABLE"),
         "{:?}",
         row(&buf, y)
     );
     assert!(
-        row(&buf, y + 1).contains("✓  8 Events") && row(&buf, y + 1).contains("DONE"),
+        row(&buf, y + 1).contains("✓ 8 Events") && row(&buf, y + 1).contains("CLOSED"),
         "{:?}",
         row(&buf, y + 1)
     );
     assert!(
-        row(&buf, y + 2).contains("●  9 The Shell, idle")
+        row(&buf, y + 2).contains("● 9 The Shell, idle")
             && row(&buf, y + 2).contains("review 2")
-            && row(&buf, y + 2).contains("ACTIVE"),
+            && row(&buf, y + 2).contains("IN PROGRESS"),
         "{:?}",
         row(&buf, y + 2)
     );
     // A Ticket Parked in the saved run is Parked whatever bd says.
     assert!(
-        row(&buf, y + 3).contains("◌  10 The Shell runs the Orchestrator")
+        row(&buf, y + 3).contains("◌ 10 The Shell runs the Orchestrator")
             && row(&buf, y + 3).contains("implement")
             && row(&buf, y + 3).contains("PARKED"),
         "{:?}",
         row(&buf, y + 3)
     );
     assert!(
-        row(&buf, y + 4).contains("▾  harness-7bj  Wayfinder map"),
+        row(&buf, y + 4).contains("▾ harness-7bj  Wayfinder map"),
         "{:?}",
         row(&buf, y + 4)
     );
@@ -541,9 +540,259 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
         .content
         .iter()
         .all(|c| !matches!(c.fg, Color::Rgb(..)) && !matches!(c.bg, Color::Rgb(..))));
-    let (x, y) = find(&buf, "DONE").unwrap();
+    let (x, y) = find(&buf, "CLOSED").unwrap();
     assert_eq!(buf[(x, y)].fg, quantize(GREEN));
     assert_eq!(quantize(GREEN), Color::Indexed(156));
+}
+
+/// Four open Epics as bd lists them. The first is the saved run's, with Ticket
+/// 5 blocked by Ticket 3; every Ticket of the second is closed; the third has
+/// one closed, one in progress and one open; the fourth is not started.
+const SECTIONS: &str = r#"[
+    {"id":"harness-a","title":"Build: the screen","status":"open","issue_type":"epic"},
+    {"id":"harness-a.1","title":"Plan floor","status":"closed","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-a.2","title":"Pane focus","status":"closed","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-a.3","title":"Status counts","status":"in_progress","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-a.4","title":"The / list","status":"in_progress","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-a.5","title":"The @ list","status":"open","issue_type":"task","parent":"harness-a",
+     "dependencies":[{"depends_on_id":"harness-a","type":"parent-child"},{"depends_on_id":"harness-a.3","type":"blocks"}]},
+    {"id":"harness-a.6","title":"RECENT scroll","status":"in_progress","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-a.7","title":"Tree","status":"in_progress","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-a.8","title":"Models","status":"open","issue_type":"task","parent":"harness-a"},
+    {"id":"harness-b","title":"Done work","status":"open","issue_type":"epic"},
+    {"id":"harness-b.1","title":"Old one","status":"closed","issue_type":"task","parent":"harness-b"},
+    {"id":"harness-b.2","title":"Old two","status":"closed","issue_type":"task","parent":"harness-b"},
+    {"id":"harness-c","title":"Half done","status":"open","issue_type":"epic"},
+    {"id":"harness-c.1","title":"First","status":"closed","issue_type":"task","parent":"harness-c"},
+    {"id":"harness-c.2","title":"Second","status":"in_progress","issue_type":"task","parent":"harness-c"},
+    {"id":"harness-c.3","title":"Third","status":"open","issue_type":"task","parent":"harness-c"},
+    {"id":"harness-d","title":"Not yet","status":"open","issue_type":"epic"},
+    {"id":"harness-d.1","title":"Later","status":"open","issue_type":"task","parent":"harness-d"},
+    {"id":"harness-d.2","title":"Much later","status":"open","issue_type":"task","parent":"harness-d"}
+]"#;
+
+/// The Shell over SECTIONS from a fake bd list, with the saved run on
+/// harness-a: 1 and 2 merged, 3's PR open, 4 and 6 running, 7 parked.
+fn sections_screen() -> Screen {
+    let fake = Fake::new(|_, _| Ok(SECTIONS.to_string()));
+    let epics = super::load_epics(Path::new(""), &*fake).unwrap();
+    let mut state = State {
+        epic: "harness-a".to_string(),
+        ..Default::default()
+    };
+    for (n, status, stage, round, pr) in [
+        (1, STATUS_MERGED, "fix", 1, "29"),
+        (2, STATUS_MERGED, "fix", 2, "30"),
+        (3, STATUS_PR_OPEN, "fix", 1, "31"),
+        (4, STATUS_RUNNING, "implement", 0, ""),
+        (6, STATUS_RUNNING, "review", 1, ""),
+        (7, STATUS_PARKED, "fix", 2, ""),
+    ] {
+        let pr = match pr {
+            "" => String::new(),
+            n => format!("https://github.com/o/r/pull/{n}"),
+        };
+        state.tickets.insert(
+            format!("harness-a.{n}"),
+            TicketState {
+                status: status.to_string(),
+                stage: stage.to_string(),
+                round,
+                pr,
+                ..Default::default()
+            },
+        );
+    }
+    Screen::new(
+        Config::for_tests(fake, Path::new(""), Path::new("")),
+        "~/harness".to_string(),
+        true,
+        epics,
+        state,
+    )
+}
+
+/// The row where `text` first appears, right-trimmed.
+fn row_of(buf: &Buffer, text: &str) -> String {
+    let (_, y) = find(buf, text).unwrap_or_else(|| panic!("no {text:?} in {:#?}", rows(buf)));
+    row(buf, y).trim_end().to_string()
+}
+
+#[test]
+fn idle_every_open_epic_is_a_rule_line_in_its_color_by_place_with_its_word() {
+    let s = sections_screen();
+    let buf = render(&s, 120, 40);
+    for (epic, color) in [
+        ("▾ harness-a", PURPLE),
+        ("▸ harness-b", CYAN),
+        ("▾ harness-c", ORANGE),
+        ("▾ harness-d", PINK),
+    ] {
+        let (x, y) = find(&buf, epic).unwrap_or_else(|| panic!("{epic}: {:#?}", rows(&buf)));
+        assert_eq!(buf[(x + 2, y)].fg, color, "{epic}");
+        assert!(row(&buf, y).starts_with(" ━━ "), "{:?}", row(&buf, y));
+        assert_eq!(buf[(x - 2, y)].fg, lerp((color, BORDER), 0.55), "{epic}");
+    }
+    let a = row_of(&buf, "▾ harness-a");
+    assert!(
+        a.contains("▾ harness-a  Build: the screen ━")
+            && a.ends_with("━ 2 closed · 4 in progress · 2 open  RESUMABLE"),
+        "{a:?}"
+    );
+    let (x, y) = find(&buf, "RESUMABLE").unwrap();
+    assert_eq!(buf[(x, y)].fg, PURPLE);
+    // Every Ticket closed: folded to its rule, no Ticket rows.
+    assert!(
+        row_of(&buf, "▸ harness-b  Done work").ends_with("━ all 2 closed  ALL CLOSED"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        find(&buf, "Old one").is_none(),
+        "a closed Epic's Tickets show"
+    );
+    let (x, y) = find(&buf, "ALL CLOSED").unwrap();
+    assert_eq!(buf[(x, y)].fg, GREEN);
+    assert!(
+        row_of(&buf, "▾ harness-c").ends_with("━ 1 closed · 1 in progress · 1 open  IN PROGRESS"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        row_of(&buf, "▾ harness-d").ends_with("━ 2 open  NOT STARTED"),
+        "{:#?}",
+        rows(&buf)
+    );
+    let (x, y) = find(&buf, "NOT STARTED").unwrap();
+    assert_eq!(buf[(x, y)].fg, MUTED);
+    // The Tickets hang under their Epic; idle they read IN PROGRESS or CLOSED.
+    let (_, y) = find(&buf, "▾ harness-a").unwrap();
+    assert!(row(&buf, y + 1).starts_with("    ├─ ✓ 1 Plan floor"));
+    assert!(row(&buf, y + 1)
+        .trim_end()
+        .ends_with("PR #29 merged  CLOSED"));
+    assert!(row(&buf, y + 8).starts_with("    └─ · 8 Models"));
+    assert!(
+        row_of(&buf, "● 4 The / list").ends_with("implement  IN PROGRESS"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row_of(&buf, "✓ 1 First").ends_with("CLOSED"));
+    assert!(
+        row_of(&buf, "· 3 Third").ends_with("3 Third"),
+        "a queued Ticket has a label"
+    );
+    let (x, y) = find(&buf, "● 4 The / list").unwrap();
+    assert_eq!(buf[(x, y)].fg, ticket_color("harness-a.4"));
+    // Idle, a Ticket blocked on an open PR is only open.
+    assert!(row_of(&buf, "· 5 The @ list").ends_with("5 The @ list"));
+    assert!(
+        row(&buf, 8).contains("IDLE    4 open Epics  ·  15 Tickets"),
+        "the idle status row changed: {:?}",
+        row(&buf, 8)
+    );
+}
+
+#[test]
+fn live_only_the_runs_epics_are_listed_with_each_label_and_its_stage() {
+    let mut s = sections_screen();
+    s.running = true;
+    s.push(asking(
+        "harness-a.4",
+        "blocked in implement (pane 1-1)",
+        Ask::Blocked {
+            pane: "1-1".to_string(),
+        },
+    ));
+    let buf = render(&s, 120, 40);
+    for other in ["harness-b", "harness-c", "harness-d"] {
+        assert!(find(&buf, other).is_none(), "{other} is not in the run");
+    }
+    let (x, y) = find(&buf, "▾ harness-a").unwrap();
+    assert_eq!(buf[(x + 2, y)].fg, PURPLE);
+    assert!(
+        row(&buf, y).trim_end().ends_with("━ 2/8 merged  RUNNING"),
+        "{:?}",
+        row(&buf, y)
+    );
+    let at = |y: u16, text: &str| {
+        let line = row(&buf, y);
+        line[..line.find(text).unwrap()].chars().count()
+    };
+    assert_eq!(
+        at(y, "RUNNING"),
+        at(y + 1, "MERGED"),
+        "the labels line up under the Epic's word"
+    );
+    for (text, end, color) in [
+        ("✓ 1 Plan floor", "PR #29 merged  MERGED", GREEN),
+        ("○ 3 Status counts", "PR #31  TO MERGE", BLUE),
+        ("◆ 4 The / list", "implement  NEEDS YOU", ORANGE),
+        ("◇ 5 The @ list", "waits on PR #31  WAITING", MUTED),
+        (
+            "● 6 RECENT scroll",
+            "review 1  WORKING",
+            ticket_color("harness-a.6"),
+        ),
+        ("◌ 7 Tree", "fix 2  PARKED", MUTED),
+        ("· 8 Models", "8 Models", BORDER),
+    ] {
+        let line = row_of(&buf, text);
+        assert!(line.ends_with(end), "{text}: {line:?}");
+        let (x, y) = find(&buf, text).unwrap();
+        assert_eq!(buf[(x, y)].fg, color, "{text}");
+    }
+}
+
+#[test]
+fn the_live_status_row_counts_each_label_and_drops_its_glyphs_then_its_end_when_narrow() {
+    let mut s = sections_screen();
+    s.running = true;
+    s.push(asking(
+        "harness-a.4",
+        "blocked in implement (pane 1-1)",
+        Ask::Blocked {
+            pane: "1-1".to_string(),
+        },
+    ));
+    let full = "| RUNNING  ● 1 working  ◆ 1 needs you  ◇ 1 waiting on a merge  ○ 1 to merge  ◌ 1 parked  ✓ 2 merged";
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 8).starts_with(&format!(" {full}")),
+        "{:?}",
+        row(&buf, 8)
+    );
+    for (text, color) in [
+        ("1 working", TEXT),
+        ("1 needs you", ORANGE),
+        ("1 waiting on a merge", MUTED),
+        ("1 to merge", BLUE),
+        ("1 parked", MUTED),
+        ("2 merged", GREEN),
+    ] {
+        let (x, y) = find(&buf, text).unwrap();
+        assert_eq!((y, buf[(x, y)].fg), (8, color), "{text}");
+    }
+    // Too wide for the row: the glyphs go, then the end is cut.
+    let bare =
+        "| RUNNING  1 working  1 needs you  1 waiting on a merge  1 to merge  1 parked  2 merged";
+    assert_eq!(row(&render(&s, 90, 40), 8).trim_end(), format!(" {bare}"));
+    assert_eq!(
+        row(&render(&s, 80, 40), 8).trim_end(),
+        " | RUNNING  1 working  1 needs you  1 waiting on a merge  1 to merge  1 parked"
+    );
+    // No Ticket parked, no parked count; 7, in progress on bd but not in
+    // the run, is only queued.
+    s.state.tickets.remove("harness-a.7");
+    let buf = render(&s, 120, 40);
+    assert!(row_of(&buf, "· 7 Tree").ends_with("7 Tree"));
+    let line = row(&buf, 8);
+    assert!(
+        line.contains(
+            "● 1 working  ◆ 1 needs you  ◇ 1 waiting on a merge  ○ 1 to merge  ✓ 2 merged"
+        ) && !line.contains("parked"),
+        "{line:?}"
+    );
 }
 
 #[test]
@@ -553,13 +802,16 @@ fn a_parked_ticket_of_the_saved_run_reads_parked() {
         .tickets
         .insert("harness-kqe.8".to_string(), ticket(STATUS_PARKED));
     let buf = render(&s, 120, 40);
-    let (_, y) = find(&buf, "◌  8 Events").unwrap();
+    let (_, y) = find(&buf, "◌ 8 Events").unwrap();
     assert!(row(&buf, y).contains("PARKED"), "{:?}", row(&buf, y));
 }
 
 #[test]
-fn a_tall_tree_scrolls_to_its_last_epic() {
+fn a_tall_tree_scrolls_to_its_last_epic_and_one_that_fits_never_scrolls() {
     let mut s = screen();
+    s.key(key(KeyCode::PageDown));
+    render(&s, 120, 40);
+    assert_eq!(s.scroll.get(), 0, "8 rows fit at 120x40 and scrolled");
     for n in 0..3 {
         s.epics.push(Epic {
             id: format!("harness-e{n}"),
@@ -569,43 +821,34 @@ fn a_tall_tree_scrolls_to_its_last_epic() {
                 .collect(),
         });
     }
-    assert_eq!(s.rows(), 8 + 18);
-    // 80x24 leaves the TICKETS box 7 rows: the header row, 3 rows and the tail.
+    // 80x24 leaves TICKETS 7 of its 26 rows: six rows and the tail.
     let buf = render(&s, 80, 24);
-    assert!(find(&buf, "▾  harness-kqe  Build").is_some());
-    assert!(find(&buf, "… 23 more").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "▾ harness-kqe  Build").is_some());
+    assert!(find(&buf, "… 20 more, PgDn").is_some(), "{:#?}", rows(&buf));
     assert!(find(&buf, "Epic 2").is_none());
     for _ in 0..3 {
         s.key(key(KeyCode::PageDown));
     }
-    assert_eq!(s.scroll, 25, "clamped to the last row");
-    for _ in 0..3 {
-        s.key(key(KeyCode::Up));
-    }
-    assert_eq!(s.scroll, 22);
-    // Epic 2 is row 20: 8 rows of harness-kqe, then two Epics of 6 rows each.
-    s.key(key(KeyCode::PageUp));
-    assert_eq!(s.scroll, 12);
-    for _ in 0..8 {
-        s.key(key(KeyCode::Down));
-    }
-    assert_eq!(s.scroll, 20);
     let buf = render(&s, 80, 24);
+    assert_eq!(s.scroll.get(), 19, "kept inside the tree: its last 7 rows");
     assert!(
-        find(&buf, "▾  harness-e2  Epic 2").is_some(),
+        find(&buf, "▾ harness-e2  Epic 2").is_some(),
         "{:#?}",
         rows(&buf)
     );
-    assert!(find(&buf, "… 3 more").is_some(), "{:#?}", rows(&buf));
-    s.scroll = 25;
-    assert!(
-        find(&render(&s, 80, 24), "more").is_none(),
-        "the last row alone needs no tail"
-    );
+    assert!(find(&buf, "more").is_none(), "the last rows need no tail");
+    for _ in 0..3 {
+        s.key(key(KeyCode::Up));
+    }
+    let buf = render(&s, 80, 24);
+    assert_eq!(s.scroll.get(), 16);
+    assert!(find(&buf, "… 4 more, PgDn").is_some(), "{:#?}", rows(&buf));
+    s.key(key(KeyCode::PageUp));
+    assert_eq!(s.scroll.get(), 6);
     // Typing takes the arrows back for the input line.
     s.key(key(KeyCode::Char('/')));
     s.key(key(KeyCode::Down));
-    assert_eq!(s.scroll, 25);
+    assert_eq!(s.scroll.get(), 6);
 }
 
 #[test]
@@ -698,13 +941,14 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
         "log:\n{}",
         log(&w)
     );
-    // The tree came from bd again: both Tickets are closed.
+    // The tree came from bd again: both Tickets are closed, the Epic folded.
     let buf = render(&s, 120, 40);
     assert!(
-        find(&buf, "✓  hx-1 Ticket hx-1").is_some(),
+        row_of(&buf, "▸ hx  Epic hx").ends_with("all 2 closed  ALL CLOSED"),
         "{:#?}",
         rows(&buf)
     );
+    assert!(find(&buf, "✓ hx-1").is_none(), "{:#?}", rows(&buf));
     assert!(find(&buf, "IDLE    1 open Epic  ·  2 Tickets").is_some());
     assert!(find(&buf, "saved run").is_none());
 }
@@ -725,20 +969,21 @@ fn stop_work_ends_scheduling_with_panes_alive_and_continue_resumes() {
     s.poll();
     let buf = render(&s, 120, 40);
     assert!(
-        row(&buf, 8).contains("RUNNING    1 active  ·  0 blocked  ·  0 complete"),
+        row(&buf, 8).contains(
+            "RUNNING  ● 1 working  ◆ 0 needs you  ◇ 0 waiting on a merge  ○ 0 to merge  ✓ 0 merged"
+        ),
         "{:?}",
         row(&buf, 8)
     );
     let (_, y) = find(&buf, "hx  Epic hx").unwrap();
     assert!(
-        row(&buf, y).contains("1 Tickets") && row(&buf, y).contains("RUNNING"),
+        row(&buf, y).trim_end().ends_with("0/1 merged  RUNNING"),
         "{:?}",
         row(&buf, y)
     );
     assert!(
-        row(&buf, y + 1).contains("●  hx-1 Ticket hx-1")
-            && row(&buf, y + 1).contains("implement")
-            && row(&buf, y + 1).contains("ACTIVE"),
+        row(&buf, y + 1).contains("● hx-1 Ticket hx-1")
+            && row(&buf, y + 1).trim_end().ends_with("implement  WORKING"),
         "{:?}",
         row(&buf, y + 1)
     );
@@ -830,12 +1075,12 @@ fn retry_and_park_reach_the_ticket_and_refusals_are_logged() {
     s.poll();
     let buf = render(&s, 120, 40);
     assert!(
-        row(&buf, 8).contains("RUNNING    0 active  ·  1 blocked  ·  0 complete"),
+        row(&buf, 8).contains("RUNNING  ● 0 working  ◆ 1 needs you"),
         "{:?}",
         row(&buf, 8)
     );
-    let (_, y) = find(&buf, "◆  hx-1 Ticket hx-1").unwrap();
-    assert!(row(&buf, y).contains("BLOCKED"), "{:?}", row(&buf, y));
+    let (_, y) = find(&buf, "◆ hx-1 Ticket hx-1").unwrap();
+    assert!(row(&buf, y).contains("NEEDS YOU"), "{:?}", row(&buf, y));
 
     s.command("/retry");
     assert_eq!(notice(&s), "usage: /retry <ticket>");
@@ -857,11 +1102,11 @@ fn retry_and_park_reach_the_ticket_and_refusals_are_logged() {
     s.poll();
     let buf = render(&s, 120, 40);
     assert!(
-        row(&buf, 8).contains("0 complete  ·  1 parked"),
+        row(&buf, 8).contains("○ 0 to merge  ◌ 1 parked  ✓ 0 merged"),
         "{:?}",
         row(&buf, 8)
     );
-    assert!(find(&buf, "◌  hx-1 Ticket hx-1").is_some());
+    assert!(find(&buf, "◌ hx-1 Ticket hx-1").is_some());
     s.command("/park hx-1");
     await_line(&mut s, "hx-1 ignored: not waiting on a Wake");
     assert!(
@@ -1362,12 +1607,13 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
         "the screen thread ran {:?}",
         fake.calls()
     );
-    // The Question takes RECENT's space; the tree stays whole, and the tail
-    // shows in what the question and its options leave.
+    // The Question takes RECENT's space, RECENT keeping what it leaves; the
+    // tree stays whole, and the tail shows in what the question and its
+    // options leave.
     let buf = render(&s, 120, 40);
-    assert!(find(&buf, " RECENT ").is_none(), "{:#?}", rows(&buf));
     assert!(find(&buf, "14 Self-update").is_some(), "{:#?}", rows(&buf));
     let (_, y) = find(&buf, " QUESTION ").unwrap();
+    assert_eq!(find(&buf, " RECENT ").map(|(_, r)| y - r), Some(3));
     let body: Vec<String> = (y + 1..39)
         .map(|y| {
             row(&buf, y)
@@ -1411,10 +1657,12 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
         row(&buf, hint).starts_with('└'),
         "the hint is not on the border"
     );
+    s.running = true;
     assert!(
-        find(&buf, "◆  11 Questions").is_some(),
-        "a Ticket with a Question waiting is blocked"
+        find(&render(&s, 120, 40), "◆ 11 Questions").is_some(),
+        "a live Ticket with a Question waiting does not need you"
     );
+    s.running = false;
     assert!(
         std::fs::read_to_string(repo.path().join(".harness/orchestrator.log"))
             .unwrap()
@@ -1517,7 +1765,7 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
     );
     assert!(find(&buf, "Ran the tests").is_none(), "{:#?}", rows(&buf));
     assert!(find(&buf, "14 Self-update").is_none(), "{:#?}", rows(&buf));
-    assert!(find(&buf, " TICKETS ").is_some());
+    assert!(find(&buf, " ━━ ▾ harness-kqe").is_some());
     assert!(row(&buf, 31).starts_with("› ▌"), "{:#?}", rows(&buf));
     s.push(event(Some("harness-kqe.11"), "fix 1 done", true));
     assert!(

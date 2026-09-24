@@ -24,6 +24,16 @@ pub(crate) struct BdIssue {
     pub(crate) dependencies: Vec<BdDependency>,
 }
 
+impl BdIssue {
+    /// The Tickets that must close before this one: its bd blocks dependencies.
+    pub(crate) fn blockers(&self) -> impl Iterator<Item = &str> {
+        self.dependencies
+            .iter()
+            .filter(|d| d.kind == "blocks")
+            .map(|d| d.depends_on_id.as_str())
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct BdDependency {
@@ -193,10 +203,7 @@ impl Orchestrator {
         };
         let suffix = ticket.rsplit('.').next().unwrap_or(ticket);
         for child in children {
-            let blocked = child
-                .dependencies
-                .iter()
-                .any(|d| d.depends_on_id == ticket && d.kind == "blocks");
+            let blocked = child.blockers().any(|id| id == ticket);
             if blocked && child.status != "closed" {
                 self.report(
                     &child.id,
