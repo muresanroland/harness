@@ -562,7 +562,8 @@ fn up_and_down_move_an_open_lists_cursor_and_scroll_recent_when_none_is() {
     for _ in 0..20 {
         s.key(key(KeyCode::Down));
     }
-    assert_eq!(s.pick, 8, "past the last row");
+    assert_eq!(s.pick, 9, "past the last row");
+    s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Enter));
     assert_eq!(s.input, "/questions ");
@@ -631,12 +632,12 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     assert_eq!(at("run every Ticket").0, TEXT);
     assert_eq!(at("run one Ticket").0, MUTED);
     // The window follows the cursor to the last row.
-    for _ in 0..8 {
+    for _ in 0..9 {
         s.key(key(KeyCode::Down));
     }
     let buf = render(&s, 120, 40);
     assert!(
-        row(&buf, 29).starts_with("   /start-ticket"),
+        row(&buf, 29).starts_with("   /continue"),
         "{:#?}",
         rows(&buf)
     );
@@ -646,7 +647,7 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     assert!(row(&buf, 11).contains("harness-kqe"), "{:#?}", rows(&buf));
     assert!(row(&buf, 13).contains("6 more, PgDn"), "{:#?}", rows(&buf));
     assert!(
-        row(&buf, 14).starts_with("   /continue"),
+        row(&buf, 14).starts_with("   /stop-work"),
         "{:#?}",
         rows(&buf)
     );
@@ -1484,6 +1485,7 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     assert_eq!(s.state, State::default(), "a done Epic is still saved");
     assert_eq!(load_state(&w.repo).unwrap(), State::default());
     assert_eq!(w.lock().peak, 1, "--max 1 was not obeyed");
+    s.key(key(KeyCode::Esc)); // the Epic summary
     assert!(
         log(&w).contains(" hx-1 PR #hx-1 opened after 1 round (https://example.test/pr/hx-1)\n")
             && log(&w).contains(" Epic done, every Ticket closed\n"),
@@ -2567,7 +2569,7 @@ fn a_wake_question_retries_with_a_fresh_session() {
         log(&w)
     );
     assert_eq!(w.called("herdr agent start h-hx-1-implement").len(), 2);
-    assert!(s.questions.is_empty());
+    assert!(s.questions.iter().all(|q| q.ticket.is_none()));
 }
 
 /// Below the floor the Wake's Question shows the Judgment's scores and the
@@ -3585,4 +3587,396 @@ fn a_word_wider_than_the_plan_wraps() {
     assert!(body[1].starts_with("  src/deep/"), "{body:#?}");
     let text: String = body.iter().map(|l| l.trim_start()).collect();
     assert!(text.contains(&path), "{body:#?}");
+}
+
+/// A Verdict file with these fix and skip items.
+fn verdict(fixes: &[&str], skips: &[&str]) -> String {
+    let mut body = "STATUS: done\n\n## Verdict\n\n".to_string();
+    for (kind, items) in [("fix", fixes), ("skip", skips)] {
+        for item in items {
+            body += &format!("- [{kind}] {item} | reason: why | settled: consensus\n");
+        }
+    }
+    body
+}
+
+/// The fake world's Run directories: hx-1 merged after two Rounds, hx-2
+/// with its PR open after three (the cap, one fix item left), hx-3 Parked.
+fn summary_world() -> (Arc<World>, Screen) {
+    let (w, _) = new_world(vec![
+        BdTicket::new("hx-1"),
+        BdTicket::new("hx-2"),
+        BdTicket::new("hx-3"),
+    ]);
+    w.lock().tickets[0].status = "closed".to_string();
+    let runs = w.repo.join(".harness/runs");
+    let files = [
+        (
+            "hx-1/verdict-1.md",
+            verdict(
+                &["(high) src/a.rs:1 — a bug"],
+                &["(low) src/b.rs:2 — a nit"],
+            ),
+        ),
+        ("hx-1/verdict-2.md", verdict(&[], &[])),
+        ("hx-1/fix-1.md", "STATUS: done\n".to_string()),
+        (
+            "hx-1/fix-2.md",
+            "STATUS: done\nPR: https://example.test/pr/1\n".to_string(),
+        ),
+        (
+            "hx-2/verdict-1.md",
+            verdict(
+                &["(high) src/c.rs:1 — one", "(medium) src/c.rs:2 — two"],
+                &["(low) src/d.rs:4 — a style nit"],
+            ),
+        ),
+        (
+            "hx-2/verdict-2.md",
+            verdict(&["(low) src/c.rs:5 — three"], &[]),
+        ),
+        (
+            "hx-2/verdict-3.md",
+            verdict(&["(medium) src/c.rs:3 — still open"], &[]),
+        ),
+        (
+            "hx-2/fix-3.md",
+            "STATUS: done\nPR: https://example.test/pr/2\n".to_string(),
+        ),
+        ("hx-3/implement.md", "STATUS: done\n".to_string()),
+    ];
+    for (path, body) in files {
+        write_file(&runs.join(path), &body);
+    }
+    let mut s = shell(&w);
+    s.state.epic = "hx".to_string();
+    s.state.tickets.insert(
+        "hx-3".to_string(),
+        TicketState {
+            status: STATUS_PARKED.to_string(),
+            reason: "the session asked which model name to use".to_string(),
+            ..Default::default()
+        },
+    );
+    (w, s)
+}
+
+/// /summary builds the Epic summary from bd, the State and each Ticket's
+/// Run directory: Rounds from the Verdicts, fixed and skipped from their
+/// items, left from the cap's last Verdict, the PR from the Fix result.
+#[test]
+fn summary_counts_each_tickets_rounds_and_findings_from_its_run_directory() {
+    let (_w, mut s) = summary_world();
+    s.command("/summary");
+    assert_eq!(notice(&s), "");
+    let sum = s.summary.as_ref().expect("no summary");
+    assert_eq!((sum.epic.as_str(), sum.title.as_str()), ("hx", "Epic hx"));
+    let got: Vec<_> = sum
+        .tickets
+        .iter()
+        .map(|t| {
+            (
+                t.id.as_str(),
+                t.pr.as_str(),
+                t.merged,
+                t.rounds,
+                t.fixed,
+                t.skipped.clone(),
+                t.left.clone(),
+                t.parked.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "hx-1",
+                "https://example.test/pr/1",
+                true,
+                2,
+                1,
+                vec!["(low) src/b.rs:2 — a nit".to_string()],
+                vec![],
+                None
+            ),
+            (
+                "hx-2",
+                "https://example.test/pr/2",
+                false,
+                3,
+                3,
+                vec!["(low) src/d.rs:4 — a style nit".to_string()],
+                vec!["(medium) src/c.rs:3 — still open".to_string()],
+                None
+            ),
+            (
+                "hx-3",
+                "",
+                false,
+                0,
+                0,
+                vec![],
+                vec![],
+                Some("the session asked which model name to use".to_string())
+            ),
+        ]
+    );
+}
+
+/// The summary takes the whole terminal: the title bar, the lead and the
+/// totals, a TICKETS outline from 100 columns, a section per Ticket then
+/// PARKED, and the position line. Read only: Tab goes Ticket to Ticket,
+/// PageDown a page, Esc closes. Built fresh, it shows a merge since.
+#[test]
+fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
+    let (w, mut s) = summary_world();
+    s.command("/summary");
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 0).starts_with(" EPIC DONE · hx Epic hx   2 PRs · 1 parked"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert_eq!(
+        row(&buf, 1).trim_end(),
+        " Every Ticket has its PR. Review and merge them; each Ticket closes as its PR merges."
+    );
+    assert_eq!(
+        row(&buf, 2).trim_end(),
+        " 5 Rounds · 4 Findings fixed · 2 skipped · 1 left on its PR · 1 parked"
+    );
+    assert!(row_of(&buf, "TICKETS").starts_with(" TICKETS"));
+    let body: Vec<String> = (4..18)
+        .map(|y| cols(&buf, y, 31, 120).trim_end().to_string())
+        .collect();
+    let rule = |name: &str, word: &str| {
+        let fill = 88 - name.chars().count() - word.chars().count() - 2;
+        format!("{name} {} {word}", "─".repeat(fill))
+    };
+    assert_eq!(
+        body,
+        [
+            rule("hx-1 Ticket hx-1", "merged"),
+            "  PR #1  https://example.test/pr/1".to_string(),
+            "  2 Rounds · 1 fixed · 1 skipped · 0 left".to_string(),
+            "    skipped: (low) src/b.rs:2 — a nit".to_string(),
+            String::new(),
+            rule("hx-2 Ticket hx-2", "to merge"),
+            "  PR #2  https://example.test/pr/2".to_string(),
+            "  3 Rounds · 3 fixed · 1 skipped · 1 left".to_string(),
+            "    skipped: (low) src/d.rs:4 — a style nit".to_string(),
+            "    left on the PR: (medium) src/c.rs:3 — still open".to_string(),
+            String::new(),
+            "PARKED".to_string(),
+            "  hx-3 Ticket hx-3".to_string(),
+            "    parked: the session asked which model name to use".to_string(),
+        ],
+        "{:#?}",
+        rows(&buf)
+    );
+    let at = |buf: &Buffer, text: &str| {
+        let (x, y) = find(buf, text).unwrap();
+        buf[(x, y)].fg
+    };
+    assert_eq!(at(&buf, "hx-1 Ticket hx-1 ─"), ticket_color("hx-1"));
+    assert_eq!(at(&buf, "merged"), GREEN);
+    assert_eq!(at(&buf, "https://example.test/pr/2"), CYAN);
+    assert!(
+        row(&buf, 39).starts_with(" rows 1–14 of 14 · 100%"),
+        "{:?}",
+        row(&buf, 39)
+    );
+
+    // Under 100 columns the outline drops and the body takes its room.
+    let buf = render(&s, 90, 30);
+    assert!(find(&buf, "TICKETS").is_none(), "{:#?}", rows(&buf));
+    assert!(
+        row(&buf, 4).starts_with(" hx-1 Ticket hx-1 ──"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row(&buf, 29).starts_with(" rows 1–14 of 14 · 100%"));
+
+    // Tab goes to the next Ticket, PageDown a page; typing does nothing.
+    render(&s, 90, 12);
+    s.key(key(KeyCode::Tab));
+    let buf = render(&s, 90, 12);
+    assert!(
+        row(&buf, 4).starts_with(" hx-2 Ticket hx-2 ──"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        row(&buf, 11).starts_with(" rows 6–12 of 14 · 85%"),
+        "{:?}",
+        row(&buf, 11)
+    );
+    s.key(key(KeyCode::Home));
+    s.key(key(KeyCode::PageDown));
+    s.key(key(KeyCode::Char('x')));
+    let buf = render(&s, 90, 12);
+    assert!(
+        row(&buf, 4).starts_with(" hx-2 Ticket hx-2 ──"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(s.input.is_empty(), "read only, but it typed");
+    s.key(key(KeyCode::Esc));
+    assert!(s.summary.is_none(), "Esc did not close it");
+    assert!(find(&render(&s, 120, 40), "EPIC DONE").is_none());
+
+    // Built fresh: a PR merged since shows merged.
+    w.lock().tickets[1].status = "closed".to_string();
+    s.command("/summary");
+    let buf = render(&s, 120, 40);
+    assert!(
+        row_of(&buf, "hx-2 Ticket hx-2 ─").ends_with("─ merged"),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// '/summary @<epic>' shows that Epic's summary, picked from the @ list,
+/// which offers Epics alone; typed whole, /summary runs on Enter. An Epic
+/// none of whose Tickets has run, or no run at all, is a notice.
+#[test]
+fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
+    let (w, mut s) = summary_world();
+    w.hook(|_, argv| {
+        let list = argv.starts_with(&["bd", "list"]).then(|| {
+            let issue = |id: &str, kind: &str, parent: &str| {
+                serde_json::json!({ "id": id, "title": format!("{kind} {id}"), "status": "open",
+                    "issue_type": if kind == "Epic" { "epic" } else { "task" }, "parent": parent })
+            };
+            Ok(serde_json::json!([
+                issue("hx", "Epic", ""),
+                issue("hx-1", "Ticket", "hx"),
+                issue("hy", "Epic", ""),
+                issue("hy-1", "Ticket", "hy"),
+                issue("hz", "Epic", ""),
+                issue("hz-1", "Ticket", "hz"),
+            ])
+            .to_string())
+        });
+        list
+    });
+    write_file(
+        &w.repo.join(".harness/runs/hy-1/verdict-1.md"),
+        &verdict(&[], &["(low) src/y.rs:1 — why not"]),
+    );
+    s.reload_epics();
+    type_in(&mut s, "/summary @h");
+    assert_eq!(list_keys(&s), ["hx", "hy", "hz"], "Tickets on the list");
+    s.input.clear();
+    type_line(&mut s, "/summary @hy"); // fills in the Epic picked
+    assert_eq!(s.input, "/summary hy ");
+    s.key(key(KeyCode::Enter));
+    assert_eq!(notice(&s), "");
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 0).starts_with(" EPIC SUMMARY · hy Epic hy   0 PRs · 0 parked"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row_of(&buf, "hy-1 Ticket hy-1 ─").ends_with("─ no PR yet"));
+    assert!(find(&buf, "skipped: (low) src/y.rs:1 — why not").is_some());
+    s.key(key(KeyCode::Esc));
+
+    s.command("/summary @hz");
+    assert_eq!(
+        notice(&s),
+        "no evidence for hz: none of its Tickets has run"
+    );
+    assert!(s.summary.is_none());
+
+    // Typed whole, Enter runs it: the saved run's Epic.
+    type_in(&mut s, "/summary");
+    assert_eq!(list_keys(&s), ["/summary"]);
+    s.key(key(KeyCode::Enter));
+    assert_eq!(s.summary.as_ref().map(|sum| sum.epic.as_str()), Some("hx"));
+
+    let mut s = lists_screen();
+    s.command("/summary");
+    assert_eq!(notice(&s), "no Epic run yet, /summary @<epic> shows one");
+    assert!(s.summary.is_none());
+}
+
+/// Polls the Shell until the summary is open.
+fn await_summary(s: &mut Screen) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.summary.is_none() {
+        assert!(Instant::now() < deadline, "the summary never opened");
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// In an Epic run the summary opens by itself once every Ticket has its PR
+/// open or merged, and not before; closed, it stays closed for the run.
+#[test]
+fn the_summary_opens_by_itself_once_when_the_last_pr_opens() {
+    let (w, _) = new_world(vec![
+        BdTicket::new("hx-1"),
+        BdTicket {
+            deps: vec!["hx-1".to_string()],
+            ..BdTicket::new("hx-2")
+        },
+    ]);
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 PR #hx-1 opened after 1 round");
+    for _ in 0..20 {
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(s.summary.is_none(), "opened while hx-2 waits on the merge");
+
+    w.lock().prs.insert(
+        "https://example.test/pr/hx-1".to_string(),
+        r#"{"state":"MERGED","mergeable":"UNKNOWN"}"#.to_string(),
+    );
+    await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
+    await_summary(&mut s);
+    let buf = render(&s, 120, 40);
+    assert!(row(&buf, 0).starts_with(" EPIC DONE · hx Epic hx   2 PRs · 0 parked"));
+    assert!(row_of(&buf, "hx-1 Ticket hx-1 ─").ends_with("─ merged"));
+    assert!(row_of(&buf, "hx-2 Ticket hx-2 ─").ends_with("─ to merge"));
+
+    s.key(key(KeyCode::Esc));
+    for _ in 0..20 {
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(s.summary.is_none(), "it opened again");
+    s.command("/stop-work");
+    await_end(&mut s);
+}
+
+/// When the last Ticket merges and the Epic is done, a confirmation offers
+/// to close the Epic: yes runs bd close, no runs nothing.
+#[test]
+fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_no() {
+    for (answer, want) in [('y', 1), ('n', 0)] {
+        let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+        w.lock().merged = true;
+        let mut s = shell(&w);
+        s.command("/start-epic hx");
+        await_line(&mut s, "Epic done, every Ticket closed");
+        await_end(&mut s);
+        assert!(s.summary.is_some(), "the summary never opened");
+        s.key(key(KeyCode::Esc));
+        assert_eq!(question(&s), "close Epic hx Epic hx?");
+        s.key(key(KeyCode::Char(answer)));
+        assert_eq!(
+            w.called("bd close hx "),
+            vec!["bd close hx --reason every Ticket merged"; want],
+            "answered {answer}"
+        );
+        assert!(!s.showing(), "the confirmation stayed");
+        // The done Epic cleared the State: /summary alone still shows it.
+        s.command("/summary");
+        let sum = s.summary.as_ref().expect("no summary of the last run");
+        assert!(sum.epic == "hx" && sum.tickets[0].merged);
+    }
 }

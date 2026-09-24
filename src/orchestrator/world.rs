@@ -471,7 +471,9 @@ impl World {
             return Ok(String::new());
         }
         if cmd.starts_with("bd close") {
-            w.find(argv[2]).status = "closed".to_string();
+            if argv[2] != EPIC {
+                w.find(argv[2]).status = "closed".to_string();
+            }
             return Ok(String::new());
         }
         if cmd.starts_with("bd update") {
