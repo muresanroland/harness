@@ -236,9 +236,6 @@ impl Manifest {
     /// new place or its link is taken, yours say, nothing moves, since a
     /// skill left behind would leave the manifest naming what is there. Gives
     /// why nothing moved, or each skill left where it was and why.
-    // ponytail: a user-level skill leaves ~ though another checkout may use
-    // it too, and worktrees already prepared keep links to the old place;
-    // copy, and relink them, should either bite.
     pub(crate) fn relocate(
         &mut self,
         repo: &Path,
@@ -281,7 +278,7 @@ impl Manifest {
             })
             .collect();
         for name in names {
-            if let Err(err) = move_skill(&from, &place, name) {
+            if let Err(err) = move_skill(repo, &from, &place, name) {
                 stayed.push(format!(
                     "{name} stays at {}: {err}",
                     from.skill(name).display()
@@ -746,21 +743,47 @@ fn committed(repo: &Path, tools: &dyn Tools, place: &Place, name: &str) -> bool 
             .is_ok_and(|files| !files.trim().is_empty())
 }
 
-/// Moves a skill's folder from one place to another, and its link with it.
-fn move_skill(from: &Place, to: &Place, name: &str) -> io::Result<()> {
+/// Moves a skill's folder from one place to another, and its link with it,
+/// and relinks the Ticket worktrees and Run directories linked to it. A
+/// user-level skill is copied, and stays with its link: another checkout may
+/// use it.
+fn move_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result<()> {
     let (old, new) = (from.skill(name), to.skill(name));
     fs::create_dir_all(new.parent().unwrap())?;
-    // Across filesystems, as from a checkout to ~, rename cannot.
-    fs::rename(&old, &new)
-        .or_else(|_| copy_dir(&old, &new).and_then(|()| fs::remove_dir_all(&old)))?;
-    if let Some(link) = from
-        .link(name)
-        .filter(|link| fs::read_link(link).is_ok_and(|to| to == from.target(name)))
-    {
-        fs::remove_file(link)?;
+    if from.root != repo {
+        copy_dir(&old, &new)?;
+    } else {
+        // Across filesystems, as from a checkout to ~, rename cannot.
+        fs::rename(&old, &new)
+            .or_else(|_| copy_dir(&old, &new).and_then(|()| fs::remove_dir_all(&old)))?;
+        if let Some(link) = from
+            .link(name)
+            .filter(|link| fs::read_link(link).is_ok_and(|to| to == from.target(name)))
+        {
+            fs::remove_file(link)?;
+        }
     }
-    link(to, name)
+    link(to, name)?;
+    for kind in ["worktrees", "runs"] {
+        for dir in fs::read_dir(repo.join(".harness").join(kind))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            for sub in SUBS {
+                let link = dir.path().join(sub).join(name);
+                // Moved already, so a link that fails does not undo it.
+                if fs::read_link(&link).is_ok_and(|to| to == old) {
+                    let _ = fs::remove_file(&link).and_then(|()| symlink(&new, &link));
+                }
+            }
+        }
+    }
+    Ok(())
 }
+
+/// Where a Ticket's worktree and Run directory get the checkout's skills.
+const SUBS: [&str; 2] = [".claude/skills", ".agents/skills"];
 
 /// Links every skill in the checkout's .harness/skills into each dir's
 /// .claude/skills and .agents/skills, where nothing is there already, and
@@ -777,7 +800,6 @@ pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()
         .filter(|name| safe_name(name)) // not update's staging folders
         .collect();
     names.sort();
-    const SUBS: [&str; 2] = [".claude/skills", ".agents/skills"];
     if names.is_empty() {
         return Ok(());
     }

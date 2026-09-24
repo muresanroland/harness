@@ -223,8 +223,8 @@ fn ask_location(
 
 /// Installs every job's default the manifest lacks, where init put the
 /// skills, each pinned by its commit. At user level a skill you already have
-/// there is yours and stays. A failure is said and init goes on: the
-/// preflight names the job.
+/// there is yours and stays, linked for Claude should it lack the link. A
+/// failure is said and init goes on: the preflight names the job.
 pub(crate) fn install_defaults(
     repo: &Path,
     home: &Path,
@@ -244,19 +244,21 @@ pub(crate) fn install_defaults(
                 .any(|path| fs::symlink_metadata(path).is_ok())
         {
             writeln!(out, "init: keeping your {name} at user level")?;
+            if let Err(err) = manifest::link(&place, name) {
+                writeln!(out, "init: your {name} not linked for Claude: {err}")?;
+            }
             continue;
         }
         match manifest::add(repo, home, tools, source, Some(name)) {
-            Ok(_) => writeln!(out, "init: installed {name}, the {} default", said(job))?,
+            Ok(_) => writeln!(
+                out,
+                "init: installed {name}, the {} default",
+                job.replace('-', " ")
+            )?,
             Err(err) => writeln!(out, "init: {name} not installed: {err}")?,
         }
     }
     Ok(())
-}
-
-/// A job as a sentence says it: "self review".
-fn said(job: &str) -> String {
-    job.replace('-', " ")
 }
 
 /// Asks for the TypeSafe API key with echo off and keeps it, readable only by
@@ -498,7 +500,10 @@ pub(crate) fn preflight(
                     } else {
                         "/config installs it, or picks another"
                     };
-                    missing.push(format!("the {} skill {pick} is missing: {fix}", said(job)));
+                    missing.push(format!(
+                        "the {} skill {pick} is missing: {fix}",
+                        job.replace('-', " ")
+                    ));
                 }
             }
         }

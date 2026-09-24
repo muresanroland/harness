@@ -376,6 +376,11 @@ fn at_user_level_a_skill_of_yours_is_not_overwritten() {
         "---\nname: tdd\n---\nmine\n"
     );
     assert!(out.contains("keeping your tdd"), "{out}");
+    // Linked for Claude, which reads ~/.claude/skills only.
+    assert_eq!(
+        fs::read_to_string(home.path().join(".claude/skills/tdd/SKILL.md")).unwrap(),
+        "---\nname: tdd\n---\nmine\n"
+    );
     let manifest = Manifest::load(repo.path()).unwrap();
     assert!(
         !manifest.skills.contains_key("tdd"),

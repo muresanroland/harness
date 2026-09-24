@@ -1,6 +1,6 @@
 use super::manifest::{
-    add, list, parse_source, remove, update, update_all, Added, Installed, Location, Manifest,
-    Source, JOBS, NONE,
+    add, link_checkout_skills, list, parse_source, remove, update, update_all, Added, Installed,
+    Location, Manifest, Source, JOBS, NONE,
 };
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
@@ -745,4 +745,64 @@ fn relocating_stops_at_a_claude_skill_of_yours_in_the_new_links_folder() {
     assert!(repo.path().join(".agents/skills/tdd/SKILL.md").exists());
     assert!(!home.path().join(".agents/skills/tdd").exists());
     assert_eq!(fs::read_to_string(&mine).unwrap(), "mine");
+}
+
+/// tdd installed from mattpocock/skills at the Location.
+fn installed_at(location: Location) -> (TempDir, TempDir, Arc<Fake>) {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let tools = git(&remote("abc123", TWO_SKILLS));
+    let manifest = Manifest {
+        location: Some(location),
+        ..Manifest::default()
+    };
+    manifest.save(repo.path()).unwrap();
+    add(
+        repo.path(),
+        home.path(),
+        &*tools,
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    (repo, home, tools)
+}
+
+#[test]
+fn relocating_relinks_the_worktrees_linked_to_the_checkouts_skills() {
+    let (repo, home, tools) = installed_at(Location::Checkout);
+    let worktree = repo.path().join(".harness/worktrees/t-1");
+    let run = repo.path().join(".harness/runs/t-1");
+    link_checkout_skills(repo.path(), &[&worktree, &run]).unwrap();
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Repo);
+    assert!(said.is_empty(), "{said:?}");
+    for dir in [&worktree, &run] {
+        for sub in [".claude/skills", ".agents/skills"] {
+            let skill = dir.join(sub).join("tdd/SKILL.md");
+            assert_eq!(
+                fs::read_to_string(&skill).ok().as_deref(),
+                Some(TDD),
+                "{skill:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn relocating_away_from_user_level_leaves_the_users_skill_for_other_checkouts() {
+    let (repo, home, tools) = installed_at(Location::User);
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Checkout);
+    assert!(said.is_empty(), "{said:?}");
+    for skill in [
+        repo.path().join(".harness/skills/tdd/SKILL.md"),
+        home.path().join(".agents/skills/tdd/SKILL.md"),
+        home.path().join(".claude/skills/tdd/SKILL.md"),
+    ] {
+        assert_eq!(
+            fs::read_to_string(&skill).ok().as_deref(),
+            Some(TDD),
+            "{skill:?}"
+        );
+    }
 }
