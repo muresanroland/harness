@@ -3178,8 +3178,7 @@ fn a_plan_docks_beside_the_live_shell_with_its_markdown_styled() {
 
 /// Under 110 columns the plan folds to a rounded box over the dimmed
 /// Shell, leaving it the input line, with margins from 100x30 up; the
-/// options go in one row. Under 100 columns the badges shorten, under 80
-/// the option words.
+/// options go in one row.
 #[test]
 fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
     let repo = TempDir::new();
@@ -3218,18 +3217,7 @@ fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
     assert!(row(&buf, 22).starts_with("╰"), "{:#?}", rows(&buf));
     assert!(row(&buf, 23).starts_with("› ▌"));
     assert!(
-        row(&buf, 1).contains("│ judged 0.62 · 1 more waiting · 1 new "),
-        "{:?}",
-        row(&buf, 1)
-    );
-    assert!(
         row(&buf, 21).contains(" 4 open the pane "),
-        "{:#?}",
-        rows(&buf)
-    );
-    let buf = render(&s, 79, 24);
-    assert!(
-        row(&buf, 21).contains(" 1 approve   2 feedback   3 park   4 open "),
         "{:#?}",
         rows(&buf)
     );
@@ -3446,6 +3434,40 @@ fn the_new_lines_count_follows_the_plan_on_screen() {
     let buf = render(&s, 160, 45);
     assert!(row(&buf, 0).contains(" PLAN · 12 "), "{:?}", row(&buf, 0));
     assert!(!row(&buf, 1).contains("new"), "{:?}", row(&buf, 1));
+}
+
+/// A Question's option with a word wider than the box, a nudge's path,
+/// goes on under itself instead of running off the edge.
+#[test]
+fn a_word_wider_than_the_question_wraps() {
+    let repo = TempDir::new();
+    let mut s = screen_at(Fake::quiet(), repo.path());
+    let file = PathBuf::from(format!("/r/{}fix-1.md", "deep/".repeat(30)));
+    s.push(asking(
+        "harness-kqe.11",
+        "stuck in fix 1: went idle without a result (pane 2-1)",
+        Ask::Wake {
+            pane: "w1:p7".to_string(),
+            tail: String::new(),
+            file: file.clone(),
+            actions: Action::ALL[..1].to_vec(),
+            judged: None,
+        },
+    ));
+    let buf = render(&s, 80, 40);
+    let (_, y) = find(&buf, "› 1. nudge").unwrap();
+    let text: String = (y..40)
+        .map(|y| {
+            row(&buf, y)
+                .trim_matches(|c| c == '│' || c == ' ')
+                .to_string()
+        })
+        .collect();
+    assert!(
+        text.contains(&file.display().to_string()),
+        "{:#?}",
+        rows(&buf)
+    );
 }
 
 /// A word wider than the plan, a path or a URL, goes on under itself

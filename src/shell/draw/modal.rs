@@ -101,7 +101,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Under 100 columns, or where the long ones do not fit, the badges shorten.
+    // Where the long ones do not fit, the badges shorten.
     // Counted from when this Ticket's plan opened: another's starts over.
     let (ticket, opened) = s
         .opened
@@ -139,7 +139,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
         }
         Line::from(line)
     };
-    let badge_line = match badges(width < 100) {
+    let badge_line = match badges(false) {
         line if line.width() > inner.width as usize => badges(true),
         line => line,
     };
@@ -203,8 +203,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
             Span::styled("▌", fg(TEXT)),
         ])
     };
-    // Folded, one row: under 80 columns, or where it does not fit, each
-    // option's first word.
+    // Folded, one row: where it does not fit, each option's first word.
     let row = |short: bool| {
         let mut spans = Vec::new();
         for (i, option) in options.iter().enumerate() {
@@ -224,7 +223,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     let lines: Vec<Line> = if folded && s.composing {
         vec![composed()]
     } else if folded {
-        match row(width < 80) {
+        match row(false) {
             line if line.width() > w => vec![row(true)],
             line => vec![line],
         }
@@ -368,7 +367,7 @@ fn inline(text: &str, base: Style) -> Vec<(String, Style)> {
 /// Word-wraps styled pieces to `width`, `first` leading the first row and
 /// `hang` the rest, both in `lead`; a word longer than the row is cut at
 /// the row's end and goes on under it, as fenced code does.
-fn wrap_spans(
+pub(super) fn wrap_spans(
     pieces: Vec<(String, Style)>,
     width: usize,
     first: &str,

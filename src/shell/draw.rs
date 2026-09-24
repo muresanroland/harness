@@ -588,20 +588,14 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
         } else {
             (" ", fg(TEXT))
         };
-        for (n, piece) in wrap(option, width.saturating_sub(5))
-            .into_iter()
-            .enumerate()
-        {
-            let lead = if n == 0 {
-                format!("{mark} {}. ", i + 1)
-            } else {
-                "     ".to_string()
-            };
-            options.push(Line::from(vec![
-                Span::styled(lead, style),
-                Span::styled(piece, style),
-            ]));
-        }
+        let first = format!("{mark} {}. ", i + 1);
+        options.extend(modal::wrap_spans(
+            vec![(option.clone(), style)],
+            width,
+            &first,
+            "     ",
+            style,
+        ));
     }
     let fit = room.saturating_sub(lines.len() + options.len());
     if let About::Asked(Ask::Wake { tail, .. }) = &q.about {
@@ -611,23 +605,6 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
         }
     }
     lines.extend(options);
-    lines
-}
-
-/// Word-wraps text to width; a word longer than the width stays whole.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    for word in text.split(' ') {
-        let last = lines.last_mut().unwrap();
-        if !last.is_empty() && last.chars().count() + 1 + word.chars().count() > width {
-            lines.push(word.to_string());
-        } else {
-            if !last.is_empty() {
-                last.push(' ');
-            }
-            last.push_str(word);
-        }
-    }
     lines
 }
 
