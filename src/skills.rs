@@ -22,3 +22,10 @@ pub(crate) const SKILLS: &[(&str, &str)] = &[
         include_str!("../skills/stage-review/SKILL.md"),
     ),
 ];
+
+// Nothing outside the tests calls it until init (Ticket 18) and /config (Ticket 21).
+#[allow(dead_code)]
+pub(crate) mod manifest;
+
+#[cfg(test)]
+mod manifest_test;
