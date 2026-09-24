@@ -555,8 +555,8 @@ fn preflight_names_each_row_whose_app_is_not_on_path() {
     assert_eq!(
         got,
         [
-            "Review runs on codex, which is not on PATH",
-            "Debate side B runs on codex, which is not on PATH",
+            "review runs on codex, which is not on PATH",
+            "side_b runs on codex, which is not on PATH",
         ]
     );
 }

@@ -620,4 +620,16 @@ codex: outdated (v7) (/h/.codex/herdr-agent-state.sh)
     let tools = herdr(false);
     let (_, out) = run_with(&["init"], bare_repo().path(), tools.clone(), &herdr_env);
     assert!(!out.contains("Install herdr's integration"), "{out}");
+
+    // A failed status is said, not taken for nothing to offer.
+    let tools = Fake::new(|dir, argv| match argv.join(" ").as_str() {
+        "herdr integration status" => Err("unknown command integration".to_string()),
+        _ => ok(dir, argv),
+    });
+    let (_, out) = run_with(&["init"], bare_repo().path(), tools, &herdr_env);
+    assert!(
+        out.contains("herdr integration status failed")
+            && out.contains("unknown command integration"),
+        "{out}"
+    );
 }

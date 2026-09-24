@@ -221,15 +221,15 @@ fn config(repo: &Path) -> Result<Value, String> {
     }
 }
 
-/// Every row of config.json: its key, and its name in words.
-pub(crate) const ROWS: [(&str, &str); 7] = [
-    ("implement", "Implement"),
-    ("review", "Review"),
-    ("moderator", "The Moderator"),
-    ("side_a", "Debate side A"),
-    ("side_b", "Debate side B"),
-    ("fix", "Fix"),
-    ("address", "Address"),
+/// The key of every row of config.json.
+pub(crate) const ROWS: [&str; 7] = [
+    "implement",
+    "review",
+    "moderator",
+    "side_a",
+    "side_b",
+    "fix",
+    "address",
 ];
 
 /// The row under key: a Stage's, or a Debate side's (side_a, side_b).

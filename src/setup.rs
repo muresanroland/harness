@@ -254,9 +254,16 @@ fn install_integrations(
     tty: bool,
 ) -> io::Result<()> {
     // herdr 0.9.1 prints it as text only: "codex: outdated (v7) (<path>)".
-    let status = tools
-        .run(repo, &["herdr", "integration", "status"])
-        .unwrap_or_default();
+    let status = match tools.run(repo, &["herdr", "integration", "status"]) {
+        Ok(status) => status,
+        Err(err) => {
+            write!(
+                out,
+                "init: herdr integration status failed, so no integration was offered and /continue may start Stages fresh; fix herdr and run harness init again: {err}\r\n"
+            )?;
+            return Ok(());
+        }
+    };
     let stale: Vec<(&str, &str)> = APPS
         .iter()
         .filter_map(|app| {
@@ -767,13 +774,13 @@ pub(crate) fn preflight(
         Err(err) => missing.push(err),
     }
     // A row that cannot be read is the Orchestrator's to refuse.
-    for (key, said) in app::ROWS {
+    for key in app::ROWS {
         let Ok(row) = app::row(repo, key) else {
             continue;
         };
         let name = row.app.name;
         if tools.run(repo, &["which", name]).is_err() {
-            missing.push(format!("{said} runs on {name}, which is not on PATH"));
+            missing.push(format!("{key} runs on {name}, which is not on PATH"));
         }
     }
     if env("HERDR_ENV") != "1" {
