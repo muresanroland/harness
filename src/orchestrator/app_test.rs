@@ -4,6 +4,7 @@
 use super::app::app;
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, World};
 use super::write_file;
+use crate::skills::SKILLS;
 use crate::tempdir::TempDir;
 use std::sync::Arc;
 
@@ -99,6 +100,54 @@ fn a_worktree_path_is_escaped_in_the_review_settings_on_claude() {
     );
 }
 
+#[test]
+fn the_moderators_inputs_carry_each_sides_command() {
+    let skill = SKILLS
+        .iter()
+        .find(|(name, _)| *name == "stage-moderate")
+        .unwrap()
+        .1;
+    for own in ["claude -p", "codex exec"] {
+        assert!(!skill.contains(own), "stage-moderate still runs {own:?}");
+    }
+    // Started in the worktree, a claude side is granted the Run directory,
+    // its sibling, which holds the diff.
+    let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '--add-dir' '{run}' '-p'";
+    let codex = "'codex' 'exec' '--sandbox' 'read-only'";
+    for (body, side_a, side_b) in [
+        ("", claude.to_string(), codex.to_string()),
+        (
+            r#"{
+  "side_a": {"app": "codex", "model": "gpt-6-sol", "effort": "low"},
+  "side_b": {"app": "claude", "model": "claude-opus-5-5[1m]", "effort": "high"}
+}"#,
+            format!("{codex} '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=low'"),
+            format!("{claude} '--model' 'claude-opus-5-5[1m]' '--effort' 'high'"),
+        ),
+    ] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        if !body.is_empty() {
+            config(&w, body);
+        }
+        o.run_ticket("hx-1");
+
+        // The Moderator's prompt: the Stage skill's body, then its Inputs.
+        let prompt = w
+            .called("herdr agent prompt")
+            .into_iter()
+            .find(|call| call.contains("verdict-1.md"))
+            .unwrap();
+        let inputs = prompt.split_once("## Inputs").unwrap().1;
+        let run = o.run_dir("hx-1").display().to_string();
+        for want in [
+            format!("- Side A command: {side_a}\n").replace("{run}", &run),
+            format!("- Side B command: {side_b}\n").replace("{run}", &run),
+        ] {
+            assert!(inputs.contains(&want), "{want:?} not in:{inputs}");
+        }
+    }
+}
+
 /// Running Stages keep theirs; the Stages that start after a change use it.
 #[test]
 fn config_changed_between_two_stages_reaches_the_second() {
@@ -150,6 +199,11 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "fable"}}"#,
             "implement",
             SPLIT_NOT_FULL,
+        ),
+        (
+            r#"{"side_b": {"app": "pi"}}"#,
+            "debate 1",
+            r#"{file}: no App named "pi" for side_b"#,
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
