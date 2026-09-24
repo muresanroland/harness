@@ -107,6 +107,14 @@ fn claudes_options_menu_is_a_long_limit_whatever_its_reset() {
 }
 
 #[test]
+fn a_menu_older_than_the_limit_line_is_not_its_menu() {
+    let tail =
+        "Agent asked: What do you want to do?\n\nYou've hit your session limit · resets 3:45pm\n";
+    let limit = found("claude", tail).unwrap();
+    assert!(!limit.long && limit.reset == at(25, 15, 45), "{limit:?}");
+}
+
+#[test]
 fn a_past_reset_an_old_line_or_another_apps_text_is_no_limit() {
     let newer = "Ran the tests: 12 passed.\n".repeat(20);
     for (name, tail) in [

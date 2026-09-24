@@ -45,7 +45,7 @@ pub(crate) struct Limit {
 pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Option<Limit> {
     let patterns: Vec<Regex> = app.limits.iter().map(|p| Regex::new(p).unwrap()).collect();
     let last: Vec<&str> = tail.lines().rev().take(LAST_LINES).collect();
-    for line in &last {
+    for (i, line) in last.iter().enumerate() {
         for caps in patterns.iter().filter_map(|p| p.captures(line)) {
             let reset = match caps.name("reset") {
                 Some(text) => parse_reset(text.as_str(), now),
@@ -61,7 +61,10 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
                     .map_or("usage limit", |w| w.as_str())
                     .to_string(),
                 reset,
-                long: reset > now + Duration::hours(24) || last.iter().any(|l| l.contains(MENU)),
+                // The menu is drawn with or after its limit's line, so only
+                // that line and newer ones (last[..=i]) can hold it.
+                long: reset > now + Duration::hours(24)
+                    || last[..=i].iter().any(|l| l.contains(MENU)),
                 dated,
             });
         }
