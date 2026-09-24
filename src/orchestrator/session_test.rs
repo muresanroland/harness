@@ -235,6 +235,25 @@ fn a_failed_resumed_start_or_continue_starts_the_stage_fresh() {
             starts.len() == 2 && starts[0].contains("resume") && !starts[1].contains("resume"),
             "with {failing:?} failing, Review starts = {starts:?}, want the resume then a fresh one"
         );
+        let pane = |start: &str| {
+            start
+                .split(' ')
+                .skip_while(|a| *a != "--pane")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let fresh = pane(&starts[1]);
+        assert_ne!(
+            pane(&starts[0]),
+            fresh,
+            "the fresh Review starts in a pane of its own"
+        );
+        let prompts = w.since(before, &format!("herdr agent prompt {fresh} "));
+        assert!(
+            prompts.len() == 1 && prompts[0].contains("## Inputs"),
+            "the fresh Review is prompted with its Stage skill, got {prompts:?}"
+        );
         let said = w.await_event("review 1 not resumed: ").text;
         assert!(said.ends_with(": boom, starting it fresh"), "{said}");
     }
