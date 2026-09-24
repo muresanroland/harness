@@ -53,12 +53,12 @@ impl Orchestrator {
             // keep HEAD in the State if that matters.
             let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
             let want = ResultRequirements::default();
-            let head = match read_stage_result(&review_file, want).1.is_empty() {
+            let before = match read_stage_result(&review_file, want).1.is_empty() {
                 true => None,
-                false => self.head(ticket),
+                false => self.head(ticket).map(|head| (head, self.status(ticket))),
             };
             let review = self.run_stage(ticket, &REVIEW, round, &[], want)?;
-            self.guard_review(ticket, round, head)?;
+            self.guard_review(ticket, round, before)?;
             self.report(
                 ticket,
                 &format!(
@@ -157,26 +157,41 @@ impl Orchestrator {
         Some(head.trim().to_string())
     }
 
+    /// The worktree's `git status --porcelain`, trimmed; None when git
+    /// cannot say.
+    fn status(&self, ticket: &str) -> Option<String> {
+        let argv = ["git", "status", "--porcelain"];
+        let status = self.cfg.tools.run(&self.worktree(ticket), &argv).ok()?;
+        Some(status.trim().to_string())
+    }
+
     /// Puts back a worktree the Review changed, whatever its App (not every
-    /// App has a sandbox): a moved HEAD or a dirty tree is reset to the
-    /// HEAD recorded before it, clean. A tree that cannot be put back parks
-    /// the Ticket, since Fix would commit it.
+    /// App has a sandbox): a moved HEAD or a changed status is reset to the
+    /// HEAD and clean tree recorded before it. A tree already dirty before
+    /// the Review holds work that is not the Review's (Implement's, a
+    /// user's), so it is never reset: a change to it parks the Ticket, as
+    /// does a tree that cannot be put back, since Fix would commit it.
+    /// ponytail: the status misses a Review's edit to a file already
+    /// modified before it; compare `git diff HEAD` if that matters.
     fn guard_review(
         &self,
         ticket: &str,
         round: usize,
-        head: Option<String>,
+        before: Option<(String, Option<String>)>,
     ) -> Result<(), StageError> {
-        let Some(head) = head else {
+        let Some((head, status)) = before else {
             return Ok(());
         };
-        let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
-        let dirty = tools
-            .run(&worktree, &["git", "status", "--porcelain"])
-            .map_or(true, |status| !status.trim().is_empty());
-        if !dirty && self.head(ticket).as_ref() == Some(&head) {
+        let now = self.status(ticket);
+        if now.is_some() && now == status && self.head(ticket).as_ref() == Some(&head) {
             return Ok(());
         }
+        if status.as_deref() != Some("") {
+            return Err(StageError::Parked(format!(
+                "review {round} changed a worktree already dirty before it, not restored"
+            )));
+        }
+        let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
         // -fd, not -fdx: ignored build caches stay
         tools
             .run(&worktree, &["git", "reset", "--hard", &head])

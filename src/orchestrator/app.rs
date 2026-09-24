@@ -56,12 +56,14 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
-        // The tool list takes every arg up to the next flag: before -p it
-        // cannot take the brief as a tool.
+        // No Bash: it runs unsandboxed here, and a shell write can reach an
+        // ignored file or a path outside the worktree that the Moderator's
+        // git guard cannot put back. The tool list takes every arg up to the
+        // next flag: before -p it cannot take the brief as a tool.
         side: &[
             "claude",
             "--disallowedTools",
-            "Edit,Write,NotebookEdit",
+            "Bash,Edit,Write,NotebookEdit",
             "-p",
         ],
         trust: claude_records,
@@ -148,14 +150,11 @@ fn word(arg: &str) -> String {
 }
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row, and the audit's, which side A's row runs.
+/// from its row. The audit runs on side A's.
 pub(crate) fn debate_inputs(repo: &Path) -> Result<Vec<(&'static str, String)>, String> {
-    let side_a = row(repo, "side_a")?.side_command();
-    let side_b = row(repo, "side_b")?.side_command();
     Ok(vec![
-        ("Side A command", side_a.clone()),
-        ("Side B command", side_b),
-        ("Audit command", side_a),
+        ("Side A command", row(repo, "side_a")?.side_command()),
+        ("Side B command", row(repo, "side_b")?.side_command()),
     ])
 }
 

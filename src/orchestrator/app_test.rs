@@ -111,8 +111,8 @@ fn debate_prompt(w: &World) -> (String, String) {
 }
 
 #[test]
-fn the_moderators_inputs_carry_each_sides_command_and_the_audits() {
-    let claude = "claude --disallowedTools Edit,Write,NotebookEdit -p";
+fn the_moderators_inputs_carry_each_sides_command() {
+    let claude = "claude --disallowedTools Bash,Edit,Write,NotebookEdit -p";
     let codex = "codex exec --sandbox read-only";
     for (body, side_a, side_b) in [
         ("", claude.to_string(), codex.to_string()),
@@ -135,7 +135,6 @@ fn the_moderators_inputs_carry_each_sides_command_and_the_audits() {
         for want in [
             format!("- Side A command: {side_a}\n"),
             format!("- Side B command: {side_b}\n"),
-            format!("- Audit command: {side_a}\n"),
         ] {
             assert!(inputs.contains(&want), "{want:?} not in:{inputs}");
         }

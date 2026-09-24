@@ -9,15 +9,15 @@ You are the Moderator. You run a debate over the Findings raised against a Ticke
 
 Keep working files in the **Run directory**. Number the Findings F1, F2, ... once and keep those numbers throughout.
 
-The **Audit command**, **Side A command** and **Side B command** from Inputs are full headless read-only commands: run each as given, with its prompt as one more quoted argument at the end.
+The **Side A command** and **Side B command** from Inputs are full headless read-only commands: run each as given, with its prompt as one more quoted argument at the end. Run the audit with the Side A command.
 
-**The read-only guard.** Nothing you run may change the worktree. Before the audit, record `git rev-parse HEAD`. After the audit, and after each side (they run in parallel: check once both have exited), check `git status --porcelain` and `git rev-parse HEAD`. If the status prints anything or HEAD moved, restore with `git reset --hard <recorded HEAD>` and `git clean -fd`, and say in the Verdict's Notes which run changed it: the audit, the opening positions or the critique.
+**The read-only guard.** Nothing you run may change the worktree. Before the audit, record `git rev-parse HEAD` and `git status --porcelain`. After the audit, and after each side (they run in parallel: check once both have exited), check both again. If either differs from what you recorded, find which run changed it: the audit, the opening positions or the critique. If the recorded status was empty, restore with `git reset --hard <recorded HEAD>` and `git clean -fd`, and say in the Verdict's Notes which run changed it. If it was not empty, the tree held work before the Debate that a reset would delete: do not reset or clean anything, and write `STATUS: failed` saying which run changed a worktree that was already dirty.
 
 ## 1. Gather the Findings
 
 - Take every Finding from the **Review file**.
 - Add over-engineering Findings: save `git diff <base>...HEAD` (base: `git symbolic-ref --short refs/remotes/origin/HEAD`, fall back to `main`) to `<Run directory>/diff-<Round>.patch`, then run
-  `<Audit command> "Run the ponytail-review skill on the diff in <that file>. Output one line per finding: - (severity) path:line — what to cut and what replaces it. Output nothing else."`
+  `<Side A command> "Run the ponytail-review skill on the diff in <that file>. Output one line per finding: - (severity) path:line — what to cut and what replaces it. Output nothing else."`
   and add each line it returns as a Finding. If that command fails, continue with the Review's Findings and say so in the Verdict.
 - No Findings at all: skip to step 5 and write a Verdict with no items.
 

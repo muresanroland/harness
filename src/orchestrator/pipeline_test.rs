@@ -294,3 +294,39 @@ fn a_review_already_done_is_not_guarded_again() {
     w.await_line("hx-1 PR #hx-1 opened");
     assert!(w.called("git reset").is_empty(), "{}", w.calls().join("\n"));
 }
+
+/// A worktree already dirty before the Review holds work that is not the
+/// Review's: it is never reset. Left as it was, the Pipeline goes on; changed
+/// by the Review, the Ticket parks with the work kept.
+#[test]
+fn a_worktree_dirty_before_the_review_is_never_reset() {
+    for (after, want) in [
+        (" M src/lib.rs\n", "hx-1 PR #hx-1 opened"),
+        (
+            " M src/lib.rs\n?? notes.txt\n",
+            "hx-1 parked: review 1 changed a worktree already dirty before it, not restored",
+        ),
+    ] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        let status = Arc::new(Mutex::new(" M src/lib.rs\n".to_string()));
+        let reviewed = status.clone();
+        w.session(move |p| {
+            if p.stage == "review" {
+                *reviewed.lock().unwrap() = after.to_string();
+            }
+            succeed(p)
+        });
+        w.hook(move |_, argv| match argv {
+            ["git", "status", "--porcelain"] => Some(Ok(status.lock().unwrap().clone())),
+            _ => None,
+        });
+        o.run_ticket("hx-1");
+
+        w.await_line(want);
+        assert!(
+            w.called("git reset").is_empty() && w.called("git clean").is_empty(),
+            "{}",
+            w.calls().join("\n")
+        );
+    }
+}
