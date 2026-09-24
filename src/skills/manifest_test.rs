@@ -383,6 +383,31 @@ fn an_entry_not_at_its_own_folder_is_neither_removed_nor_updated() {
 }
 
 #[test]
+fn a_skill_under_a_linked_agents_folder_is_neither_removed_nor_updated() {
+    let repo = TempDir::new();
+    let tools = git(&remote("abc123", TWO_SKILLS));
+    add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap();
+    // .agents swapped for a link out of the checkout, to a folder the
+    // Harness never wrote.
+    let outside = TempDir::new();
+    write_file(&outside.path().join("skills/tdd/SKILL.md"), "not ours");
+    fs::remove_dir_all(repo.path().join(".agents")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.path().join(".agents")).unwrap();
+    let err = remove(repo.path(), "tdd").unwrap_err();
+    assert!(err.contains("will not touch"), "{err}");
+    let err = update(repo.path(), &*tools, "tdd").unwrap_err();
+    assert!(err.contains("will not touch"), "{err}");
+    assert_eq!(
+        fs::read_to_string(outside.path().join("skills/tdd/SKILL.md")).unwrap(),
+        "not ours"
+    );
+    assert!(Manifest::load(repo.path())
+        .unwrap()
+        .skills
+        .contains_key("tdd"));
+}
+
+#[test]
 fn a_skill_whose_skill_md_is_a_link_is_not_taken() {
     let repo = TempDir::new();
     add(

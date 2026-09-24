@@ -333,7 +333,7 @@ pub(crate) fn add(
 /// skill at the recorded path, and records the new commit.
 pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), String> {
     let mut manifest = open(repo)?;
-    let skill = third_party(&manifest, name)?.clone();
+    let skill = third_party(repo, &manifest, name)?.clone();
     let (clone, commit) = fetch(repo, tools, &skill.repo, &skill.git_ref)?;
     let from = clone.path().join(&skill.path);
     if skill_in(&from).as_deref() != Some(name) {
@@ -378,7 +378,7 @@ pub(crate) fn update_all(repo: &Path, tools: &dyn Tools) -> Result<Vec<(String, 
 /// A job it did, picked or by default, is set to none.
 pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
     let mut manifest = open(repo)?;
-    let at = third_party(&manifest, name)?.at.clone();
+    let at = third_party(repo, &manifest, name)?.at.clone();
     let link = repo.join(".claude/skills").join(name);
     if fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()) {
         fs::remove_file(&link).map_err(|err| format!("{}: {err}", link.display()))?;
@@ -396,9 +396,14 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
 }
 
 /// An installed skill the Harness fetched from a source, which update and
-/// remove may touch. Only at the folder add gives it: they delete that
-/// folder, and an entry edited by hand could name the checkout itself.
-fn third_party<'a>(manifest: &'a Manifest, name: &str) -> Result<&'a Installed, String> {
+/// remove may touch. Only at the folder add gives it, and only while
+/// .agents/skills resolves inside the checkout: they delete that folder, and
+/// an entry edited by hand, or a linked .agents, could name something else.
+fn third_party<'a>(
+    repo: &Path,
+    manifest: &'a Manifest,
+    name: &str,
+) -> Result<&'a Installed, String> {
     match manifest.skills.get(name) {
         None => Err(format!("{name} is not installed by the Harness")),
         Some(skill) if skill.shipped => Err(format!(
@@ -408,6 +413,17 @@ fn third_party<'a>(manifest: &'a Manifest, name: &str) -> Result<&'a Installed, 
             Err(format!(
                 "{name} in {MANIFEST} is at '{}', not .agents/skills/{name}: the Harness will not touch it",
                 skill.at
+            ))
+        }
+        Some(_)
+            if !repo.canonicalize().is_ok_and(|root| {
+                repo.join(".agents/skills")
+                    .canonicalize()
+                    .is_ok_and(|skills| skills.starts_with(root))
+            }) =>
+        {
+            Err(format!(
+                ".agents/skills is not a folder inside the checkout: the Harness will not touch {name}"
             ))
         }
         Some(skill) => Ok(skill),
