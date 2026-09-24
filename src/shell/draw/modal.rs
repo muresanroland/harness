@@ -28,8 +28,9 @@ const DEL_BG: Color = Color::Rgb(56, 20, 26);
 
 /// The frame: from 110 columns the Shell in the left 42% and a thick box in
 /// the right 58%; under, the Shell dimmed behind a rounded box that leaves
-/// it only the input line, with margins from 100x30 up. The box and its
-/// border, which the caller titles and renders.
+/// it the input line (and a notice or the / or @ list, while one shows),
+/// with margins from 100x30 up. The box and its border, which the caller
+/// titles and renders.
 fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
     let area = f.area();
     let (rect, border) = if area.width >= FOLD {
@@ -39,9 +40,9 @@ fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
         shell(f, left, s);
         (right, BorderType::Thick)
     } else {
-        shell(f, area, s);
+        let keep = shell(f, area, s);
         let above = Rect {
-            height: area.height.saturating_sub(1),
+            height: keep - area.y,
             ..area
         };
         let buf = f.buffer_mut();
@@ -54,7 +55,11 @@ fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
         let rect = if area.width < 100 || area.height < 30 {
             above
         } else {
-            area.inner(Margin::new(area.width / 12, 2))
+            let rect = area.inner(Margin::new(area.width / 12, 2));
+            Rect {
+                height: rect.height.min(keep.saturating_sub(rect.y)),
+                ..rect
+            }
         };
         (rect, BorderType::Rounded)
     };
@@ -96,37 +101,43 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Under 100 columns the badges shorten.
-    let short = width < 100;
-    let mut badges = Vec::new();
-    if let Some(score) = judged {
-        let text = match short {
-            true => format!("judged {score:.2}"),
-            false => format!("judged: {}", plan_said(*score)),
-        };
-        badges.push(Span::styled(text, fg(TEXT)));
-    }
-    if s.questions.len() > 1 {
-        let text = format!("{} more waiting", s.questions.len() - 1);
-        badges.push(Span::styled(text, bold(ORANGE)));
-    }
+    // Under 100 columns, or where the long ones do not fit, the badges shorten.
     let opened = s.opened.get().unwrap_or_else(chrono::Local::now);
     s.opened.set(Some(opened));
     let new = s.events.iter().filter(|e| e.time >= opened).count();
-    if new > 0 {
-        let text = match short {
-            true => format!("{new} new"),
-            false => format!("{new} new on RECENT"),
-        };
-        badges.push(Span::styled(text, fg(CYAN)));
-    }
-    let mut badge_line = Vec::new();
-    for (i, badge) in badges.into_iter().enumerate() {
-        if i > 0 {
-            badge_line.push(Span::styled(" · ", fg(MUTED)));
+    let badges = |short: bool| {
+        let mut badges = Vec::new();
+        if let Some(score) = judged {
+            let text = match short {
+                true => format!("judged {score:.2}"),
+                false => format!("judged: {}", plan_said(*score)),
+            };
+            badges.push(Span::styled(text, fg(TEXT)));
         }
-        badge_line.push(badge);
-    }
+        if s.questions.len() > 1 {
+            let text = format!("{} more waiting", s.questions.len() - 1);
+            badges.push(Span::styled(text, bold(ORANGE)));
+        }
+        if new > 0 {
+            let text = match short {
+                true => format!("{new} new"),
+                false => format!("{new} new on RECENT"),
+            };
+            badges.push(Span::styled(text, fg(CYAN)));
+        }
+        let mut line = Vec::new();
+        for (i, badge) in badges.into_iter().enumerate() {
+            if i > 0 {
+                line.push(Span::styled(" · ", fg(MUTED)));
+            }
+            line.push(badge);
+        }
+        Line::from(line)
+    };
+    let badge_line = match badges(width < 100) {
+        line if line.width() > inner.width as usize => badges(true),
+        line => line,
+    };
 
     let folded = width < FOLD;
     let foot = if folded { 1 } else { n as u16 };
@@ -139,10 +150,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     .areas(inner);
     let lead = cut(&q.text, inner.width as usize);
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from(badge_line),
-            Line::from(Span::styled(lead, fg(MUTED))),
-        ]),
+        Paragraph::new(vec![badge_line, Line::from(Span::styled(lead, fg(MUTED)))]),
         head,
     );
 
@@ -190,13 +198,12 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
             Span::styled("▌", fg(TEXT)),
         ])
     };
-    let lines: Vec<Line> = if folded && s.composing {
-        vec![composed()]
-    } else if folded {
-        // one row; under 80 columns each option's first word
+    // Folded, one row: under 80 columns, or where it does not fit, each
+    // option's first word.
+    let row = |short: bool| {
         let mut spans = Vec::new();
         for (i, option) in options.iter().enumerate() {
-            let option = match width < 80 {
+            let option = match short {
                 true => option.split(' ').next().unwrap_or_default(),
                 false => option.as_str(),
             };
@@ -207,7 +214,15 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
             spans.push(Span::styled(format!(" {} {option} ", i + 1), style));
             spans.push(Span::raw(" "));
         }
-        vec![Line::from(spans)]
+        Line::from(spans)
+    };
+    let lines: Vec<Line> = if folded && s.composing {
+        vec![composed()]
+    } else if folded {
+        match row(width < 80) {
+            line if line.width() > w => vec![row(true)],
+            line => vec![line],
+        }
     } else {
         options
             .iter()
@@ -232,32 +247,34 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
 /// start on: # purple and underlined, ## cyan, ### bold; - and * bullets
 /// (• and, nested, ◦) and numbered items hanging under their text; >
 /// quotes muted italic; `code` orange on a tint and **bold** inline; fenced
-/// code on a tinted ground, a diff's + lines green, - lines red, @@ cyan.
+/// code on a tinted ground, a diff's (or an unlabelled fence's) + lines
+/// green, - lines red, @@ cyan.
+// ponytail: the subset plans use; no tables, links, ~~~ fences or italics.
 fn md(text: &str, width: usize) -> (Vec<Line<'static>>, Vec<usize>) {
     let width = width.max(12);
     let (mut rows, mut heads) = (Vec::new(), Vec::new());
-    let mut fence = false;
+    // Inside a fence: whether it colors a diff.
+    let mut fence = None;
     for line in text.lines() {
         let line = line.trim_end();
         let body = line.trim_start();
-        if body.starts_with("```") {
-            fence = !fence;
-            let label = if fence {
-                body.trim_start_matches('`')
-            } else {
-                ""
+        if let Some(label) = body.strip_prefix("```") {
+            fence = match fence {
+                None => Some(label.is_empty() || label == "diff"),
+                Some(_) => None,
             };
+            let label = if fence.is_some() { label } else { "" };
             rows.push(Line::from(Span::styled(
                 format!(" {label:<w$}", w = width - 1),
                 fg(MUTED).bg(CODE_BG),
             )));
             continue;
         }
-        if fence {
+        if let Some(diff) = fence {
             let (c, bg) = match line {
-                _ if line.starts_with("@@") => (CYAN, CODE_BG),
-                _ if line.starts_with('+') => (GREEN, ADD_BG),
-                _ if line.starts_with('-') => (RED, DEL_BG),
+                _ if diff && line.starts_with("@@") => (CYAN, CODE_BG),
+                _ if diff && line.starts_with('+') => (GREEN, ADD_BG),
+                _ if diff && line.starts_with('-') => (RED, DEL_BG),
                 _ => (TEXT, CODE_BG),
             };
             let chars: Vec<char> = line.chars().collect();

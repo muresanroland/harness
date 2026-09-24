@@ -81,8 +81,9 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
 /// The Shell drawn into `area`: header, status row, Overall, the TICKETS
 /// sections, RECENT (newest at the bottom), the boxed QUESTION (a plan
 /// docks in the modal instead), the red MERGE TO UNBLOCK box, the / or @
-/// list, notice, input.
-fn shell(f: &mut Frame, area: Rect, s: &Screen) {
+/// list, notice, input. The row from which the list, a notice and the input
+/// line show, for the fold to leave.
+fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
     let tree = sections(s, area.width.saturating_sub(2) as usize);
     let head_h = header_height(area);
     let unblock = unblock_lines(s);
@@ -176,6 +177,10 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) {
         );
     }
     input_line(f, input, s);
+    match (&s.notice, lists.height) {
+        (None, 0) => input.y,
+        _ => lists.y,
+    }
 }
 
 /// `r` less its first column, the one-column gutter every row but the boxes keeps.

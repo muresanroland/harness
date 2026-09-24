@@ -178,9 +178,11 @@ pub(crate) struct Screen {
     pub(crate) hidden: bool,
     /// The input line is a prompt of the user's own for the front Question.
     pub(crate) composing: bool,
-    /// The docked plan's page and the rows its headings start on, at the
-    /// last draw: PageUp, PageDown and Tab move by them.
+    /// The docked plan's page at the last draw, which PageUp, PageDown
+    /// and Space move by.
     pub(crate) page: Cell<usize>,
+    /// The rows the docked plan's headings start on at the last draw, for
+    /// Tab and Shift-Tab.
     pub(crate) heads: RefCell<Vec<usize>>,
     /// When the plan modal was first drawn, for its count of the lines
     /// since; None while none shows.
@@ -773,7 +775,7 @@ impl Screen {
                 | KeyCode::BackTab
                     if plan =>
                 {
-                    self.read(key.code)
+                    self.scroll_plan(key.code)
                 }
                 KeyCode::Up | KeyCode::Left => q.cursor = q.cursor.saturating_sub(1),
                 KeyCode::Down | KeyCode::Right => q.cursor = (q.cursor + 1).min(n - 1),
@@ -835,7 +837,7 @@ impl Screen {
             KeyCode::Enter if picked.is_some() && !whole => self.fill(&picked.unwrap()),
             KeyCode::PageDown | KeyCode::PageUp if self.composing => {
                 if self.modal() {
-                    self.read(key.code);
+                    self.scroll_plan(key.code);
                 }
             }
             KeyCode::Down if self.input.is_empty() => scroll(&self.recent, -1),
@@ -873,7 +875,7 @@ impl Screen {
 
     /// The plan modal's reading keys: a line, a page, either end, the next
     /// or previous heading. The draw keeps the row inside the plan.
-    fn read(&self, code: KeyCode) {
+    fn scroll_plan(&self, code: KeyCode) {
         let scroll = &self.questions[0].scroll;
         let (row, page) = (scroll.get(), self.page.get());
         let heads = self.heads.borrow();

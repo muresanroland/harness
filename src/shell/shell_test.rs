@@ -3011,6 +3011,10 @@ A lead with `inline code` and **bold words** in it.
  same line
 ```
 
+```yaml
+- not a removed line
+```
+
 ## Tests
 
 {tests}"
@@ -3142,6 +3146,11 @@ fn a_plan_docks_beside_the_live_shell_with_its_markdown_styled() {
             "{text:?}: {cell:?}"
         );
     }
+    assert_eq!(
+        cell("- not a removed line").fg,
+        TEXT,
+        "a yaml list read as a diff"
+    );
     // A scrollbar in the body's last column, the options at the foot.
     let (right, _) = find(&buf, "┓").unwrap();
     assert!(
@@ -3221,6 +3230,66 @@ fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
     let buf = render(&s, 79, 24);
     assert!(
         row(&buf, 21).contains(" 1 approve   2 feedback   3 park   4 open "),
+        "{:#?}",
+        rows(&buf)
+    );
+    // Feedback of your own takes the options' row.
+    pick(&mut s, 2);
+    type_in(&mut s, "cover y");
+    let buf = render(&s, 80, 24);
+    assert!(
+        row(&buf, 21).starts_with("│ feedback › cover y▌"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert_eq!(row(&buf, 23).trim_end(), "›");
+    s.key(key(KeyCode::Esc));
+
+    // A notice, or the / list of a command being typed, stays in view:
+    // the box ends above them.
+    s.notice("refused: a run is stopping", Duration::from_secs(5));
+    let buf = render(&s, 80, 24);
+    assert_eq!(
+        row(&buf, 22).trim_end(),
+        " refused: a run is stopping",
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row(&buf, 21).starts_with("╰"), "{:#?}", rows(&buf));
+    s.notice = None;
+    type_in(&mut s, "/st");
+    let buf = render(&s, 100, 30);
+    let (_, y) = find(&buf, "› /start-epic").expect("the / list is under the box");
+    assert_eq!(
+        find(&buf, "╯").map(|(_, r)| r),
+        Some(y - 1),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// The badges shorten, and the folded options to their first words,
+/// wherever the long ones do not fit.
+#[test]
+fn badges_and_options_shorten_where_they_do_not_fit() {
+    let repo = TempDir::new();
+    let mut s = plan_screen(repo.path());
+    render(&s, 110, 40); // it opens
+    s.say("a line after it opened");
+    let buf = render(&s, 110, 40);
+    assert!(find(&buf, "┏").is_some(), "{:#?}", rows(&buf));
+    assert!(
+        find(&buf, "┃ judged 0.62 · 1 more waiting · 1 new ").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    let About::Asked(Ask::Plan { feedback, .. }) = &mut s.questions[0].about else {
+        unreachable!()
+    };
+    *feedback = Some("cover y and the fold at every size, then the docked layout".to_string());
+    let buf = render(&s, 100, 30);
+    assert!(
+        row(&buf, 26).contains(" 1 approve   2 feedback   3 resend   4 park   5 open "),
         "{:#?}",
         rows(&buf)
     );
