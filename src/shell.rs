@@ -184,9 +184,9 @@ pub(crate) struct Screen {
     /// The rows the docked plan's headings start on at the last draw, for
     /// Tab and Shift-Tab.
     pub(crate) heads: RefCell<Vec<usize>>,
-    /// When the plan modal was first drawn, for its count of the lines
-    /// since; None while none shows.
-    pub(crate) opened: Cell<Option<chrono::DateTime<chrono::Local>>>,
+    /// Whose plan the modal shows and when it was first drawn, for its
+    /// count of the lines since; None while none shows.
+    pub(crate) opened: Cell<Option<(Option<String>, chrono::DateTime<chrono::Local>)>>,
     /// The updater thread's checks, applied between commands in poll().
     update_sender: Sender<Checked>,
     update_receiver: Receiver<Checked>,
@@ -957,7 +957,6 @@ impl Screen {
             _ => {}
         }
         self.hidden = false;
-        self.opened.set(None); // the next plan counts from its own opening
     }
 
     /// Focuses the pane a Question is about; the Question stays.

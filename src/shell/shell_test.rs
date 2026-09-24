@@ -3417,3 +3417,57 @@ fn a_plan_behind_the_plan_counts_its_own_new_lines() {
     );
     assert!(!row(&buf, 1).contains("new"), "{:?}", row(&buf, 1));
 }
+
+/// Typing feedback or opening the pane keeps the same plan on screen, and
+/// its count; feedback sent shows the plan behind, which counts afresh.
+#[test]
+fn the_new_lines_count_follows_the_plan_on_screen() {
+    let repo = TempDir::new();
+    let mut s = screen_at(Fake::quiet(), repo.path());
+    for id in ["harness-kqe.11", "harness-kqe.12"] {
+        s.push(asking(
+            id,
+            "plan ready in implement (pane 2-1)",
+            Ask::Plan {
+                pane: format!("w1:{id}"),
+                plan: "# a plan\n".to_string(),
+                judged: None,
+                feedback: None,
+            },
+        ));
+    }
+    render(&s, 160, 45);
+    s.say("a line after it opened");
+    pick(&mut s, 4); // open the pane
+    assert!(row(&render(&s, 160, 45), 1).contains("1 new on RECENT"));
+    pick(&mut s, 2); // feedback of your own
+    assert!(row(&render(&s, 160, 45), 1).contains("1 new on RECENT"));
+    type_line(&mut s, "cover y too");
+    let buf = render(&s, 160, 45);
+    assert!(row(&buf, 0).contains(" PLAN · 12 "), "{:?}", row(&buf, 0));
+    assert!(!row(&buf, 1).contains("new"), "{:?}", row(&buf, 1));
+}
+
+/// A word wider than the plan, a path or a URL, goes on under itself
+/// instead of running off the edge.
+#[test]
+fn a_word_wider_than_the_plan_wraps() {
+    let repo = TempDir::new();
+    let mut s = screen_at(Fake::quiet(), repo.path());
+    let path = format!("src/{}.rs", "deep/".repeat(40));
+    s.push(asking(
+        "harness-kqe.11",
+        "plan ready in implement (pane 2-1)",
+        Ask::Plan {
+            pane: "w1:p7".to_string(),
+            plan: format!("- change `{path}` and more\n"),
+            judged: None,
+            feedback: None,
+        },
+    ));
+    let body = plan_body(&s);
+    assert_eq!(body[0], "• change", "{body:#?}");
+    assert!(body[1].starts_with("  src/deep/"), "{body:#?}");
+    let text: String = body.iter().map(|l| l.trim_start()).collect();
+    assert!(text.contains(&path), "{body:#?}");
+}

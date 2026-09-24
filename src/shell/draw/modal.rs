@@ -102,9 +102,14 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     f.render_widget(block, rect);
 
     // Under 100 columns, or where the long ones do not fit, the badges shorten.
-    let opened = s.opened.get().unwrap_or_else(chrono::Local::now);
-    s.opened.set(Some(opened));
+    // Counted from when this Ticket's plan opened: another's starts over.
+    let (ticket, opened) = s
+        .opened
+        .take()
+        .filter(|(ticket, _)| *ticket == q.ticket)
+        .unwrap_or_else(|| (q.ticket.clone(), chrono::Local::now()));
     let new = s.events.iter().filter(|e| e.time >= opened).count();
+    s.opened.set(Some((ticket, opened)));
     let badges = |short: bool| {
         let mut badges = Vec::new();
         if let Some(score) = judged {
@@ -361,7 +366,8 @@ fn inline(text: &str, base: Style) -> Vec<(String, Style)> {
 }
 
 /// Word-wraps styled pieces to `width`, `first` leading the first row and
-/// `hang` the rest, both in `lead`; a word longer than the width stays whole.
+/// `hang` the rest, both in `lead`; a word longer than the row is cut at
+/// the row's end and goes on under it, as fenced code does.
 fn wrap_spans(
     pieces: Vec<(String, Style)>,
     width: usize,
@@ -373,20 +379,31 @@ fn wrap_spans(
     let mut row = vec![Span::styled(first.to_string(), lead)];
     let (mut used, mut fresh) = (first.chars().count(), true);
     for (text, style) in pieces {
-        for word in text.split_inclusive(' ') {
-            if !fresh && used + word.trim_end().chars().count() > width {
-                let next = vec![Span::styled(hang.to_string(), lead)];
-                lines.push(Line::from(std::mem::replace(&mut row, next)));
-                used = hang.chars().count();
-                fresh = true;
+        for mut word in text.split_inclusive(' ') {
+            loop {
+                if !fresh && used + word.trim_end().chars().count() > width {
+                    let next = vec![Span::styled(hang.to_string(), lead)];
+                    lines.push(Line::from(std::mem::replace(&mut row, next)));
+                    used = hang.chars().count();
+                    fresh = true;
+                }
+                if fresh {
+                    word = word.trim_start();
+                }
+                if word.is_empty() {
+                    break;
+                }
+                let room = width.saturating_sub(used).max(1);
+                let at = match word.trim_end().chars().count() > room {
+                    true => word.char_indices().nth(room).map_or(word.len(), |(i, _)| i),
+                    false => word.len(),
+                };
+                let (piece, rest) = word.split_at(at);
+                used += piece.chars().count();
+                row.push(Span::styled(piece.to_string(), style));
+                fresh = false;
+                word = rest;
             }
-            let word = if fresh { word.trim_start() } else { word };
-            if word.is_empty() {
-                continue;
-            }
-            used += word.chars().count();
-            row.push(Span::styled(word.to_string(), style));
-            fresh = false;
         }
     }
     lines.push(Line::from(row));
