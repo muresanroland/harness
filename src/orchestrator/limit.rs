@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveTime, TimeZone};
+use chrono::{DateTime, Datelike, Duration, Local, Month, NaiveDate, NaiveTime, TimeZone, Weekday};
 use regex::Regex;
 
 use super::app::{app, App};
@@ -26,7 +26,7 @@ const MENU: &str = "What do you want to do?";
 const GRACE: Duration = Duration::minutes(2);
 
 /// A usage limit shown in a Stage's pane.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Limit {
     pub(crate) app: &'static str,
     /// Which limit, as the App names it: "session limit", "usage limit".
@@ -70,10 +70,6 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
 /// "Sep 24th, 2026 3:05 PM". A time alone is its next occurrence, a
 /// weekday its next such day; a date without a year is this year's.
 fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
-    const MONTHS: [&str; 12] = [
-        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-    ];
-    const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
     let re = Regex::new(
         r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
     )
@@ -89,22 +85,17 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
     let local = |date: NaiveDate| Local.from_local_datetime(&date.and_time(time)).earliest();
     let today = now.date_naive();
     if let Some(mon) = caps.name("mon") {
-        let month = MONTHS
-            .iter()
-            .position(|m| mon.as_str().eq_ignore_ascii_case(m))? as u32
-            + 1;
+        let month = mon.as_str().parse::<Month>().ok()?.number_from_month();
         // ponytail: a yearless date is this year's; one read on 31 Dec
         // for 2 Jan is past, a Wake. Claude dates only resets days away.
         let year = num("year").map_or(now.year(), |y| y as i32);
         return local(NaiveDate::from_ymd_opt(year, month, num("day")?)?);
     }
     if let Some(wd) = caps.name("wd") {
-        let want = DAYS
-            .iter()
-            .position(|d| wd.as_str().eq_ignore_ascii_case(d))? as u32;
+        let want = wd.as_str().parse::<Weekday>().ok()?;
         return (0..8)
             .map(|n| today + Duration::days(n))
-            .filter(|d| d.weekday().num_days_from_monday() == want)
+            .filter(|d| d.weekday() == want)
             .filter_map(local)
             .find(|reset| *reset > now);
     }
@@ -163,17 +154,16 @@ impl Orchestrator {
     }
 
     /// The usage limit the last lines of `tail`, the Stage's pane's, show
-    /// for the App its session runs on. A time alone is its next
-    /// occurrence, so the line of a limit already reset reads a day on: a
-    /// short one at the time of day of the App's last reset, and later, is
-    /// that old line, no limit.
+    /// for the App its session runs on. A time or a weekday alone is its
+    /// next occurrence, so the line of a limit already reset reads a day or
+    /// a week on: one at the time of day of the session's last reset, and
+    /// later, is that old line, no limit.
     pub(super) fn limit_shown(&self, ts: &TicketState, st: &Stage, tail: &str) -> Option<Limit> {
-        let app = app(&ts.sessions.get(st.name)?.app)?;
-        let limit = find(app, tail, (self.cfg.clock)())?;
-        let last = self.state.lock().unwrap().limits.get(app.name).copied();
-        let old = last.is_some_and(|last| {
-            !limit.long && limit.reset > last && limit.reset.time() == last.time()
-        });
+        let session = ts.sessions.get(st.name)?;
+        let limit = find(app(&session.app)?, tail, (self.cfg.clock)())?;
+        let old = session
+            .reset
+            .is_some_and(|last| limit.reset > last && limit.reset.time() == last.time());
         (!old).then_some(limit)
     }
 
@@ -203,6 +193,11 @@ impl Orchestrator {
         self.change_state(|state| {
             let saved = state.limits.entry(app.to_string()).or_insert(reset);
             *saved = (*saved).max(reset);
+        });
+        self.update(ticket, |ts| {
+            if let Some(session) = ts.sessions.get_mut(st.name) {
+                session.reset = Some(reset);
+            }
         });
         let when = until(reset, (self.cfg.clock)());
         if long {

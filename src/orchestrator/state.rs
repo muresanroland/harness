@@ -64,6 +64,10 @@ pub(crate) struct Session {
     pub(crate) app: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) id: String,
+    /// When the last usage limit it hit resets: a later one at that time of
+    /// day in its pane is that old line, read a day or a week on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reset: Option<chrono::DateTime<chrono::Local>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -74,7 +78,6 @@ pub(crate) struct State {
     pub(crate) tickets: BTreeMap<String, TicketState>,
     /// App name -> when its last usage limit resets: no Stage starts on it
     /// until then, in this run or a /continue after the Harness closed.
-    /// Kept once past, so the old line of a reset limit is no new one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) limits: BTreeMap<String, chrono::DateTime<chrono::Local>>,
 }

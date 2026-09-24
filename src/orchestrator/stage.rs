@@ -737,7 +737,7 @@ impl Orchestrator {
         }
         let session = Session {
             app: row.app.name.to_string(),
-            id: String::new(),
+            ..Default::default()
         };
         let pane = match self.fresh_pane(ticket, st, session) {
             Ok(pane) => pane,

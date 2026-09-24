@@ -60,6 +60,7 @@ fn a_stage_start_saves_its_session_id_and_app_beside_its_pane() {
         Session {
             app: "codex".to_string(),
             id: reported,
+            reset: None,
         },
         "state.json keeps the Review's session id, as herdr's agent get reported it, and its App"
     );

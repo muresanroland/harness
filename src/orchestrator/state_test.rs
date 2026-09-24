@@ -130,6 +130,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
                 Session {
                     app: "codex".to_string(),
                     id: "019a-review".to_string(),
+                    reset: None,
                 },
             )]
             .into(),

@@ -216,6 +216,12 @@ fn claude_or_codex_limit_text_holds_the_ticket_with_no_wake_and_no_judgment() {
         let typesafe = TypeSafeFake::down();
         o.cfg.typesafe = typesafe.clone();
         clock(&mut o);
+        // yesterday's limit at the same time of day, another session's
+        o.state
+            .lock()
+            .unwrap()
+            .limits
+            .insert(app.to_string(), reset - chrono::Duration::days(1));
         hits(&w, "hx-1", stage, "idle", tail);
         let o = Arc::new(o);
         let run = spawn_ticket(o.clone(), "hx-1");
@@ -309,8 +315,6 @@ fn the_deadline_holds_off_and_at_the_reset_plus_two_minutes_an_idle_pane_gets_co
     w.await_line("hx-1 claude session limit over: implement carries on (pane 1-1)");
     w.await_line("hx-1 PR #hx-1 opened");
     assert!(o.ticket("hx-1").limited.is_empty());
-    // kept once past: its old line is no new limit
-    assert_eq!(o.state.lock().unwrap().limits["claude"], at(25, 15, 45));
 }
 
 #[test]
@@ -402,6 +406,44 @@ fn a_limit_line_past_its_saved_reset_is_not_read_as_tomorrows() {
     let _run = spawn_ticket(o.clone(), "hx-1");
     w.await_line("hx-1 stuck in implement: went idle without a result (pane 1-1)");
     assert!(o.ticket("hx-1").limited.is_empty());
+}
+
+#[test]
+fn a_long_limits_line_replayed_after_its_reset_is_no_new_limit() {
+    let weekly = "You've hit your weekly limit · resets Mon 12:00am";
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().integration = true;
+    let clock = clock(&mut o);
+    // the resumed session shows the weekly line again and stops
+    let world = w.clone();
+    w.session(move |p| {
+        if p.stage == "implement" || p.text == "continue" {
+            world
+                .lock()
+                .tails
+                .insert(p.pane.clone(), weekly.to_string());
+            return (String::new(), "idle".to_string());
+        }
+        succeed(p)
+    });
+    let o = Arc::new(o);
+    spawn_ticket(o.clone(), "hx-1").wait();
+
+    *clock.lock().unwrap() = at(28, 0, 2);
+    let o = restarted(&w, &o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 implement resumed: claude (pane");
+    w.await_line("hx-1 stuck in implement: went idle without a result");
+    let ended: Vec<String> = w
+        .lines()
+        .into_iter()
+        .filter(|l| l.contains("weekly limit until"))
+        .collect();
+    assert_eq!(
+        ended.len(),
+        1,
+        "the old line ended the run again: {ended:?}"
+    );
 }
 
 #[test]
