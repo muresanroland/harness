@@ -99,20 +99,12 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     header(f, head, s);
     f.render_widget(
         status_line(s, top.width.saturating_sub(1) as usize),
-        Rect::new(top.x + 1, top.y, top.width.saturating_sub(1), 1),
+        inset(top),
     );
-    f.render_widget(
-        overall(s, over.width.saturating_sub(1)),
-        Rect::new(over.x + 1, over.y, over.width.saturating_sub(1), 1),
-    );
+    f.render_widget(overall(s, over.width.saturating_sub(1)), inset(over));
     f.render_widget(
         Paragraph::new(scrolled(s, tree, tickets_h as usize)),
-        Rect::new(
-            tickets.x + 1,
-            tickets.y,
-            tickets.width.saturating_sub(1),
-            tickets.height,
-        ),
+        inset(tickets),
     );
     let inner = boxed("RECENT").inner(recent);
     f.render_widget(
@@ -140,7 +132,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     if let Some((text, _)) = &s.notice {
         f.render_widget(
             Line::from(Span::styled(text.clone(), fg(ORANGE))),
-            Rect::new(notice.x + 1, notice.y, notice.width.saturating_sub(1), 1),
+            inset(notice),
         );
     }
     input_line(f, input, s);
@@ -150,6 +142,11 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
             cell.bg = quantize(cell.bg);
         }
     }
+}
+
+/// `r` less its first column, the one-column gutter every row but the boxes keeps.
+fn inset(r: Rect) -> Rect {
+    Rect::new(r.x + 1, r.y, r.width.saturating_sub(1), r.height)
 }
 
 /// Only a tiny terminal (under 64 columns or 18 rows) drops the logo and banner for one plain line.
@@ -401,17 +398,19 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
             .collect::<Vec<_>>()
             .join(" · ")
         };
-        let right = format!(" {detail}  {word:<11}");
+        let detail = Span::styled(format!(" {detail}  "), fg(MUTED));
+        let word = Span::styled(format!("{word:<11}"), bold(wc));
+        let right = detail.width() + word.width();
         let arrow = if folded { "▸" } else { "▾" };
-        let room = width.saturating_sub(right.chars().count() + 6);
+        let room = width.saturating_sub(right + 6);
         let left = cut(&format!("{arrow} {}  {}", e.id, e.title), room);
-        let fill = width.saturating_sub(left.chars().count() + right.chars().count() + 4);
+        let fill = width.saturating_sub(left.chars().count() + right + 4);
         lines.push(Line::from(vec![
             Span::styled("━━ ", fg(dim)),
             Span::styled(left, bold(c)),
             Span::styled(format!(" {}", "━".repeat(fill)), fg(dim)),
-            Span::styled(format!(" {detail}  "), fg(MUTED)),
-            Span::styled(format!("{word:<11}"), bold(wc)),
+            detail,
+            word,
         ]));
         if folded {
             continue;
@@ -442,10 +441,12 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
                 (_, Some(ts)) => ts.stage.clone(),
                 (_, None) => String::new(),
             };
-            let right = format!("{stage:>16}  {label:<11}");
-            let room = width.saturating_sub(right.chars().count() + 10);
+            let stage = Span::styled(format!("{stage:>16}  "), fg(MUTED));
+            let label = Span::styled(format!("{label:<11}"), bold(lc));
+            let right = stage.width() + label.width();
+            let room = width.saturating_sub(right + 10);
             let name = cut(&format!("{} {}", suffix(&t.id), t.title), room);
-            let pad = width.saturating_sub(name.chars().count() + right.chars().count() + 8);
+            let pad = width.saturating_sub(name.chars().count() + right + 8);
             let branch = if k + 1 == n {
                 "   └─ "
             } else {
@@ -456,8 +457,8 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
                 Span::styled(format!("{ind} "), bold(ic)),
                 Span::styled(name, fg(text)),
                 Span::raw(" ".repeat(pad)),
-                Span::styled(format!("{stage:>16}  "), fg(MUTED)),
-                Span::styled(format!("{label:<11}"), bold(lc)),
+                stage,
+                label,
             ]));
         }
     }
