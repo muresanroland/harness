@@ -72,8 +72,8 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
 /// A reset as the Apps print it, in the machine's own zone (Claude's
 /// "(Zone)" is ignored): "3:45pm", "Mon 12:00am", "Sep 25, 3pm",
 /// "Sep 24th, 2026 3:05 PM". A time alone is its next occurrence, a
-/// weekday its next such day; a date without a year is this year's. True
-/// with a date.
+/// weekday its next such day; a date without a year the one nearest
+/// today, in this year, the last or the next. True with a date.
 fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, bool)> {
     let re = Regex::new(
         r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
@@ -94,10 +94,16 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
     let today = now.date_naive();
     if let Some(mon) = caps.name("mon") {
         let month = mon.as_str().parse::<Month>().ok()?.number_from_month();
-        // ponytail: a yearless date is this year's; one read on 31 Dec
-        // for 2 Jan is past, a Wake. Claude dates only resets days away.
-        let year = num("year").map_or(now.year(), |y| y as i32);
-        return local(NaiveDate::from_ymd_opt(year, month, num("day")?)?).map(|r| (r, true));
+        let day = num("day")?;
+        let date = match num("year") {
+            Some(year) => NaiveDate::from_ymd_opt(year as i32, month, day)?,
+            // The yearless date nearest today: 2 Jan read on 31 Dec is next
+            // year's, an old 30 Dec line read on 1 Jan last year's.
+            None => (-1..=1)
+                .filter_map(|n| NaiveDate::from_ymd_opt(now.year() + n, month, day))
+                .min_by_key(|date| (*date - today).num_days().abs())?,
+        };
+        return local(date).map(|r| (r, true));
     }
     if let Some(wd) = caps.name("wd") {
         let want = wd.as_str().parse::<Weekday>().ok()?;

@@ -148,6 +148,28 @@ fn a_past_reset_an_old_line_or_another_apps_text_is_no_limit() {
 }
 
 #[test]
+fn a_yearless_date_across_the_new_year_is_the_nearest_one() {
+    let claude = app("claude").unwrap();
+    let eve = Local.with_ymd_and_hms(2026, 12, 31, 14, 0, 0).unwrap();
+    let limit = find(
+        claude,
+        "You've hit your weekly limit · resets Jan 2, 3am",
+        eve,
+    )
+    .unwrap();
+    assert_eq!(
+        limit.reset,
+        Local.with_ymd_and_hms(2027, 1, 2, 3, 0, 0).unwrap()
+    );
+    let new_year = Local.with_ymd_and_hms(2027, 1, 1, 14, 0, 0).unwrap();
+    let old = "You've hit your session limit · resets Dec 31, 3pm";
+    assert!(
+        find(claude, old, new_year).is_none(),
+        "last year's line is old"
+    );
+}
+
+#[test]
 fn a_reset_reads_as_its_time_today_or_its_day_otherwise() {
     assert_eq!(until(at(25, 15, 45), now()), "3:45pm");
     assert_eq!(until(at(25, 15, 0), now()), "3:00pm");
