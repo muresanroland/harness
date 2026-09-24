@@ -120,8 +120,9 @@ pub(crate) struct Screen {
     /// The panel's lines, oldest first.
     pub(crate) events: Vec<Event>,
     pub(crate) input: String,
-    /// The first TICKETS row shown, for a tree taller than its box.
-    pub(crate) scroll: usize,
+    /// The first TICKETS row shown, for a tree taller than its room; the
+    /// draw, which knows the height, keeps it inside the tree.
+    pub(crate) scroll: Cell<usize>,
     /// One line above the input, and when it goes.
     pub(crate) notice: Option<(String, Instant)>,
     ctrl_c: Option<Instant>,
@@ -177,7 +178,7 @@ impl Screen {
             state,
             events: Vec::new(),
             input: String::new(),
-            scroll: 0,
+            scroll: Cell::new(0),
             notice: None,
             ctrl_c: None,
             ticks: 0,
@@ -672,8 +673,7 @@ impl Screen {
             }
             return;
         }
-        let rows = self.rows();
-        let scroll = |by: isize| (self.scroll as isize + by).clamp(0, rows as isize - 1) as usize;
+        let scroll = |by: isize| self.scroll.set(self.scroll.get().saturating_add_signed(by));
         match key.code {
             KeyCode::Char(_) if held => {}
             KeyCode::Char(c) => self.input.push(c),
@@ -682,10 +682,10 @@ impl Screen {
                     scroll_plan(q, key.code);
                 }
             }
-            KeyCode::Down if self.input.is_empty() => self.scroll = scroll(1),
-            KeyCode::Up if self.input.is_empty() => self.scroll = scroll(-1),
-            KeyCode::PageDown if self.input.is_empty() => self.scroll = scroll(10),
-            KeyCode::PageUp if self.input.is_empty() => self.scroll = scroll(-10),
+            KeyCode::Down if self.input.is_empty() => scroll(1),
+            KeyCode::Up if self.input.is_empty() => scroll(-1),
+            KeyCode::PageDown if self.input.is_empty() => scroll(10),
+            KeyCode::PageUp if self.input.is_empty() => scroll(-10),
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -1134,11 +1134,6 @@ impl Screen {
 
     fn notice(&mut self, text: &str, span: Duration) {
         self.notice = Some((text.to_string(), Instant::now() + span));
-    }
-
-    /// The rows of the TICKETS tree: one per Epic and one per Ticket.
-    pub(crate) fn rows(&self) -> usize {
-        self.epics.iter().map(|e| e.tickets.len() + 1).sum()
     }
 
     /// The title of a Ticket on the idle tree, for the RECENT Ticket column.
