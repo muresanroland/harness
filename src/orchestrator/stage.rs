@@ -700,11 +700,18 @@ impl Orchestrator {
         if !home.as_os_str().is_empty() {
             dirs.push(home.join(".agents/skills"));
         }
-        let Some(skill) = dirs
-            .iter()
-            .find_map(|dir| fs::read_to_string(dir.join(st.skill).join("SKILL.md")).ok())
-        else {
-            return Held::Woke("has no Stage skill (run 'harness init')".to_string());
+        // Only an absent copy falls through: an unreadable one is said.
+        let found = dirs.iter().find_map(|dir| {
+            let path = dir.join(st.skill).join("SKILL.md");
+            match fs::read_to_string(&path) {
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                read => Some(read.map_err(|err| format!("cannot read {}: {err}", path.display()))),
+            }
+        });
+        let skill = match found {
+            Some(Ok(skill)) => skill,
+            Some(Err(err)) => return Held::Woke(err),
+            None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
         };
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());
