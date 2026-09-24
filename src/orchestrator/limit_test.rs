@@ -409,6 +409,32 @@ fn a_limit_line_past_its_saved_reset_is_not_read_as_tomorrows() {
 }
 
 #[test]
+fn a_dated_limit_at_yesterdays_reset_time_is_a_new_limit() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    let clock = clock(&mut o);
+    *clock.lock().unwrap() = at(24, 14, 0);
+    hits(&w, "hx-1", "implement", "idle", CLAUDE);
+    let o = Arc::new(o);
+    let run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 claude session limit until 3:45pm: implement holds (pane 1-1)");
+    drop(run);
+
+    // a day on, the same session hits a limit that names its day
+    *clock.lock().unwrap() = at(25, 14, 0);
+    let pane = o.ticket("hx-1").panes["implement"].clone();
+    w.lock().tails.insert(
+        pane,
+        "You've hit your session limit · resets Sep 25, 3:45pm".to_string(),
+    );
+    let o = restarted(&w, &o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    wait_until("claude limited until today's reset", || {
+        o.state.lock().unwrap().limits["claude"] == at(25, 15, 45)
+    });
+    assert!(!w.lines().iter().any(|l| l.contains("stuck")));
+}
+
+#[test]
 fn a_long_limits_line_replayed_after_its_reset_is_no_new_limit() {
     let weekly = "You've hit your weekly limit · resets Mon 12:00am";
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);

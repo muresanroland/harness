@@ -35,6 +35,9 @@ pub(crate) struct Limit {
     /// A reset more than a day away, or Claude's options menu: the run
     /// ends rather than hold.
     pub(crate) long: bool,
+    /// The reset gives its date, so its line is never an old one that
+    /// reads a day or a week on.
+    pub(crate) dated: bool,
 }
 
 /// The limit the last lines of `tail` show for `app`: the newest line one
@@ -46,9 +49,9 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
         for caps in patterns.iter().filter_map(|p| p.captures(line)) {
             let reset = match caps.name("reset") {
                 Some(text) => parse_reset(text.as_str(), now),
-                None => Some(now + Duration::hours(1)), // look again then
+                None => Some((now + Duration::hours(1), false)), // look again then
             };
-            let Some(reset) = reset.filter(|reset| *reset > now) else {
+            let Some((reset, dated)) = reset.filter(|(reset, _)| *reset > now) else {
                 continue;
             };
             return Some(Limit {
@@ -59,6 +62,7 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
                     .to_string(),
                 reset,
                 long: reset > now + Duration::hours(24) || last.iter().any(|l| l.contains(MENU)),
+                dated,
             });
         }
     }
@@ -68,8 +72,9 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
 /// A reset as the Apps print it, in the machine's own zone (Claude's
 /// "(Zone)" is ignored): "3:45pm", "Mon 12:00am", "Sep 25, 3pm",
 /// "Sep 24th, 2026 3:05 PM". A time alone is its next occurrence, a
-/// weekday its next such day; a date without a year is this year's.
-fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
+/// weekday its next such day; a date without a year is this year's. True
+/// with a date.
+fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, bool)> {
     let re = Regex::new(
         r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
     )
@@ -89,7 +94,7 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
         // ponytail: a yearless date is this year's; one read on 31 Dec
         // for 2 Jan is past, a Wake. Claude dates only resets days away.
         let year = num("year").map_or(now.year(), |y| y as i32);
-        return local(NaiveDate::from_ymd_opt(year, month, num("day")?)?);
+        return local(NaiveDate::from_ymd_opt(year, month, num("day")?)?).map(|r| (r, true));
     }
     if let Some(wd) = caps.name("wd") {
         let want = wd.as_str().parse::<Weekday>().ok()?;
@@ -97,12 +102,14 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
             .map(|n| today + Duration::days(n))
             .filter(|d| d.weekday() == want)
             .filter_map(local)
-            .find(|reset| *reset > now);
+            .find(|reset| *reset > now)
+            .map(|r| (r, false));
     }
     [today, today + Duration::days(1)]
         .into_iter()
         .filter_map(local)
         .find(|reset| *reset > now)
+        .map(|r| (r, false))
 }
 
 /// A reset as the screen and the events say it: "3:45pm" today, "Mon
@@ -157,13 +164,14 @@ impl Orchestrator {
     /// for the App its session runs on. A time or a weekday alone is its
     /// next occurrence, so the line of a limit already reset reads a day or
     /// a week on: one at the time of day of the session's last reset, and
-    /// later, is that old line, no limit.
+    /// later, is that old line, no limit. A dated line is never that line.
     pub(super) fn limit_shown(&self, ts: &TicketState, st: &Stage, tail: &str) -> Option<Limit> {
         let session = ts.sessions.get(st.name)?;
         let limit = find(app(&session.app)?, tail, (self.cfg.clock)())?;
-        let old = session
-            .reset
-            .is_some_and(|last| limit.reset > last && limit.reset.time() == last.time());
+        let old = !limit.dated
+            && session
+                .reset
+                .is_some_and(|last| limit.reset > last && limit.reset.time() == last.time());
         (!old).then_some(limit)
     }
 
@@ -189,6 +197,7 @@ impl Orchestrator {
             what,
             reset,
             long,
+            ..
         } = limit;
         self.change_state(|state| {
             let saved = state.limits.entry(app.to_string()).or_insert(reset);
