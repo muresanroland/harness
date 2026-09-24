@@ -56,16 +56,13 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
-        // No Bash: it runs unsandboxed here, and a shell write can reach an
-        // ignored file or a path outside the worktree that the Moderator's
-        // git guard cannot put back. The tool list takes every arg up to the
-        // next flag: before -p it cannot take the brief as a tool.
-        side: &[
-            "claude",
-            "--disallowedTools",
-            "Bash,Edit,Write,NotebookEdit",
-            "-p",
-        ],
+        // Only the read-only tools, named, so a tool added later is out too:
+        // a shell or other code-running tool runs unsandboxed here and can
+        // write an ignored file or a path outside the worktree that the
+        // Moderator's git guard cannot put back. The tool list takes every
+        // arg up to the next flag: before -p it cannot take the brief as a
+        // tool.
+        side: &["claude", "--tools", "Read,Grep,Glob,Skill", "-p"],
         trust: claude_records,
     },
     App {
@@ -111,10 +108,15 @@ impl Row {
         out
     }
 
-    /// The headless read-only command, as one shell line.
+    /// The headless read-only command, as one shell line: every arg single
+    /// quoted, since a model id like claude-opus-5-5[1m] is a glob to the
+    /// shell.
     pub(crate) fn side_command(&self) -> String {
         let head = self.app.side.iter().map(|arg| arg.to_string());
-        let words: Vec<String> = head.chain(self.flags()).map(|arg| word(&arg)).collect();
+        let words: Vec<String> = head
+            .chain(self.flags())
+            .map(|arg| format!("'{}'", arg.replace('\'', r"'\''")))
+            .collect();
         words.join(" ")
     }
 
@@ -136,17 +138,6 @@ impl Row {
 /// An arg form with value put in for "{}".
 fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
-}
-
-/// An arg as one shell word: quoted unless plainly safe, since a model id
-/// like claude-opus-5-5[1m] is a glob to the shell.
-fn word(arg: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "-_./=,:@%+".contains(c);
-    if !arg.is_empty() && arg.chars().all(safe) {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', r"'\''"))
-    }
 }
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command

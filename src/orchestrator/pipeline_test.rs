@@ -297,28 +297,38 @@ fn a_review_already_done_is_not_guarded_again() {
 
 /// A worktree already dirty before the Review holds work that is not the
 /// Review's: it is never reset. Left as it was, the Pipeline goes on; changed
-/// by the Review, the Ticket parks with the work kept.
+/// by the Review, even only in the content of a file already changed or
+/// untracked, the Ticket parks with the work kept.
 #[test]
 fn a_worktree_dirty_before_the_review_is_never_reset() {
+    let parked = "hx-1 parked: review 1 changed a worktree already dirty before it, not restored";
+    // The tree as git reports it: the status, `git diff HEAD` and the hash
+    // of the one untracked file, notes.txt.
+    let dirty = (" M src/lib.rs\n?? notes.txt\n", "+one\n", "e69de29\n");
     for (after, want) in [
-        (" M src/lib.rs\n", "hx-1 PR #hx-1 opened"),
-        (
-            " M src/lib.rs\n?? notes.txt\n",
-            "hx-1 parked: review 1 changed a worktree already dirty before it, not restored",
-        ),
+        (dirty, "hx-1 PR #hx-1 opened"),
+        ((" M src/lib.rs\n", dirty.1, dirty.2), parked),
+        ((dirty.0, "+two\n", dirty.2), parked),
+        ((dirty.0, dirty.1, "d00491f\n"), parked),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-        let status = Arc::new(Mutex::new(" M src/lib.rs\n".to_string()));
-        let reviewed = status.clone();
+        let tree = Arc::new(Mutex::new(dirty));
+        let reviewed = tree.clone();
         w.session(move |p| {
             if p.stage == "review" {
-                *reviewed.lock().unwrap() = after.to_string();
+                *reviewed.lock().unwrap() = after;
             }
             succeed(p)
         });
-        w.hook(move |_, argv| match argv {
-            ["git", "status", "--porcelain"] => Some(Ok(status.lock().unwrap().clone())),
-            _ => None,
+        w.hook(move |_, argv| {
+            let tree = tree.lock().unwrap();
+            match argv {
+                ["git", "status", "--porcelain"] => Some(Ok(tree.0.to_string())),
+                ["git", "diff", "HEAD", "--binary"] => Some(Ok(tree.1.to_string())),
+                ["git", "ls-files", "--others", ..] => Some(Ok("notes.txt\0".to_string())),
+                ["git", "hash-object", "--", "notes.txt"] => Some(Ok(tree.2.to_string())),
+                _ => None,
+            }
         });
         o.run_ticket("hx-1");
 

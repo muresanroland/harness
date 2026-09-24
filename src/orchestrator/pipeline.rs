@@ -55,7 +55,7 @@ impl Orchestrator {
             let want = ResultRequirements::default();
             let before = match read_stage_result(&review_file, want).1.is_empty() {
                 true => None,
-                false => self.head(ticket).map(|head| (head, self.status(ticket))),
+                false => self.head(ticket).map(|head| (head, self.tree(ticket))),
             };
             let review = self.run_stage(ticket, &REVIEW, round, &[], want)?;
             self.guard_review(ticket, round, before)?;
@@ -157,36 +157,45 @@ impl Orchestrator {
         Some(head.trim().to_string())
     }
 
-    /// The worktree's `git status --porcelain`, trimmed; None when git
-    /// cannot say.
-    fn status(&self, ticket: &str) -> Option<String> {
-        let argv = ["git", "status", "--porcelain"];
-        let status = self.cfg.tools.run(&self.worktree(ticket), &argv).ok()?;
-        Some(status.trim().to_string())
+    /// The worktree beyond its HEAD: `git status --porcelain`, the content
+    /// of each change to a tracked file and each untracked file's hash, so
+    /// an edit to a file already changed shows too. Empty for a clean tree;
+    /// None when git cannot say.
+    fn tree(&self, ticket: &str) -> Option<String> {
+        let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
+        let git = |argv: &[&str]| tools.run(&worktree, argv).ok();
+        let status = git(&["git", "status", "--porcelain"])?;
+        let diff = git(&["git", "diff", "HEAD", "--binary"])?;
+        let untracked = git(&["git", "ls-files", "--others", "--exclude-standard", "-z"])?;
+        let mut hash = vec!["git", "hash-object", "--"];
+        hash.extend(untracked.split('\0').filter(|path| !path.is_empty()));
+        let hashes = match hash.len() > 3 {
+            true => git(&hash)?,
+            false => String::new(),
+        };
+        Some(format!("{status}{diff}{hashes}").trim().to_string())
     }
 
     /// Puts back a worktree the Review changed, whatever its App (not every
-    /// App has a sandbox): a moved HEAD or a changed status is reset to the
+    /// App has a sandbox): a moved HEAD or a changed tree is reset to the
     /// HEAD and clean tree recorded before it. A tree already dirty before
     /// the Review holds work that is not the Review's (Implement's, a
     /// user's), so it is never reset: a change to it parks the Ticket, as
     /// does a tree that cannot be put back, since Fix would commit it.
-    /// ponytail: the status misses a Review's edit to a file already
-    /// modified before it; compare `git diff HEAD` if that matters.
     fn guard_review(
         &self,
         ticket: &str,
         round: usize,
         before: Option<(String, Option<String>)>,
     ) -> Result<(), StageError> {
-        let Some((head, status)) = before else {
+        let Some((head, tree)) = before else {
             return Ok(());
         };
-        let now = self.status(ticket);
-        if now.is_some() && now == status && self.head(ticket).as_ref() == Some(&head) {
+        let now = self.tree(ticket);
+        if now.is_some() && now == tree && self.head(ticket).as_ref() == Some(&head) {
             return Ok(());
         }
-        if status.as_deref() != Some("") {
+        if tree.as_deref() != Some("") {
             return Err(StageError::Parked(format!(
                 "review {round} changed a worktree already dirty before it, not restored"
             )));

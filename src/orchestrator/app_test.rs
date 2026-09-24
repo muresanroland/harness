@@ -112,8 +112,8 @@ fn debate_prompt(w: &World) -> (String, String) {
 
 #[test]
 fn the_moderators_inputs_carry_each_sides_command() {
-    let claude = "claude --disallowedTools Bash,Edit,Write,NotebookEdit -p";
-    let codex = "codex exec --sandbox read-only";
+    let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '-p'";
+    let codex = "'codex' 'exec' '--sandbox' 'read-only'";
     for (body, side_a, side_b) in [
         ("", claude.to_string(), codex.to_string()),
         (
@@ -121,8 +121,8 @@ fn the_moderators_inputs_carry_each_sides_command() {
   "side_a": {"app": "codex", "model": "gpt-6-sol", "effort": "low"},
   "side_b": {"app": "claude", "model": "claude-opus-5-5[1m]", "effort": "high"}
 }"#,
-            format!("{codex} -m gpt-6-sol -c model_reasoning_effort=low"),
-            format!("{claude} --model 'claude-opus-5-5[1m]' --effort high"),
+            format!("{codex} '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=low'"),
+            format!("{claude} '--model' 'claude-opus-5-5[1m]' '--effort' 'high'"),
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);

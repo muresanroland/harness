@@ -11,7 +11,13 @@ Keep working files in the **Run directory**. Number the Findings F1, F2, ... onc
 
 The **Side A command** and **Side B command** from Inputs are full headless read-only commands: run each as given, with its prompt as one more quoted argument at the end. Run the audit with the Side A command.
 
-**The read-only guard.** Nothing you run may change the worktree. Before the audit, record `git rev-parse HEAD` and `git status --porcelain`. After the audit, and after each side (they run in parallel: check once both have exited), check both again. If either differs from what you recorded, find which run changed it: the audit, the opening positions or the critique. If the recorded status was empty, restore with `git reset --hard <recorded HEAD>` and `git clean -fd`, and say in the Verdict's Notes which run changed it. If it was not empty, the tree held work before the Debate that a reset would delete: do not reset or clean anything, and write `STATUS: failed` saying which run changed a worktree that was already dirty.
+**The read-only guard.** Nothing you run may change the worktree. Its snapshot is HEAD, the status, the content of each change to a tracked file and each untracked file's hash, so an edit to a file that was already changed shows too:
+
+```
+{ git rev-parse HEAD; git status --porcelain; git diff HEAD --binary; git ls-files -o --exclude-standard -z | xargs -0 git hash-object --; }
+```
+
+Before the audit, save it to `<Run directory>/tree-<Round>.txt`. After the audit, and after each side (they run in parallel: check once both have exited), take it again and compare with `cmp`. If it differs, find which run changed it: the audit, the opening positions or the critique. If the recorded status was empty, restore with `git reset --hard <recorded HEAD>` and `git clean -fd`, and say in the Verdict's Notes which run changed it. If it was not empty, the tree held work before the Debate that a reset would delete: do not reset or clean anything, and write `STATUS: failed` saying which run changed a worktree that was already dirty.
 
 ## 1. Gather the Findings
 
