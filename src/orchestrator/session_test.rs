@@ -77,6 +77,40 @@ fn a_stage_start_saves_its_session_id_and_app_beside_its_pane() {
 }
 
 #[test]
+fn another_agent_in_the_stage_pane_never_has_its_session_id_saved() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().integration = true;
+    w.session(working);
+    let o = Arc::new(o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    until("the session id saved", || {
+        o.ticket("hx-1")
+            .sessions
+            .get("implement")
+            .is_some_and(|s| !s.id.is_empty())
+    });
+    let saved = o.ticket("hx-1").sessions["implement"].id.clone();
+    let pane = o.ticket("hx-1").panes["implement"].clone();
+    let before = w.calls().len();
+    {
+        let mut world = w.lock(); // another agent in that pane now
+        world.names.remove("h-hx-1-implement");
+        world.names.insert("someone-else".to_string(), pane.clone());
+        world.sessions.insert(pane.clone(), "other".to_string());
+    }
+    let get = format!("herdr agent get {pane}");
+    until("the pane watched twice more", || {
+        w.calls()[before..].iter().filter(|c| **c == get).count() >= 2
+    });
+
+    assert_eq!(
+        o.ticket("hx-1").sessions["implement"].id,
+        saved,
+        "another agent's session id was saved as the Stage's"
+    );
+}
+
+#[test]
 fn stopped_run_whose_pane_is_gone_resumes_the_stage_by_its_session_id() {
     // (Stage, its label, its App, result file, the resume args)
     let cases = [

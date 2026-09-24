@@ -1104,7 +1104,9 @@ impl Orchestrator {
 
     /// The herdr state of the agent in the Stage's pane, as agent_status,
     /// saving the session id herdr reports there as the Stage's: the id
-    /// /continue resumes it by once the pane is gone.
+    /// /continue resumes it by once the pane is gone. Saved only while herdr
+    /// still names the Stage's own agent in that pane, so another agent's
+    /// id is never resumed as the Stage's.
     fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
         let agent = self.herdr(&["agent", "get", pane]).ok()?.result.agent;
         let id = agent.agent_session.map(|s| s.value).unwrap_or_default();
@@ -1114,6 +1116,9 @@ impl Orchestrator {
                 .sessions
                 .get(st.name)
                 .is_some_and(|s| s.id != id)
+            && self
+                .herdr(&["agent", "get", &agent_name(ticket, st.name)])
+                .is_ok_and(|reply| reply.result.agent.pane_id == pane)
         {
             self.update(ticket, |ts| {
                 if let Some(session) = ts.sessions.get_mut(st.name) {
