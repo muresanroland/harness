@@ -16,14 +16,14 @@ A skill owned and shipped by the Harness that holds the instructions for one Sta
 _Avoid_: Prompt, template
 
 **Delegate skill**:
-A third-party skill a Stage skill runs for its Stage's work, chosen per Stage by the user. The Stage skill still owns the Stage result; without a Delegate skill it follows its own instructions.
+A third-party skill a Stage skill runs for one job of its Stage (test-first implementing, self review, the over-engineering audit, merge conflicts...), chosen per job by the user. A Stage can have several. The Stage skill still owns the Stage result; with no Delegate skill for a job it follows its own instructions.
 _Avoid_: Override, replacement, work skill
 
 **Shipped skill**:
 Any skill the Harness installs into a Target repo: the Stage skills, plus create-pr, which the Fix Stage runs. A repo that already has a create-pr of its own is asked whether to keep it, replace it, or take the shipped one beside it as harness-create-pr.
 
 **Skill manifest**:
-The Target repo's list of the skills it wants: the Stage skills, plus third-party skills named by their source, and which of them is each Stage's Delegate skill.
+One checkout's record of the skills the Harness installed for it: the Shipped skills, plus third-party skills named by their source, where they were put, and which of them is each Stage's Delegate skill. It belongs to the checkout, not the repo, even when the skill files themselves are committed.
 _Avoid_: Config, lockfile
 
 **Epic**:
@@ -84,7 +84,7 @@ A Ticket taken out of the Pipeline to wait for the user, after a Wake that a Jud
 _Avoid_: Stuck, paused, failed
 
 **Limited**:
-A Ticket held because the agent a Stage runs on hit its provider's usage limit. Unlike Parked it waits for the clock, not the user: a Claude Stage resumes by itself at the reset; a codex Review becomes a Question.
+A Ticket held because the agent a Stage runs on hit its provider's usage limit. Limits belong to the account, so a claude limit holds every Ticket of the run: a short one resumes by itself at the reset; a long one (a reset more than a day away) ends the run with every session saved, and /continue resumes each where it stopped. A codex limit holds only the Review, through one Question whose answer stands for every Ticket until the reset. Unlike Parked, nothing in the Ticket's own work went wrong.
 _Avoid_: Rate-limited, cooling down, throttled
 
 **Ticket tab**:
