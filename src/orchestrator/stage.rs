@@ -554,8 +554,11 @@ impl Orchestrator {
         });
         // Its pane gone, it is resumed by its saved session id instead, and
         // watched as a live one; failing that it starts fresh.
-        let session = saved.sessions.get(st.name).filter(|s| !s.id.is_empty());
-        if let Some(session) = session.filter(|_| resumed && live.is_none()) {
+        if let Some(session) = saved
+            .sessions
+            .get(st.name)
+            .filter(|s| resumed && live.is_none() && !s.id.is_empty())
+        {
             match self.resume(ticket, st, &label, session) {
                 Ok(pane) => live = Some(pane),
                 Err(err) => self.log(
@@ -1105,8 +1108,13 @@ impl Orchestrator {
     fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
         let agent = self.herdr(&["agent", "get", pane]).ok()?.result.agent;
         let id = agent.agent_session.map(|s| s.value).unwrap_or_default();
-        let saved = self.ticket(ticket).sessions.get(st.name).cloned();
-        if !id.is_empty() && saved.is_some_and(|saved| saved.id != id) {
+        if !id.is_empty()
+            && self
+                .ticket(ticket)
+                .sessions
+                .get(st.name)
+                .is_some_and(|s| s.id != id)
+        {
             self.update(ticket, |ts| {
                 if let Some(session) = ts.sessions.get_mut(st.name) {
                     session.id = id;
