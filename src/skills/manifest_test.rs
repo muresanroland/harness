@@ -351,3 +351,65 @@ fn a_skill_named_none_or_a_path_is_not_taken() {
     }
     assert!(!repo.path().join(".agents").exists());
 }
+
+#[test]
+fn an_entry_not_at_its_own_folder_is_neither_removed_nor_updated() {
+    let repo = TempDir::new();
+    write_file(&repo.path().join("src/main.rs"), "fn main() {}");
+    let tools = git(&remote("abc123", TWO_SKILLS));
+    // A hand-edited manifest: no at, which reads as the checkout itself, one
+    // elsewhere, and a name that climbs out of .agents/skills.
+    for (name, at) in [("tdd", ""), ("tdd", "src"), ("..", ".agents/skills/..")] {
+        let mut manifest = Manifest::default();
+        manifest.skills.insert(
+            name.into(),
+            Installed {
+                repo: "https://github.com/mattpocock/skills".into(),
+                path: "skills/engineering/tdd".into(),
+                at: at.into(),
+                ..Installed::default()
+            },
+        );
+        manifest.save(repo.path()).unwrap();
+        let err = remove(repo.path(), name).unwrap_err();
+        assert!(err.contains("will not touch"), "{name} at {at:?}: {err}");
+        let err = update(repo.path(), &*tools, name).unwrap_err();
+        assert!(err.contains("will not touch"), "{name} at {at:?}: {err}");
+        assert_eq!(update_all(repo.path(), &*tools).unwrap().len(), 1);
+        assert!(repo.path().join("src/main.rs").exists(), "{name} at {at:?}");
+        assert_eq!(Manifest::load(repo.path()).unwrap(), manifest);
+    }
+    assert!(tools.calls().is_empty(), "cloned: {:?}", tools.calls());
+}
+
+#[test]
+fn a_skill_whose_skill_md_is_a_link_is_not_taken() {
+    let repo = TempDir::new();
+    add(
+        repo.path(),
+        &*git(&remote("abc123", TWO_SKILLS)),
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    // copy_dir copies no links, so this skill would be installed without its
+    // SKILL.md.
+    let linked = Fake::new(|_, argv| {
+        if argv.contains(&"clone") {
+            let tdd = Path::new(argv.last().unwrap()).join("skills/engineering/tdd");
+            write_file(&tdd.join("real.md"), TDD);
+            std::os::unix::fs::symlink("real.md", tdd.join("SKILL.md")).unwrap();
+            Ok(String::new())
+        } else {
+            Ok("def456\n".to_string())
+        }
+    });
+    let err = add(repo.path(), &*linked, "someone/linked", None).unwrap_err();
+    assert!(err.contains("no skill"), "{err}");
+    let err = update(repo.path(), &*linked, "tdd").unwrap_err();
+    assert!(err.contains("no longer has tdd"), "{err}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".agents/skills/tdd/SKILL.md")).unwrap(),
+        TDD
+    );
+}
