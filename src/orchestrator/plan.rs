@@ -329,20 +329,23 @@ impl Orchestrator {
             .is_ok_and(|settings| settings["showClearContextOnPlanAccept"] == true)
     }
 
-    /// Moves the dialog's cursor down to the option that begins with label,
-    /// a key a call, the pane re-read after each (keys sent together were
-    /// seen to land where the screen did not show): at most one down per
-    /// option and none after a down that did not move it.
+    /// Moves the dialog's cursor to the option that begins with label, up
+    /// when it shows above the cursor and down otherwise, a key a call, the
+    /// pane re-read after each (keys sent together were seen to land where
+    /// the screen did not show): at most one key per option and none after
+    /// a key that did not move it.
     fn cursor_to(&self, pane: &str, mut dialog: Dialog, label: &str) -> Moved {
-        let mut downs = 0;
+        let mut moves = 0;
         while !dialog.on(label) {
-            if downs == dialog.options.len() {
+            if moves == dialog.options.len() {
                 return Moved::Stalled;
             }
-            if let Err(err) = self.keys(pane, "down") {
+            let target = dialog.options.iter().position(|o| o.starts_with(label));
+            let up = matches!((target, dialog.cursor), (Some(t), Some(c)) if t < c);
+            if let Err(err) = self.keys(pane, if up { "up" } else { "down" }) {
                 return Moved::Failed(err);
             }
-            downs += 1;
+            moves += 1;
             // Not stop's sleep: begun, the keys run to their end.
             thread::sleep(self.cfg.tick);
             match plan_dialog(&self.visible(pane)) {

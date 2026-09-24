@@ -401,7 +401,7 @@ fn feedback_enters_only_on_tell_claude_what_to_change() {
 /// A split, a plan model other than Implement's, starts opusplan with its
 /// halves remapped in the settings, which also show the clear-context
 /// option and hold the switch hook; the plan is approved on that option,
-/// the cursor moved to it as feedback moves it. No split keeps plain
+/// the cursor moved to it, up or down. No split keeps plain
 /// --model, today's settings, and enter on option 1.
 #[test]
 fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
@@ -414,17 +414,20 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
     ];
     let mut clear_first = clear_second;
     clear_first.swap(0, 1);
-    for (config, options, want) in [
-        (split, clear_second, vec!["down", "enter"]),
-        (split, clear_first, vec!["enter"]),
+    for (config, options, cursor, want) in [
+        (split, clear_second, 0, vec!["down", "enter"]),
+        (split, clear_second, 2, vec!["up", "enter"]),
+        (split, clear_first, 0, vec!["enter"]),
         (
             r#"{"implement": {"model": "opus", "effort": "high", "plan_model": "opus"}}"#,
             clear_second,
+            0,
             vec!["enter"],
         ),
         (
             r#"{"implement": {"model": "opus", "effort": "high"}}"#,
             clear_second,
+            0,
             vec!["enter"],
         ),
     ] {
@@ -434,6 +437,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
         bd_show(&w);
         o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
         w.lock().options = options.map(str::to_string).to_vec();
+        w.lock().cursor = cursor;
         o.run_ticket("hx-1");
         assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{config}");
 
