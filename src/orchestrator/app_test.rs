@@ -104,17 +104,21 @@ fn config_changed_between_two_stages_reaches_the_second() {
 }
 
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
-/// before its session starts: unreadable, naming the file, or a Stage other
-/// than the Review off claude.
+/// before its session starts: unreadable, naming the file, a field not a
+/// string, or a Stage other than the Review off claude.
 #[test]
 fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
-    let file = |w: &World| w.repo.join(".harness/config.json").display().to_string();
     for (body, label, reason) in [
-        ("{ not json", "implement", None),
+        ("{ not json", "implement", "{file}: "),
+        (
+            r#"{"implement": {"model": 5}}"#,
+            "implement",
+            "{file}: implement model is not a string",
+        ),
         (
             r#"{"moderator": {"app": "codex"}}"#,
             "debate 1",
-            Some("moderator runs on claude only"),
+            "moderator runs on claude only",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -122,7 +126,8 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
         let o = Arc::new(o);
         let _run = spawn_ticket(o.clone(), "hx-1");
 
-        let reason = reason.map_or_else(|| format!("{}: ", file(&w)), str::to_string);
+        let file = w.repo.join(".harness/config.json");
+        let reason = reason.replace("{file}", &file.display().to_string());
         w.await_line(&format!("hx-1 stuck in {label}: {reason}"));
         let stage = label.split(' ').next().unwrap();
         assert!(

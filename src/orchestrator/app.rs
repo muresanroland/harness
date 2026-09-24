@@ -98,7 +98,7 @@ pub(crate) fn fill(form: &[&str], value: &str) -> Vec<String> {
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
 /// change reaches the Stages that start after it. A missing file, row or
-/// field is the default.
+/// field, or an empty one, is the default; a field not a string refuses.
 pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     let path = repo.join(".harness").join("config.json");
     let doc: Value = match fs::read(&path) {
@@ -114,11 +114,13 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
         st.name
     };
     let default = if key == "review" { "codex" } else { "claude" };
-    let field = |name: &str, default: &str| {
-        let value = doc[key][name].as_str().filter(|v| !v.is_empty());
-        value.unwrap_or(default).to_string()
+    let field = |name: &str, default: &str| match &doc[key][name] {
+        Value::Null => Ok(default.to_string()),
+        Value::String(v) if v.is_empty() => Ok(default.to_string()),
+        Value::String(v) => Ok(v.clone()),
+        _ => Err(format!("{}: {key} {name} is not a string", path.display())),
     };
-    let name = field("app", default);
+    let name = field("app", default)?;
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
     // Off claude only the Review runs, until codex has the two-step Plan, the
@@ -129,7 +131,7 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     }
     Ok(Row {
         app,
-        model: field("model", "default"),
-        effort: field("effort", "default"),
+        model: field("model", "default")?,
+        effort: field("effort", "default")?,
     })
 }
