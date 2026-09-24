@@ -22,7 +22,7 @@ use chrono::TimeZone;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
@@ -225,9 +225,7 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 fn type_line(s: &mut Screen, line: &str) {
-    for c in line.chars() {
-        s.key(key(KeyCode::Char(c)));
-    }
+    type_in(s, line);
     s.key(key(KeyCode::Enter));
 }
 
@@ -292,9 +290,7 @@ fn header_at_120x40_shows_the_logo_banner_version_and_folder() {
     assert!(find(&buf, " ━━ ▾ harness-kqe").is_some());
     assert!(find(&buf, " RECENT ").is_some());
     assert!(
-        row(&buf, 39).starts_with(
-            "› ▌  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit"
-        ),
+        row(&buf, 39).starts_with("› ▌  / for a command, @ for an Epic or Ticket"),
         "{:?}",
         row(&buf, 39)
     );
@@ -382,12 +378,326 @@ fn the_overall_bar_counts_the_epics_tickets_and_blends_purple_to_green_by_the_pr
     assert!(!row(&buf, 9).contains('█'));
 }
 
+/// Types `text` without Enter.
+fn type_in(s: &mut Screen, text: &str) {
+    for c in text.chars() {
+        s.key(key(KeyCode::Char(c)));
+    }
+}
+
+/// What the open list would fill in, row by row.
+fn list_keys(s: &Screen) -> Vec<&str> {
+    s.list().iter().map(|row| row.0).collect()
+}
+
+/// '/' with no space yet lists the commands containing it, else those it is
+/// a subsequence of; Tab fills one in, Enter too unless it is typed whole.
+#[test]
+fn the_slash_list_filters_the_command_table_and_fills_in() {
+    let mut s = screen();
+    type_in(&mut s, "/");
+    assert_eq!(list_keys(&s), super::COMMANDS.map(|c| c.0));
+    type_in(&mut s, "pa");
+    assert_eq!(list_keys(&s), ["/park"]);
+    s.key(key(KeyCode::Tab));
+    assert_eq!(s.input, "/park ");
+    assert!(list_keys(&s).is_empty(), "a list in the argument slot");
+    // Containing wins: /questions is only a subsequence of '/st'.
+    s.input.clear();
+    type_in(&mut s, "/st");
+    assert_eq!(
+        list_keys(&s),
+        ["/start-epic", "/start-ticket", "/stop-work"]
+    );
+    s.key(key(KeyCode::Esc));
+    assert!(
+        s.input.is_empty() && list_keys(&s).is_empty(),
+        "Esc left it"
+    );
+    type_in(&mut s, "/sw");
+    assert_eq!(list_keys(&s), ["/stop-work"]);
+    s.key(key(KeyCode::Esc));
+    // Nothing matches: no list, and Enter runs the line.
+    type_line(&mut s, "/zz");
+    assert_eq!(notice(&s), "unknown command: /zz");
+    // Enter fills in; on a command typed whole it runs it, when it takes
+    // no argument.
+    type_line(&mut s, "/park");
+    assert_eq!(s.input, "/park ");
+    s.input.clear();
+    type_line(&mut s, "/ex");
+    assert_eq!(s.input, "/exit ");
+    assert!(!s.quit);
+    s.key(key(KeyCode::Enter));
+    assert!(s.quit);
+    let mut s = screen();
+    type_line(&mut s, "/exit");
+    assert!(s.quit);
+}
+
+/// Four open Epics for the @ list, two closed Tickets among theirs.
+fn lists_screen() -> Screen {
+    let epic = |id: &str, title: &str, tickets: Vec<BdIssue>| Epic {
+        id: id.to_string(),
+        title: title.to_string(),
+        tickets,
+    };
+    let epics = vec![
+        epic(
+            "harness-0sx",
+            "Wayfinder map",
+            vec![
+                issue("harness-0sx.4", "The screen updates", "open"),
+                issue("harness-0sx.8", "Limited", "in_progress"),
+                issue("harness-0sx.9", "Old", "closed"),
+            ],
+        ),
+        epic(
+            "harness-kv9",
+            "Other work",
+            vec![issue("harness-kv9.1", "First", "open")],
+        ),
+        epic(
+            "harness-7nq",
+            "Build",
+            vec![
+                issue("harness-7nq.5", "Plan review", "open"),
+                issue("harness-7nq.6", "Closed review", "closed"),
+            ],
+        ),
+        epic(
+            "harness-rev",
+            "Rework",
+            vec![issue("harness-rev.1", "Anything", "open")],
+        ),
+    ];
+    Screen::new(
+        Config::for_tests(Fake::quiet(), Path::new(""), Path::new("")),
+        "~/harness".to_string(),
+        true,
+        epics,
+        State::default(),
+    )
+}
+
+/// '@<query>' at the end lists the open Epics and Tickets: id contains it,
+/// then title, then a subsequence of the id; the command before it narrows
+/// the list, and Enter or Tab puts the id in place of '@<query>'.
+#[test]
+fn the_at_list_ranks_open_epics_and_tickets_narrowed_by_the_command() {
+    let mut s = lists_screen();
+    type_in(&mut s, "/start-epic @0s");
+    assert_eq!(list_keys(&s), ["harness-0sx"], "a Ticket of harness-0sx");
+    s.key(key(KeyCode::Enter));
+    assert_eq!(s.input, "/start-epic harness-0sx ");
+    assert!(s.run.is_none() && s.notice.is_none(), "{:?}", s.notice);
+    s.input.clear();
+    type_in(&mut s, "/start-epic @");
+    assert_eq!(
+        list_keys(&s),
+        ["harness-0sx", "harness-kv9", "harness-7nq", "harness-rev"]
+    );
+    s.key(key(KeyCode::Esc));
+    type_in(&mut s, "/retry @");
+    let open = [
+        "harness-0sx.4",
+        "harness-0sx.8",
+        "harness-kv9.1",
+        "harness-7nq.5",
+        "harness-rev.1",
+    ];
+    assert_eq!(list_keys(&s), open);
+    for name in ["/start-ticket", "/park", "/address"] {
+        s.input = format!("{name} @");
+        assert_eq!(list_keys(&s), open, "{name}");
+    }
+    s.input.clear();
+    type_in(&mut s, "@rev");
+    assert_eq!(
+        list_keys(&s),
+        [
+            "harness-rev",
+            "harness-rev.1",
+            "harness-7nq.5",
+            "harness-kv9",
+            "harness-kv9.1"
+        ]
+    );
+    assert_eq!(
+        s.list()[2],
+        ("harness-7nq.5", "Ticket", "Plan review"),
+        "the row"
+    );
+    s.key(key(KeyCode::Down));
+    s.key(key(KeyCode::Down));
+    s.key(key(KeyCode::Tab));
+    assert_eq!(s.input, "harness-7nq.5 ");
+    // A space after the query closes it; no list in the argument slot.
+    s.input = "/start-epic @0s --max".to_string();
+    assert!(list_keys(&s).is_empty());
+    s.input = "/start-epic 0s".to_string();
+    assert!(list_keys(&s).is_empty());
+    // '@' inside a word opens nothing.
+    s.input = "/start-epic me@0s".to_string();
+    assert!(list_keys(&s).is_empty());
+}
+
+/// With a list open Up and Down move its cursor, kept on its rows, and
+/// leave RECENT; with none open and the line empty they scroll RECENT.
+#[test]
+fn up_and_down_move_an_open_lists_cursor_and_scroll_recent_when_none_is() {
+    let mut s = screen();
+    for n in 0..10 {
+        s.push(event(None, &format!("line {n}"), true));
+    }
+    type_in(&mut s, "/");
+    s.key(key(KeyCode::Up));
+    assert_eq!(s.pick, 0);
+    s.key(key(KeyCode::Down));
+    s.key(key(KeyCode::Down));
+    assert_eq!((s.pick, s.recent.get()), (2, 0));
+    s.key(key(KeyCode::Up));
+    assert_eq!((s.pick, s.recent.get()), (1, 0));
+    for _ in 0..20 {
+        s.key(key(KeyCode::Down));
+    }
+    assert_eq!(s.pick, 8, "past the last row");
+    s.key(key(KeyCode::Up));
+    s.key(key(KeyCode::Enter));
+    assert_eq!(s.input, "/questions ");
+    // Typing puts the cursor back on the top row.
+    s.input.clear();
+    type_in(&mut s, "/");
+    s.key(key(KeyCode::Down));
+    type_in(&mut s, "s");
+    assert_eq!(s.pick, 0);
+    s.key(key(KeyCode::Down));
+    s.key(key(KeyCode::Backspace));
+    assert_eq!(s.pick, 0);
+    s.key(key(KeyCode::Esc));
+    s.key(key(KeyCode::Up));
+    assert_eq!(s.recent.get(), 1, "Up did not scroll RECENT");
+    s.key(key(KeyCode::Down));
+    assert_eq!(s.recent.get(), 0);
+}
+
 /// The input line's placeholder draws in dark orange.
 #[test]
 fn the_placeholder_draws_in_dark_orange() {
     let buf = render(&screen(), 120, 40);
-    let (x, y) = find(&buf, "/start-epic").unwrap();
+    assert_eq!(
+        row(&buf, 39).trim_end(),
+        "› ▌  / for a command, @ for an Epic or Ticket"
+    );
+    let (x, y) = find(&buf, "/ for a command").unwrap();
     assert_eq!(buf[(x, y)].fg, DARK_ORANGE);
+    assert!(find(&buf, "/start-epic").is_none(), "{:#?}", rows(&buf));
+}
+
+/// The / list inline above the notice and input lines: up to eight rows
+/// around its cursor, then the hint. The command purple, bold on the cursor
+/// row; args muted; the description TEXT on the cursor row, muted otherwise.
+#[test]
+fn the_slash_list_renders_above_the_input_with_its_hint() {
+    let mut s = screen();
+    type_in(&mut s, "/");
+    let buf = render(&s, 120, 40);
+    let want = [
+        " › /start-epic    <epic> [--max N]  run every Ticket of an open Epic",
+        "   /start-ticket  <ticket>          run one Ticket",
+        "   /continue                        resume the saved run",
+        "   /stop-work                       stop the run, the panes stay",
+        "   /retry         <ticket>          the Ticket's Stage again, in a fresh session",
+        "   /park          <ticket>          take a Ticket out to wait for you",
+        "   /address       <ticket>          resolve a PR's conflicts or review comments",
+        "   /questions                       show the hidden Questions",
+        "   ↑↓ pick · Tab or Enter fills in · Esc clears",
+    ];
+    let shown: Vec<String> = (29..38)
+        .map(|y| row(&buf, y).trim_end().to_string())
+        .collect();
+    assert_eq!(shown, want, "{:#?}", rows(&buf));
+    assert_eq!(row(&buf, 39).trim_end(), "› /▌");
+    let at = |text: &str| {
+        let (x, y) = find(&buf, text).unwrap();
+        let cell = &buf[(x, y)];
+        (cell.fg, cell.modifier.contains(Modifier::BOLD))
+    };
+    assert_eq!(at("› /start-epic"), (PURPLE, true));
+    assert_eq!(at("/start-epic "), (PURPLE, true));
+    assert_eq!(at("/start-ticket"), (PURPLE, false));
+    assert_eq!(at("<epic>").0, MUTED);
+    assert_eq!(at("run every Ticket").0, TEXT);
+    assert_eq!(at("run one Ticket").0, MUTED);
+    // The window follows the cursor to the last row.
+    for _ in 0..8 {
+        s.key(key(KeyCode::Down));
+    }
+    let buf = render(&s, 120, 40);
+    assert!(
+        row(&buf, 29).starts_with("   /start-ticket"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row(&buf, 36).starts_with(" › /exit"), "{:#?}", rows(&buf));
+    // 80x24 keeps TICKETS its three rows: the list shows seven and the hint.
+    let buf = render(&s, 80, 24);
+    assert!(row(&buf, 11).contains("harness-kqe"), "{:#?}", rows(&buf));
+    assert!(row(&buf, 13).contains("6 more, PgDn"), "{:#?}", rows(&buf));
+    assert!(
+        row(&buf, 14).starts_with("   /continue"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row(&buf, 20).starts_with(" › /exit"), "{:#?}", rows(&buf));
+    assert!(row(&buf, 21).contains("↑↓ pick"), "{:#?}", rows(&buf));
+    assert_eq!(row(&buf, 23).trim_end(), "› /▌");
+}
+
+/// The @ list's rows: the id in its Epic's color by place on the tree or in
+/// its Ticket's color, then Epic or Ticket, then the title.
+#[test]
+fn the_at_list_renders_ids_in_their_epic_or_ticket_color() {
+    let mut s = lists_screen();
+    type_in(&mut s, "/start-ticket x @0s");
+    let buf = render(&s, 120, 40);
+    let want = [
+        " › harness-0sx.4  Ticket  The screen updates",
+        "   harness-0sx.8  Ticket  Limited",
+        "   ↑↓ pick · Tab or Enter fills in · Esc clears",
+    ];
+    let shown: Vec<String> = (35..38)
+        .map(|y| row(&buf, y).trim_end().to_string())
+        .collect();
+    assert_eq!(shown, want, "{:#?}", rows(&buf));
+    let fg = |text: &str| {
+        let (x, y) = find(&buf, text).unwrap();
+        buf[(x, y)].fg
+    };
+    assert_eq!(fg("harness-0sx.4  Ticket"), ticket_color("harness-0sx.4"));
+    assert_eq!(fg("harness-0sx.8  Ticket"), ticket_color("harness-0sx.8"));
+    assert_eq!(fg("Ticket  The"), MUTED);
+    s.input.clear();
+    type_in(&mut s, "@0s");
+    let buf = render(&s, 120, 40);
+    let want = [
+        " › harness-0sx    Epic    Wayfinder map",
+        "   harness-0sx.4  Ticket  The screen updates",
+        "   harness-0sx.8  Ticket  Limited",
+        "   ↑↓ pick · Tab or Enter fills in · Esc clears",
+    ];
+    let shown: Vec<String> = (34..38)
+        .map(|y| row(&buf, y).trim_end().to_string())
+        .collect();
+    assert_eq!(shown, want, "{:#?}", rows(&buf));
+    let (x, y) = find(&buf, "harness-0sx    Epic").unwrap();
+    assert_eq!(buf[(x, y)].fg, PURPLE, "the first Epic's color");
+    let (x, y) = find(&buf, "▾ harness-kv9").unwrap();
+    assert_eq!(buf[(x + 2, y)].fg, CYAN, "the tree's second");
+    s.input = "/start-epic @kv".to_string();
+    let buf = render(&s, 120, 40);
+    let (x, y) = find(&buf, "harness-kv9  Epic").unwrap();
+    assert_eq!(buf[(x, y)].fg, CYAN, "the list's Epic color is the tree's");
 }
 
 /// RECENT under its rule, newest on its last row with blank rows above; the
@@ -1261,7 +1571,7 @@ fn retry_and_park_reach_the_ticket_and_refusals_are_logged() {
     s.command("/retry hx-9");
     await_line(&mut s, "hx-9 refused: not a Ticket of this run");
     // The Ticket's Question holds it: the commands are refused until answered.
-    s.command("/park hx-1");
+    s.command("/park @hx-1"); // a leading @ is stripped
     assert_eq!(notice(&s), "refused: Ticket hx-1 has a Question waiting");
     s.command("/retry hx-1");
     assert!(
@@ -1314,13 +1624,13 @@ fn start_epic_resolves_its_argument_from_the_bd_cache_and_asks_before_discarding
     assert_eq!(notice(&s), "--max wants a number of at least 1");
     s.command("/start-ticket hx-");
     assert_eq!(notice(&s), "matches: hx-1 Ticket hx-1  ·  hx-2 Ticket hx-2");
-    // Tab fills in the one match, by id or title substring.
+    s.notice = None;
+    s.command("/start-ticket @hx-");
+    assert_eq!(notice(&s), "matches: hx-1 Ticket hx-1  ·  hx-2 Ticket hx-2");
+    // No list opens by itself in the argument slot: Tab there does nothing.
     s.input = "/start-epic EPIC".to_string();
     s.key(key(KeyCode::Tab));
-    assert_eq!(s.input, "/start-epic hx ");
-    s.input = "/start-ticket ticket hx-2".to_string();
-    s.key(key(KeyCode::Tab));
-    assert_eq!(s.input, "/start-ticket hx-2 ");
+    assert_eq!(s.input, "/start-epic EPIC");
     assert!(s.run.is_none());
     s.input.clear();
 

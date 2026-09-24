@@ -4,6 +4,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::orchestrator::stage::log_line;
 use crate::setup;
 use crate::tools::Tools;
 
@@ -63,15 +64,20 @@ pub fn run(
             }
             preflight(out, repo, &*tools, env)
         }
-        // Claude Code's PreToolUse hook on ExitPlanMode, which Implement's
-        // settings name; hidden, not in the usage.
-        "__plan-hook" => {
+        // Claude Code's hooks, which Implement's settings name: PreToolUse
+        // on ExitPlanMode, and on a split PostModelSwitch; hidden, not in
+        // the usage.
+        "__plan-hook" | "__switch-hook" => {
             let mut stdin = io::stdin();
             let input: &mut dyn Read = match input {
                 Some(scripted) => scripted,
                 None => &mut stdin,
             };
-            match plan_hook(args.get(1), input) {
+            let hooked = match name.as_str() {
+                "__plan-hook" => plan_hook(args.get(1), input),
+                _ => switch_hook(&args[1..], input),
+            };
+            match hooked {
                 Ok(()) => 0,
                 Err(err) => {
                     eprintln!("harness: {err}");
@@ -94,15 +100,41 @@ pub fn run(
 /// nothing: no output, so the plan dialog shows as usual.
 fn plan_hook(path: Option<&String>, input: &mut dyn Read) -> Result<(), String> {
     let path = path.ok_or("usage: harness __plan-hook <plan file>")?;
-    let mut raw = String::new();
-    input
-        .read_to_string(&mut raw)
-        .map_err(|err| err.to_string())?;
-    let call: serde_json::Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    let call = hook_input(input)?;
     let plan = call["tool_input"]["plan"]
         .as_str()
         .ok_or("no tool_input.plan in the hook's input")?;
     std::fs::write(path, plan).map_err(|err| format!("{path}: {err}"))
+}
+
+/// Appends "<ticket> implement switched to <model>" to the log at `path`,
+/// the model from the hook's input on stdin, in one write as the Shell and
+/// the Orchestrator append theirs.
+fn switch_hook(args: &[String], input: &mut dyn Read) -> Result<(), String> {
+    let [path, ticket] = args else {
+        return Err("usage: harness __switch-hook <log file> <ticket>".to_string());
+    };
+    let call = hook_input(input)?;
+    let model = call["to_model"]
+        .as_str()
+        .ok_or("no to_model in the hook's input")?;
+    let text = format!("implement switched to {model}");
+    let line = log_line(chrono::Local::now(), ticket, &text);
+    std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut log| log.write_all(line.as_bytes()))
+        .map_err(|err| format!("{path}: {err}"))
+}
+
+/// A hook's input: the JSON Claude Code writes on stdin.
+fn hook_input(input: &mut dyn Read) -> Result<serde_json::Value, String> {
+    let mut raw = String::new();
+    input
+        .read_to_string(&mut raw)
+        .map_err(|err| err.to_string())?;
+    serde_json::from_str(&raw).map_err(|err| err.to_string())
 }
 
 /// Prints the warnings and what is missing, and returns the exit code. A

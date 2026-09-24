@@ -179,6 +179,8 @@ pub(crate) struct Inner {
     pub(crate) dialogs: BTreeMap<String, (Vec<String>, usize)>,
     /// The options the next plan dialog shows; empty is research/plan-mode's.
     pub(crate) options: Vec<String>,
+    /// The option the next plan dialog's cursor starts on.
+    pub(crate) cursor: usize,
     /// Keys sent to a plan dialog are dropped: its cursor never moves.
     pub(crate) dropped: bool,
     /// Panes whose session is in plan mode.
@@ -393,6 +395,7 @@ impl World {
             };
             match key {
                 "down" if !dropped => *cursor = (*cursor + 1).min(options.len() - 1),
+                "up" if !dropped => *cursor = cursor.saturating_sub(1),
                 "enter" => {
                     let chosen = options[*cursor].clone();
                     w.dialogs.remove(&pane);
@@ -508,7 +511,8 @@ impl World {
                     true => PLAN_OPTIONS.map(str::to_string).to_vec(),
                     false => w.options.clone(),
                 };
-                w.dialogs.insert(p.pane.clone(), (options, 0));
+                let cursor = w.cursor;
+                w.dialogs.insert(p.pane.clone(), (options, cursor));
                 "blocked".to_string()
             }
             _ => status,
