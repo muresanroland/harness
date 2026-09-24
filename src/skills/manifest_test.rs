@@ -535,3 +535,21 @@ fn a_skill_whose_skill_md_is_a_link_is_not_taken() {
         TDD
     );
 }
+
+#[test]
+fn add_installs_nothing_through_a_linked_agents_or_claude_folder() {
+    for linked in [".agents", ".claude"] {
+        let repo = TempDir::new();
+        let outside = TempDir::new();
+        std::os::unix::fs::symlink(outside.path(), repo.path().join(linked)).unwrap();
+        let tools = git(&remote("abc123", TWO_SKILLS));
+        let err = add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap_err();
+        assert!(err.contains("will not install"), "{linked}: {err}");
+        assert_eq!(
+            fs::read_dir(outside.path()).unwrap().count(),
+            0,
+            "{linked}: written through"
+        );
+        assert!(Manifest::load(repo.path()).unwrap().skills.is_empty());
+    }
+}

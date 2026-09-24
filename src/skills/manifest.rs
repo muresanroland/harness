@@ -285,6 +285,15 @@ pub(crate) fn add(
         }
         None => {}
     }
+    // put and its undo write through both folders.
+    if let Some(dir) = [".agents/skills", ".claude/skills"]
+        .into_iter()
+        .find(|dir| !own(repo, dir))
+    {
+        return Err(format!(
+            "{dir} is not the checkout's own folder: the Harness will not install {name} there"
+        ));
+    }
     let at = format!(".agents/skills/{name}");
     let link = Path::new(".claude/skills").join(&name);
     if [Path::new(&at), &link]
@@ -409,13 +418,16 @@ fn third_party<'a>(
 }
 
 /// Whether dir, from the checkout's root, is the checkout's own: no link on
-/// the way leads anywhere else, not even elsewhere in the checkout.
+/// the way leads anywhere else, not even elsewhere in the checkout. A folder
+/// not there yet is its own: add makes it there.
 fn own(repo: &Path, dir: &str) -> bool {
-    repo.canonicalize().is_ok_and(|root| {
-        repo.join(dir)
-            .canonicalize()
-            .is_ok_and(|real| real == root.join(dir))
-    })
+    Path::new(dir)
+        .ancestors()
+        .filter(|part| !part.as_os_str().is_empty())
+        .all(|part| match fs::symlink_metadata(repo.join(part)) {
+            Ok(meta) => !meta.file_type().is_symlink(),
+            Err(err) => err.kind() == io::ErrorKind::NotFound,
+        })
 }
 
 /// The folder at path in the clone, resolved, when it is inside the clone: a
