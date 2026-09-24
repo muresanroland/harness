@@ -45,8 +45,12 @@ _Avoid_: Iteration, loop, cycle
 One step of the Pipeline, carried out by a fresh agent session in its own pane.
 _Avoid_: Step, phase
 
+**App**:
+An agent CLI a Stage can run on, such as claude or codex, picked per Stage by the user. Each App starts its own sessions, reads the Target repo's skills, and has its own usage limits.
+_Avoid_: Agent, kind, CLI, provider
+
 **Stage result**:
-The recorded outcome of a Stage, carrying its completion status and, as appropriate, Findings, a Verdict, or an opened pull request. The Orchestrator uses it together with the session's state to decide whether the Stage can advance.
+The recorded outcome of a Stage, carrying its completion status and, as appropriate, Findings, a Verdict, an opened pull request, a Plan to approve, or a question the Stage needs the user to answer before it can go on. The Orchestrator uses it together with the session's state to decide whether the Stage can advance.
 
 **Run directory**:
 The Ticket's directory under `.harness/runs/`, holding its Stages' evidence: the result files, diffs and Debate transcripts, all flat text. It doubles as the Review's sandbox, so build scratch lands there too and is pruned when the pull request opens.
@@ -76,15 +80,19 @@ _Avoid_: LLM call, Main session
 What an Implement session writes before it may edit: the changes, tests and decisions it intends for its Ticket. A Judgment approves it when it follows the Ticket; otherwise the user reads it and answers, and the session revises it.
 
 **Question**:
-What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, or a confirmation. It holds only its Ticket, is answered from a fixed set of options or a line of the user's own text, and is never saved: on resume it is derived again from the live session.
+What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, a Stage's own question, or a confirmation. It holds only its Ticket, is answered from a fixed set of options or a line of the user's own text, and is never saved: on resume it is derived again from the live session or the Stage result.
 _Avoid_: Prompt, dialog, alert, form, popup
 
 **Parked**:
-A Ticket taken out of the Pipeline to wait for the user, after a Wake that a Judgment or the user settled as park. Other Tickets keep running.
+A Ticket taken out of the Pipeline to wait for the user, after a Wake that a Judgment or the user settled as park, or after its Stage asked a question while the user was Away. Other Tickets keep running.
 _Avoid_: Stuck, paused, failed
 
+**Away**:
+What the user declares in the Shell when nobody will answer for a while, such as overnight. A Stage's question then parks its Ticket instead of waiting, and is put to the user when they continue that Ticket. Nothing else changes: Judgments still answer what they can.
+_Avoid_: AFK, offline, unattended mode
+
 **Limited**:
-A Ticket held because the agent a Stage runs on hit its provider's usage limit. Limits belong to the account, so a claude limit holds every Ticket of the run: a short one resumes by itself at the reset; a long one (a reset more than a day away) ends the run with every session saved, and /continue resumes each where it stopped. A codex limit holds only the Review, through one Question whose answer stands for every Ticket until the reset. Unlike Parked, nothing in the Ticket's own work went wrong.
+A Ticket held because the App its Stage runs on hit its provider's usage limit. The limit holds every Stage on that App, whichever Ticket it belongs to: a short one resumes at the reset; a long one (a reset more than a day away) ends the run with every session saved, and /continue resumes each where it stopped. A limit on the Review is put to the user once, through a Question whose answer stands for every Ticket until the reset; a limit on one Debate side settles the Findings without that side. Unlike Parked, nothing in the Ticket's own work went wrong.
 _Avoid_: Rate-limited, cooling down, throttled
 
 **Ticket tab**:
