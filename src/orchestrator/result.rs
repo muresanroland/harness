@@ -27,6 +27,8 @@ pub(crate) struct ResultRequirements {
 /// The Wake reasons a result file gives (docs/design/events.md).
 const NO_RESULT: &str = "went idle without a result";
 const NOT_STATUS: &str = "wrote a result file whose first line is not STATUS:";
+/// STATUS: question: neither done nor a Wake (read_question).
+pub(crate) const ASKED: &str = "asked a question";
 
 /// Interprets and accepts result contents for live completion, resume, and
 /// late completion alike. A nonempty reason means the result is not accepted;
@@ -42,6 +44,7 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
     };
     match value.trim().to_lowercase().as_str() {
         "failed" => return rejected("session reported failure"),
+        "question" => return rejected(ASKED),
         "done" => {}
         _ => return rejected(NOT_STATUS),
     }
@@ -82,6 +85,25 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         return rejected("finished without a PR link");
     }
     (result, String::new())
+}
+
+/// A Stage's own question, its result file's first line STATUS: question:
+/// the question text, and its options, the lines that start with "- ".
+pub(crate) fn read_question(path: &Path) -> Option<(String, Vec<String>)> {
+    let body = fs::read_to_string(path).ok()?;
+    let mut lines = body.lines();
+    let first = lines.next()?.trim().strip_prefix("STATUS:")?;
+    if !first.trim().eq_ignore_ascii_case("question") {
+        return None;
+    }
+    let (mut text, mut options) = (Vec::new(), Vec::new());
+    for line in lines.map(str::trim).filter(|line| !line.is_empty()) {
+        match line.strip_prefix("- ") {
+            Some(option) => options.push(option.trim().to_string()),
+            None => text.push(line),
+        }
+    }
+    Some((text.join("\n"), options))
 }
 
 /// The text a Stage's session is prompted with: the Stage skill's body

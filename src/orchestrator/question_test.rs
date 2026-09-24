@@ -1,0 +1,107 @@
+//! A Stage's own question, STATUS: question: put to you and never judged,
+//! or with Away on, its Ticket parked with a bd comment and its pane open.
+
+use super::judgment::fake::Fake;
+use super::stage::{Answer, Ask, AWAY};
+use super::state::STATUS_PARKED;
+use super::world::{new_world, spawn_ticket, succeed, BdTicket};
+use super::write_file;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+/// What a Stage writes to ask, then waits in its session.
+pub(crate) const ASKS: &str = "STATUS: question\n\nWhich parser stays?\n- ours\n- theirs\n";
+
+#[test]
+fn a_stage_question_is_put_to_you_never_judged_and_the_deadline_waits() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    let typesafe = Fake::down();
+    o.cfg.typesafe = typesafe.clone();
+    o.cfg.timeout = Some(Duration::from_millis(100));
+    w.session(|p| match p.text.as_str() {
+        "ours" => (String::new(), "working".to_string()), // the answer taken up
+        _ if p.stage == "implement" => (ASKS.to_string(), "idle".to_string()),
+        _ => succeed(p),
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let asked = w.await_event("question in implement");
+    assert_eq!(asked.text, "question in implement (pane 1-1)");
+    let Some(Ask::Question {
+        pane,
+        question,
+        options,
+    }) = asked.ask
+    else {
+        panic!("a question raised {:?}, not a Question", asked.ask);
+    };
+    assert_eq!(question, "Which parser stays?");
+    assert_eq!(options, ["ours", "theirs"]);
+    thread::sleep(Duration::from_millis(200)); // twice the Stage's deadline
+
+    o.answer("hx-1", &pane, Answer::Prompt("ours".to_string()));
+    w.await_line("hx-1 sent your answer");
+    // Working on the answer, the session has a whole deadline again.
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    w.lock().agents.insert(pane.clone(), "idle".to_string());
+    run.wait();
+
+    w.await_line("hx-1 PR #hx-1 opened");
+    assert_eq!(
+        w.called(&format!("herdr agent prompt {pane} ")).last(),
+        Some(&format!("herdr agent prompt {pane} ours")),
+        "the answer went into the pane as a prompt"
+    );
+    let lines = w.lines();
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("timed out") || l.contains("stuck in")),
+        "a question woke the Ticket: {lines:#?}"
+    );
+    assert!(
+        typesafe.requests().is_empty(),
+        "a Judgment was asked about a question"
+    );
+}
+
+#[test]
+fn away_parks_a_question_with_a_bd_comment_and_the_pane_open() {
+    for (stage, label) in [("implement", "implement"), ("review", "review 1")] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        o.cfg.away.store(true, Ordering::SeqCst);
+        w.session(move |p| match p.stage == stage {
+            true => (ASKS.to_string(), "idle".to_string()),
+            false => succeed(p),
+        });
+        let o = Arc::new(o);
+        spawn_ticket(o.clone(), "hx-1").wait();
+
+        w.await_line("hx-1 parked: asked you while away");
+        let ts = o.ticket("hx-1");
+        assert_eq!(
+            (ts.status.as_str(), ts.reason.as_str()),
+            (STATUS_PARKED, AWAY)
+        );
+        let comments = w.called("bd comments add hx-1 ");
+        assert!(
+            comments.len() == 1
+                && comments[0].contains(&format!("{label} asked"))
+                && comments[0].contains("/continue @hx-1")
+                && comments[0].contains("Which parser stays?"),
+            "{label}: bd comments = {comments:?}"
+        );
+        assert!(
+            w.called("herdr pane close").is_empty(),
+            "{label}: the asking session's pane was closed"
+        );
+        assert_eq!(w.lock().agents[&ts.panes[stage]], "idle");
+        assert!(
+            w.events().iter().all(|e| e.ask.is_none()),
+            "{label}: Away still put a Question"
+        );
+    }
+}

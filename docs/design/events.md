@@ -45,6 +45,8 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | retry command | retrying fix 1 with a fresh session (pane 2-3) |
 | address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR · address refused: not an Epic run |
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
+| Away | *(harness)* away: on, a Stage's question parks its Ticket · away: off *(/away again, or /continue @ticket)* |
+| /continue @ticket refused | *(harness)* refused: Ticket 5 is not parked · continue refused: not an Epic run |
 | Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
 | Epic done | *(harness)* Epic done, every Ticket closed |
 | stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
@@ -74,16 +76,27 @@ Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks wh
 | split session switched model (its PostModelSwitch hook) | *log only:* implement switched to `model` |
 | blocked at another prompt, or at the plan dialog with no new plan.md | waiting at a prompt in implement (pane 2-1) *(an ordinary blocked session)* |
 
+## Stage questions
+
+Decided on the map ticket "Delegate skills" (harness-0sx.12, Asks). A Stage writes `STATUS: question`, then the question, then one `- ` line per option, and waits in its session. It is never a Wake and never judged, and no deadline runs while it waits; once the answer goes in, the Stage's deadline starts over.
+
+| Moment | Wording |
+|---|---|
+| a Stage asks | question in implement (pane 2-1) *(a Question: the Stage's options, an answer of your own, open the pane, park)* |
+| answer sent into the pane | sent your answer |
+| answered in the pane instead | carrying on |
+| asked while Away | parked: asked you while away *(a bd comment on the Ticket asks for a manual resume, /continue @ticket; the pane stays open)* |
+
 ## Questions and answers
 
 Decided on the map ticket "The Shell's Question panel" (harness-7bj.7). A Question is a form above the input line; answering it logs two lines, the first naming the user, the second the outcome in the Judgment's own words.
 
 | Moment | Wording |
 |---|---|
-| Question raised | asking you: stuck in fix 1 · asking you: waiting at a prompt in fix 1 (pane 2-1) · asking you: plan ready in implement (pane 2-1) |
-| answer, line 1 | you answered: nudge · retry · park · wait · your prompt · approve · feedback · I answered it |
+| Question raised | asking you: stuck in fix 1 · asking you: waiting at a prompt in fix 1 (pane 2-1) · asking you: plan ready in implement (pane 2-1) · asking you: question in implement (pane 2-1) |
+| answer, line 1 | you answered: nudge · retry · park · wait · your prompt · approve · feedback · I answered it · the Stage's option picked · your answer |
 | answer, line 2 | the Judgment's line 2 wording where it has one: nudged: write the result file · retrying fix 1 with a fresh session (pane 2-3) · parked: `reason` |
-| answer, line 2, no Judgment equivalent | nudged with your prompt · plan approved · plan sent back with your feedback · carrying on |
+| answer, line 2, no Judgment equivalent | nudged with your prompt · plan approved · plan sent back with your feedback · sent your answer · carrying on |
 | blocked session cleared in the pane | carrying on |
 | open the pane, Esc, /questions | nothing |
 | /park on a running Ticket | parked: by you at fix 1 |

@@ -11,6 +11,7 @@ use std::cell::Cell;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -47,14 +48,18 @@ const KEPT_EVENTS: usize = 1000;
 const RETRY: Duration = Duration::from_secs(60);
 /// Every command the Shell takes: its name, arguments and what it does. The
 /// / list shows it; nothing else lists the commands.
-const COMMANDS: [(&str, &str, &str); 9] = [
+const COMMANDS: [(&str, &str, &str); 10] = [
     (
         "/start-epic",
         "<epic> [--max N]",
         "run every Ticket of an open Epic",
     ),
     ("/start-ticket", "<ticket>", "run one Ticket"),
-    ("/continue", "", "resume the saved run"),
+    (
+        "/continue",
+        "[<ticket>]",
+        "resume the saved run, or unpark one Ticket",
+    ),
     ("/stop-work", "", "stop the run, the panes stay"),
     (
         "/retry",
@@ -68,6 +73,11 @@ const COMMANDS: [(&str, &str, &str); 9] = [
         "resolve a PR's conflicts or review comments",
     ),
     ("/questions", "", "show the hidden Questions"),
+    (
+        "/away",
+        "",
+        "a Stage's question parks its Ticket, again to turn off",
+    ),
     ("/exit", "", "leave the Harness"),
 ];
 
@@ -178,6 +188,9 @@ pub(crate) struct Screen {
     pub(crate) hidden: bool,
     /// The input line is a prompt of the user's own for the front Question.
     pub(crate) composing: bool,
+    /// The Ticket /continue @ticket unparked: its next Question goes ahead
+    /// of every other Ticket's.
+    first: Option<String>,
     /// The updater thread's checks, applied between commands in poll().
     update_sender: Sender<Checked>,
     update_receiver: Receiver<Checked>,
@@ -224,6 +237,7 @@ impl Screen {
             questions: Vec::new(),
             hidden: false,
             composing: false,
+            first: None,
             update_sender,
             update_receiver,
             update: None,
@@ -255,6 +269,7 @@ impl Screen {
             tick: Duration::from_secs(5),
             poll_prs: Duration::from_secs(30),
             max: DEFAULT_MAX,
+            away: Arc::default(), // off each time the Shell opens
             log: Arc::new(Mutex::new(Box::new(io::sink()))),
             events: mpsc::channel().0,
             #[cfg(test)]
@@ -411,6 +426,7 @@ impl Screen {
         self.running = false;
         self.questions.retain(|q| q.ticket.is_none()); // never saved: derived again on resume
         self.composing = false;
+        self.first = None;
         if run.o.stopping() {
             self.say("stopped, panes left running, /continue resumes");
         } else if run.failed {
@@ -488,16 +504,30 @@ impl Screen {
             Ask::Wake { .. } | Ask::PlanFailed { .. } => {
                 text.split_once(": ").map_or(text.as_str(), |(s, _)| s)
             }
-            Ask::Blocked { .. } | Ask::Plan { .. } => text.as_str(),
+            Ask::Blocked { .. } | Ask::Plan { .. } | Ask::Question { .. } => text.as_str(),
         };
         let asking = format!("asking you: {short}");
-        self.questions.push(Question {
-            ticket: Some(id.clone()),
-            text,
-            about: About::Asked(ask),
-            cursor: 0,
-            scroll: Cell::new(0),
-        });
+        // /continue @ticket's goes after a confirmation, and the Question
+        // a prompt is being typed for, only
+        let at = match self.first.as_deref() == Some(id.as_str()) {
+            true => {
+                self.first = None;
+                self.hidden = false;
+                let confirms = self.questions.iter().take_while(|q| q.ticket.is_none());
+                confirms.count().max(usize::from(self.composing))
+            }
+            false => self.questions.len(),
+        };
+        self.questions.insert(
+            at,
+            Question {
+                ticket: Some(id.clone()),
+                text,
+                about: About::Asked(ask),
+                cursor: 0,
+                scroll: Cell::new(0),
+            },
+        );
         self.tell(Some(&id), &asking);
     }
 
@@ -619,6 +649,11 @@ impl Screen {
                     )
                     .collect()
             }
+            About::Asked(Ask::Question { options, .. }) => options
+                .iter()
+                .cloned()
+                .chain(["an answer of your own", "open the pane", "park"].map(str::to_string))
+                .collect(),
             About::Confirm(_) => ["yes", "no"].map(str::to_string).to_vec(),
             About::Continue { rows } => rows
                 .iter()
@@ -688,7 +723,7 @@ impl Screen {
         let takes = COMMANDS
             .iter()
             .find(|c| Some(c.0) == before.split(' ').next())
-            .map_or("", |c| c.1);
+            .map_or("", |c| c.1.trim_start_matches('['));
         let (epics, tickets) = (!takes.starts_with("<ticket>"), !takes.starts_with("<epic>"));
         let mut found = Vec::new();
         for e in &self.epics {
@@ -788,7 +823,10 @@ impl Screen {
             // a reloaded bd cache may have shortened the list under the cursor
             let pick = self.pick.min(list.len().saturating_sub(1));
             let row = list.get(pick).copied();
-            let whole = row.is_some_and(|(name, args, _)| args.is_empty() && name == self.input);
+            // an optional argument ([...]) may be left out
+            let whole = row.is_some_and(|(name, args, _)| {
+                (args.is_empty() || args.starts_with('[')) && name == self.input
+            });
             (list.len(), row.map(|row| row.0.to_string()), whole, pick)
         };
         self.pick = pick;
@@ -828,6 +866,7 @@ impl Screen {
                     self.composing = false;
                     let word = match self.questions[0].about {
                         About::Asked(Ask::Plan { .. }) => "feedback",
+                        About::Asked(Ask::Question { .. }) => "your answer",
                         _ => "your prompt",
                     };
                     self.reply(word, Answer::Prompt(prompt.trim().to_string()));
@@ -886,6 +925,15 @@ impl Screen {
                 let feedback = f.clone();
                 self.reply("feedback", Answer::Prompt(feedback));
             }
+            // the Stage's options, an answer of your own, open the pane, park
+            (About::Asked(Ask::Question { options, pane, .. }), n) => {
+                match (options.get(n).cloned(), n.saturating_sub(options.len())) {
+                    (Some(option), _) => self.reply(&option.clone(), Answer::Prompt(option)),
+                    (None, 0) => self.composing = true,
+                    (None, 1) => self.open_pane(pane.clone()),
+                    (None, _) => self.reply("park", Answer::Act(Action::Park)),
+                }
+            }
             (About::Confirm(_), 0) => {
                 let About::Confirm(pending) = self.questions.remove(0).about else {
                     unreachable!()
@@ -933,7 +981,8 @@ impl Screen {
                 Ask::Wake { pane, .. }
                 | Ask::Blocked { pane }
                 | Ask::Plan { pane, .. }
-                | Ask::PlanFailed { pane, .. },
+                | Ask::PlanFailed { pane, .. }
+                | Ask::Question { pane, .. },
             ),
         ) = (&self.run, &q.about)
         {
@@ -1019,6 +1068,7 @@ impl Screen {
                     self.start(&id, max, epic, false);
                 }
             }
+            "/continue" if !query.is_empty() => self.continue_ticket(query),
             "/continue" => {
                 if self.busy() {
                     return;
@@ -1050,6 +1100,13 @@ impl Screen {
                 false => self.hidden = false,
             },
             "/stop-work" => self.stop_work(),
+            "/away" => {
+                let away = !self.cfg.away.fetch_xor(true, Ordering::SeqCst);
+                self.say(match away {
+                    true => "away: on, a Stage's question parks its Ticket",
+                    false => "away: off",
+                });
+            }
             "/retry" | "/park" | "/address" => {
                 let waiting = self
                     .questions
@@ -1078,6 +1135,35 @@ impl Screen {
                 Some(_) => self.confirm("stop the run and exit?", Pending::Exit),
             },
             _ => self.notice(&format!("unknown command: {line}"), NOTICE_WINDOW),
+        }
+    }
+
+    /// /continue @ticket: unparks that one Ticket at its Stage, watching its
+    /// live session, and puts its next Question first; Away goes off, the
+    /// user being back. With no run live the saved run resumes; in a live
+    /// Epic run it is the scheduler's command, as /retry is.
+    fn continue_ticket(&mut self, id: &str) {
+        let parked = self
+            .state
+            .tickets
+            .get(id)
+            .is_some_and(|ts| ts.status == STATUS_PARKED);
+        match self.run.as_ref().map(|run| (run.epic, run.o.clone())) {
+            _ if !parked => {
+                return self.refuse(&format!("refused: Ticket {} is not parked", suffix(id)))
+            }
+            None => {}
+            Some(_) if self.stopping() => return self.refuse("refused: a run is stopping"),
+            // ponytail: a single-Ticket run has no scheduler to consume it
+            Some((false, _)) => return self.tell(Some(id), "continue refused: not an Epic run"),
+            Some((true, o)) => o.command(&format!("continue-{id}")),
+        }
+        self.first = Some(id.to_string());
+        if self.cfg.away.swap(false, Ordering::SeqCst) {
+            self.say("away: off");
+        }
+        if self.run.is_none() {
+            self.resume(&[(id.to_string(), false)]);
         }
     }
 

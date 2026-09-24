@@ -5,7 +5,7 @@ description: Harness Fix Stage. Applies a Verdict's fix items to a Ticket's bran
 
 # Fix Stage
 
-You are the Fix Stage of the Harness Pipeline, in a fresh session inside the Ticket's worktree. Nobody is watching this pane: do not ask questions, decide and note the decision. Inputs are under **Inputs** at the end.
+You are the Fix Stage of the Harness Pipeline, in a fresh session inside the Ticket's worktree. Ask only what the Ticket, the Fix items, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them. Inputs are under **Inputs** at the end.
 
 ## 1. Apply the fix items
 
@@ -38,3 +38,5 @@ PR: https://github.com/owner/repo/pull/123
 ```
 
 Leave the `PR:` line out when **Open PR** is no. If a fix item cannot be applied, say so here and carry on with the rest; that is still done. Write `STATUS: failed` with the reason only when the tests cannot be made to pass or the PR cannot be opened.
+
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then one line per option starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.

@@ -3,6 +3,8 @@
 //! shows), the MERGE TO UNBLOCK box, the / or @ list, a notice line and the
 //! input line.
 
+use std::sync::atomic::Ordering;
+
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -369,8 +371,13 @@ fn status_line(s: &Screen, width: usize) -> Line<'static> {
     Line::from(waiting(s, spans))
 }
 
-/// The status row ends in the hidden Questions' count.
+/// The status row ends in AWAY while the user is Away, and the hidden
+/// Questions' count.
 fn waiting(s: &Screen, mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    if s.cfg.away.load(Ordering::SeqCst) {
+        spans.push(dot());
+        spans.push(Span::styled("AWAY", bold(ORANGE)));
+    }
     if s.hidden && !s.questions.is_empty() {
         spans.push(dot());
         spans.push(Span::styled(
@@ -545,9 +552,9 @@ fn scrolled(s: &Screen, tree: Vec<Line<'static>>, height: usize) -> Vec<Line<'st
 }
 
 /// A Question's lines: the question, a Judgment's scores, a Wake's pane
-/// tail or a plan from its scroll row as far as `room` lines allow, and
-/// the numbered options with the cursor on one. Everything but the tail or
-/// plan is always there.
+/// tail, a Stage's question or a plan from its scroll row as far as `room`
+/// lines allow, and the numbered options with the cursor on one. Everything
+/// but the tail, question or plan is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
     let q = &s.questions[0];
     let head = match &q.ticket {
@@ -603,7 +610,7 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
                 lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
             }
         }
-        About::Asked(Ask::Plan { plan, .. }) => {
+        About::Asked(Ask::Plan { plan, .. } | Ask::Question { question: plan, .. }) => {
             let rows: Vec<String> = plan.lines().flat_map(|line| wrap(line, width)).collect();
             // Scrolled by rows at this width, and kept inside the plan.
             let from = q.scroll.get().min(rows.len().saturating_sub(fit));

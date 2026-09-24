@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::result::{read_stage_result, ResultRequirements, StageResult};
 use super::stage::{
-    plural, pr_ref, result_name, stage_label, Orchestrator, Stage, StageError, DEBATE, FIX,
+    plural, pr_ref, result_name, stage_label, Orchestrator, Stage, StageError, AWAY, DEBATE, FIX,
     IMPLEMENT, REVIEW,
 };
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
@@ -151,7 +151,8 @@ impl Orchestrator {
     /// the Stage first runs, so a resumed or retried Stage, or one parked by
     /// its guard and continued, is compared with the tree it started from. A
     /// Stage already done with no snapshot is not guarded: the tree may hold
-    /// a later Stage's work.
+    /// a later Stage's work. One parked for asking while the user was Away
+    /// keeps its session and snapshot: /continue @ticket watches it again.
     fn run_read_only(
         &self,
         ticket: &str,
@@ -175,7 +176,11 @@ impl Orchestrator {
             }
         }
         let result = self.run_stage(ticket, st, round, inputs, want);
-        if let Err(StageError::Parked(reason)) = &result {
+        let parked = match &result {
+            Err(StageError::Parked(reason)) if reason != AWAY => Some(reason),
+            _ => None,
+        };
+        if let Some(reason) = parked {
             // a parked Ticket may never continue: end its session, which
             // could still write, and put its tree back now. Once back, the
             // snapshot goes: a parked tree is the user's to edit, and a

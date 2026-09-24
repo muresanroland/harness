@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use super::app::{debate_inputs, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
-use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
+use super::result::{
+    read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult, ASKED,
+};
 use super::state::{load_state, Session, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
 use crate::tools::{RunError, Tools};
@@ -51,6 +53,9 @@ pub(crate) enum StageError {
     Stopped,
 }
 
+/// Why a Ticket whose Stage asked while the user was Away is Parked.
+pub(crate) const AWAY: &str = "asked you while away";
+
 /// How long a just-prompted session may still look idle before an idle pane
 /// with no result counts as a Stage that did not write one.
 pub(super) const SETTLE_TICKS: u32 = 3;
@@ -63,6 +68,9 @@ pub(super) enum Held {
     Retry,
     /// /park, or park answered: the Ticket leaves the Pipeline at its Stage.
     Park,
+    /// The Stage asked while the user was Away: parked, its session left
+    /// waiting in its pane.
+    Away,
     Done(StageResult),
     Stopped,
     /// The Stage cannot advance, for this reason: a Wake.
@@ -100,6 +108,13 @@ pub(crate) enum Ask {
         pane: String,
         feedback: Option<String>,
     },
+    /// The Stage's own question (STATUS: question): its pane, the question
+    /// and its options.
+    Question {
+        pane: String,
+        question: String,
+        options: Vec<String>,
+    },
 }
 
 /// The user's answer to a Question, for the session (pane) it was about.
@@ -134,8 +149,8 @@ pub(crate) struct Event {
     /// Shown on the panel; false keeps housekeeping in the log alone, and
     /// with an ask it is a Question with no line of its own.
     pub(crate) panel: bool,
-    /// The line asks the user something: a Wake, a blocked session, a plan
-    /// or a plan failure.
+    /// The line asks the user something: a Wake, a blocked session, a plan,
+    /// a plan failure or a Stage's own question.
     pub(crate) ask: Option<Ask>,
 }
 
@@ -165,6 +180,9 @@ pub(crate) struct Config {
     pub(crate) poll_prs: Duration,
     /// Tickets in the Pipeline at once.
     pub(crate) max: usize,
+    /// The user is Away: a Stage's question parks its Ticket. The Shell's
+    /// /away flips it, shared with every run; off when the Shell opens.
+    pub(crate) away: Arc<AtomicBool>,
     /// Where every event line goes.
     pub(crate) log: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Every Event, for the Shell's RECENT panel; a dropped receiver is tolerated.
@@ -187,7 +205,8 @@ pub(crate) struct Orchestrator {
     /// /stop-work arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
     /// The Shell's commands waiting to be consumed: retry-<ticket>,
-    /// park-<ticket>, address-<ticket>. Stop is the flag above.
+    /// park-<ticket>, address-<ticket>, continue-<ticket>. Stop is the flag
+    /// above.
     pub(crate) commands: Mutex<Vec<String>>,
     /// Answers to Questions, each for one session: (ticket, pane, answer).
     pub(crate) answers: Mutex<Vec<(String, String, Answer)>>,
@@ -349,8 +368,9 @@ impl Orchestrator {
         self.stop.store(true, Ordering::SeqCst);
     }
 
-    /// A command from the Shell: retry-<ticket>, park-<ticket> or
-    /// address-<ticket>, consumed by the Ticket's own waits or the scheduler.
+    /// A command from the Shell: retry-<ticket>, park-<ticket>,
+    /// address-<ticket> or continue-<ticket>, consumed by the Ticket's own
+    /// waits or the scheduler.
     pub(crate) fn command(&self, name: &str) {
         self.commands.lock().unwrap().push(name.to_string());
     }
@@ -560,7 +580,7 @@ impl Orchestrator {
             .get(st.name)
             .filter(|s| resumed && live.is_none() && !s.id.is_empty())
         {
-            match self.resume(ticket, st, &label, session) {
+            match self.resume(ticket, st, &label, session, &file) {
                 Ok(pane) => live = Some(pane),
                 Err(err) => self.log(
                     ticket,
@@ -582,6 +602,18 @@ impl Orchestrator {
                     Held::Done(result) => return Ok(result),
                     Held::Stopped => return Err(StageError::Stopped),
                     Held::Park => return Err(StageError::Parked(format!("by you at {label}"))),
+                    Held::Away => return Err(StageError::Parked(AWAY.to_string())),
+                    // never a Wake: put to the user, then watched again
+                    Held::Woke(reason) if reason == ASKED => {
+                        let pane = self.ticket(ticket).panes.get(st.name).cloned();
+                        let pane = pane.unwrap_or_default();
+                        held = self
+                            .question(ticket, &label, &pane, &file)
+                            .unwrap_or_else(|| {
+                                self.hold(ticket, st, &label, &pane, &file, want, true, None)
+                            });
+                        continue;
+                    }
                     Held::Retry => {
                         self.update(ticket, |ts| ts.retried = true);
                         retry = true;
@@ -857,14 +889,16 @@ impl Orchestrator {
 
     /// Resumes a stopped run's Stage whose pane is gone: its saved session
     /// in a fresh pane, by id with the Stage's own args (Implement plans
-    /// again, so its plan is judged again), told to continue. Only while
-    /// the Stage's App is unchanged; an error starts it fresh.
+    /// again, so its plan is judged again), told to continue, unless its
+    /// result `file` holds a question it waits on. Only while the Stage's
+    /// App is unchanged; an error starts it fresh.
     fn resume(
         &self,
         ticket: &str,
         st: &Stage,
         label: &str,
         session: &Session,
+        file: &Path,
     ) -> Result<String, String> {
         let row = stage_row(&self.cfg.repo, st)?;
         if row.app.name != session.app {
@@ -876,8 +910,16 @@ impl Orchestrator {
         let mut args = row.resume(&session.id);
         args.extend(self.stage_args(ticket, st, &row)?);
         let patience = Instant::now() + 6 * self.cfg.tick;
+        // A session that asked waits for its answer, not "continue": its
+        // question is put to the user again.
+        let asked = read_question(file).is_some();
         self.start_agent(ticket, st, row.app, &pane, &args, patience)
-            .and_then(|()| self.herdr(&["agent", "prompt", &pane, "continue"]))
+            .and_then(|()| match asked {
+                true => Ok(()),
+                false => self
+                    .herdr(&["agent", "prompt", &pane, "continue"])
+                    .map(drop),
+            })
             .map_err(|err| err.to_string())?;
         let at = self.locate(&pane);
         self.report(ticket, &format!("{label} resumed: {} {at}", row.said()));
@@ -1006,6 +1048,77 @@ impl Orchestrator {
                     return Some(Held::Woke(self.timed_out(st)))
                 }
                 Some(_) => {}
+            }
+            if !self.sleep() {
+                return Some(Held::Stopped);
+            }
+        }
+    }
+
+    /// A Stage's own question, its result file reading STATUS: question:
+    /// never a Wake, never judged, and no deadline runs while it waits.
+    /// Away, the Ticket parks with a bd comment asking for a manual resume,
+    /// its session left waiting in its pane; turning Away on while the
+    /// Question waits does the same. Otherwise it is a Question, whose
+    /// answer goes into the pane as a prompt. None once the answer is sent,
+    /// or the session moves on in the pane.
+    fn question(&self, ticket: &str, label: &str, pane: &str, file: &Path) -> Option<Held> {
+        let mut raised = false;
+        loop {
+            let asked = read_question(file);
+            match self.agent_status(pane).as_deref() {
+                None => return Some(Held::Woke("session died".to_string())),
+                Some("idle" | "done") if asked.is_some() => {}
+                Some(_) => {
+                    if raised {
+                        self.report(ticket, "carrying on"); // answered in the pane
+                    }
+                    return None;
+                }
+            }
+            let (question, options) = asked.unwrap();
+            if self.cfg.away.load(Ordering::SeqCst) {
+                let comment = format!(
+                    "{label} asked a question while you were away and needs a manual resume: \
+                     /continue @{ticket} in the Harness Shell puts it to you, its session \
+                     still waiting in its pane.\n\n{question}\n{}",
+                    options
+                        .iter()
+                        .map(|o| format!("- {o}\n"))
+                        .collect::<String>()
+                );
+                let argv = ["bd", "comments", "add", ticket, comment.trim_end()];
+                if let Err(err) = self.cfg.tools.run(&self.cfg.repo, &argv) {
+                    self.log(ticket, &format!("no bd comment: {err}"));
+                }
+                return Some(Held::Away);
+            }
+            if !raised {
+                self.take_answer(ticket, None); // an answer sent before it is not for it
+                let at = self.locate(pane);
+                let ask = Ask::Question {
+                    pane: pane.to_string(),
+                    question,
+                    options,
+                };
+                self.asks(ticket, &format!("question in {label} {at}"), ask);
+                raised = true;
+            }
+            match self.take_answer(ticket, Some(pane)) {
+                Some(Answer::Act(Action::Park)) => return Some(Held::Park),
+                Some(Answer::Prompt(text)) => {
+                    if let Err(err) = self.herdr(&["agent", "prompt", pane, &text]) {
+                        return Some(Held::Woke(format!("never took your answer: {err}")));
+                    }
+                    self.report(ticket, "sent your answer");
+                    self.settle(pane, &["idle", "done"]);
+                    return None;
+                }
+                Some(other) => self.dropped(ticket, &other),
+                None => {}
+            }
+            if self.consume(&format!("park-{ticket}")) {
+                return Some(Held::Park);
             }
             if !self.sleep() {
                 return Some(Held::Stopped);
@@ -1258,6 +1371,7 @@ impl Config {
             tick: Duration::from_millis(1),
             poll_prs: Duration::from_millis(1),
             max: 3,
+            away: Arc::new(AtomicBool::new(false)),
             log: Arc::new(Mutex::new(Box::new(io::sink()))),
             events: std::sync::mpsc::channel().0,
             timeout: None,

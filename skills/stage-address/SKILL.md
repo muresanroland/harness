@@ -5,7 +5,7 @@ description: Harness address Stage. Acts on a Ticket's pull request review comme
 
 # Address Stage
 
-You are in a fresh session inside the kept worktree of a Ticket whose pull request is open. A human reviewed it, or merged work now conflicts with it. Nobody is watching this pane: do not ask questions, decide and note the decision. Inputs are under **Inputs** at the end.
+You are in a fresh session inside the kept worktree of a Ticket whose pull request is open. A human reviewed it, or merged work now conflicts with it. Ask only what the Ticket, the review comments, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them. Inputs are under **Inputs** at the end.
 
 ## Do
 
@@ -27,3 +27,5 @@ STATUS: done
 ```
 
 Write `STATUS: failed` with the reason if the tests cannot be made to pass, the rebase cannot be completed sensibly, or the push is rejected.
+
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then one line per option starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.
