@@ -1,6 +1,7 @@
 //! The layout: header, status row, Overall, the TICKETS sections, RECENT
 //! under its rule newest at the bottom (a Question takes its place when one
-//! shows), the MERGE TO UNBLOCK box, a notice line and the input line.
+//! shows), the MERGE TO UNBLOCK box, the / or @ list, a notice line and the
+//! input line.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -19,12 +20,13 @@ use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
 use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
-const PLACEHOLDER: &str =
-    "  /start-epic  /start-ticket  /continue  /stop-work  /retry  /park  /address  /exit";
+const PLACEHOLDER: &str = "  / for a command, @ for an Epic or Ticket";
 const COMPOSING: &str = "  your prompt, Enter sends it, Esc goes back";
 const SPINNER: [&str; 4] = ["|", "/", "—", "\\"];
 /// An Epic's color, by its place on the tree.
 const EPIC_COLORS: [Color; 6] = [PURPLE, CYAN, ORANGE, PINK, BLUE, GREEN];
+/// The / or @ list shows this many rows at most.
+const LIST_ROWS: usize = 8;
 
 /// A Ticket's place on the tree.
 #[derive(Clone, Copy, PartialEq)]
@@ -60,7 +62,8 @@ pub(crate) fn ticket_color(id: &str) -> Color {
 }
 
 /// Header, status row, Overall, the TICKETS sections, RECENT (newest at the
-/// bottom), the boxed QUESTION, the red MERGE TO UNBLOCK box, notice, input.
+/// bottom), the boxed QUESTION, the red MERGE TO UNBLOCK box, the / or @
+/// list, notice, input.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let area = f.area();
     let tree = sections(s, area.width.saturating_sub(2) as usize);
@@ -70,13 +73,21 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         0 => 0,
         n => n as u16 + 2,
     };
-    // MERGE TO UNBLOCK takes its rows first. The TICKETS tree takes its
-    // rows and RECENT keeps at least four, its rule and three lines. A Question takes RECENT's space, its pane tail
-    // cut first; TICKETS gives up rows only when the question and its
-    // options do not fit, and on a screen too short for even that the
-    // Question's bottom is cut. A taller tree scrolls (PageUp, PageDown with
-    // the input empty).
+    // MERGE TO UNBLOCK takes its rows first, then the / or @ list, leaving
+    // TICKETS its three. The TICKETS tree takes its rows and RECENT keeps at
+    // least four, its rule and three lines. A Question takes RECENT's space,
+    // its pane tail cut first; TICKETS gives up rows only when the question
+    // and its options do not fit, and on a screen too short for even that
+    // the Question's bottom is cut. A taller tree scrolls (PageUp, PageDown
+    // with the input empty).
     let free = area.height.saturating_sub(head_h + 5 + unblock_h);
+    let list = list_lines(
+        s,
+        area.width.saturating_sub(2) as usize,
+        free.saturating_sub(3),
+    );
+    let list_h = list.len() as u16;
+    let free = free - list_h;
     let mut tickets_h = (tree.len() as u16).min(free.saturating_sub(4).max(3));
     let width = area.width.saturating_sub(4) as usize;
     let asked = s.showing().then(|| {
@@ -90,19 +101,21 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         (lines, height)
     });
     let asked_h = asked.as_ref().map_or(0, |(_, h)| *h);
-    let [head, top, over, _, tickets, recent, question, merge, notice, input] = Layout::vertical([
-        Constraint::Length(head_h),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(tickets_h),
-        Constraint::Min(0),
-        Constraint::Length(asked_h),
-        Constraint::Length(unblock_h),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [head, top, over, _, tickets, recent, question, merge, lists, notice, input] =
+        Layout::vertical([
+            Constraint::Length(head_h),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(tickets_h),
+            Constraint::Min(0),
+            Constraint::Length(asked_h),
+            Constraint::Length(unblock_h),
+            Constraint::Length(list_h),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
     header(f, head, s);
     f.render_widget(
         status_line(s, top.width.saturating_sub(1) as usize),
@@ -141,6 +154,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
             merge,
         );
     }
+    f.render_widget(Paragraph::new(list), inset(lists));
     if let Some((text, _)) = &s.notice {
         f.render_widget(
             Line::from(Span::styled(text.clone(), fg(ORANGE))),
@@ -266,6 +280,12 @@ fn unblock_lines(s: &Screen) -> Vec<Line<'static>> {
             ])
         })
         .collect()
+}
+
+/// An Epic's color by its place on the tree; off the tree, the first.
+fn epic_color(s: &Screen, id: &str) -> Color {
+    let i = listed(s).position(|e| e.id == id).unwrap_or(0);
+    EPIC_COLORS[i % EPIC_COLORS.len()]
 }
 
 /// Idle: every open Epic. Live: only the Epics with a Ticket in the run.
@@ -404,8 +424,8 @@ fn cut(text: &str, width: usize) -> String {
 /// to its rule; live it counts merged, and a working Ticket's dot pulses.
 fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for (i, e) in listed(s).enumerate() {
-        let c = EPIC_COLORS[i % EPIC_COLORS.len()];
+    for e in listed(s) {
+        let c = epic_color(s, &e.id);
         let dim = lerp((c, BORDER), 0.55);
         let all: Vec<Status> = e.tickets.iter().map(|t| status(s, t)).collect();
         let count = |want: Status| all.iter().filter(|st| **st == want).count();
@@ -662,6 +682,49 @@ fn recent_lines(s: &Screen, height: usize, width: u16) -> Vec<Line<'static>> {
             Span::styled(e.text.clone(), fg(TEXT)),
         ]));
     }
+    lines
+}
+
+/// The / or @ list, `width` wide and at most `height` rows: a window of up
+/// to LIST_ROWS rows around the cursor, marked › there, then the keys' hint;
+/// nothing when no list is open or it has no room. A row's key is purple
+/// for a command, else in its Epic's or Ticket's color, bold on the cursor;
+/// its middle column muted; its text TEXT on the cursor, muted otherwise.
+fn list_lines(s: &Screen, width: usize, height: u16) -> Vec<Line<'static>> {
+    let rows = s.list();
+    let shown = LIST_ROWS.min(height.saturating_sub(1) as usize);
+    if rows.is_empty() || shown == 0 {
+        return Vec::new();
+    }
+    let kw = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
+    let mw = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(0);
+    let room = width.saturating_sub(kw + mw + 6);
+    let pick = s.pick.min(rows.len() - 1);
+    let start = (pick + 1).saturating_sub(shown);
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(shown)
+        .map(|(n, &(key, mid, text))| {
+            let on = n == pick;
+            let c = match mid {
+                "Epic" => epic_color(s, key),
+                "Ticket" => ticket_color(key),
+                _ => PURPLE,
+            };
+            Line::from(vec![
+                Span::styled(if on { "› " } else { "  " }, bold(PURPLE)),
+                Span::styled(format!("{key:<kw$}  "), if on { bold(c) } else { fg(c) }),
+                Span::styled(format!("{mid:<mw$}  "), fg(MUTED)),
+                Span::styled(cut(text, room), fg(if on { TEXT } else { MUTED })),
+            ])
+        })
+        .collect();
+    lines.push(Line::from(Span::styled(
+        "  ↑↓ pick · Tab or Enter fills in · Esc clears",
+        fg(BORDER),
+    )));
     lines
 }
 
