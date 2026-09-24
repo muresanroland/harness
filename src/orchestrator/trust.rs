@@ -1,9 +1,8 @@
-//! An agent started in a directory it does not trust yet opens a trust dialog
-//! instead of working. Claude's dialog registers as a blocked pane, Codex's
-//! does not: a Codex pane at its trust screen reads as idle, so the Stage
-//! looks finished the moment it starts and its result file is simply missing.
-//! Neither dialog can be answered by the Orchestrator, so it reads what the
-//! agents themselves record and waits rather than prompting into a dialog.
+//! An App started in a directory it does not trust yet opens a trust dialog
+//! instead of working. herdr reads either App's dialog, Claude's or Codex's,
+//! as a blocked pane. Neither dialog can be answered by the Orchestrator, so
+//! it reads what the Apps themselves record and waits rather than prompting
+//! into a dialog.
 //!
 //! A Ticket's worktree is a fresh directory every time, so this is the normal
 //! case, not an edge one.

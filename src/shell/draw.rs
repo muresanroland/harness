@@ -9,8 +9,8 @@ use ratatui::widgets::{Block, Cell, Padding, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use super::logo::{
-    banner, lerp, quantize, BORDER, GRAY, GREEN, HOP, MUTED, ORANGE, PURPLE, REST, TEXT,
-    TICKET_COLORS,
+    banner, lerp, quantize, BORDER, DARK_ORANGE, GRAY, GREEN, HOP, MUTED, ORANGE, PURPLE, REST,
+    TEXT, TICKET_COLORS,
 };
 use super::{suffix, About, Screen};
 use crate::orchestrator::judgment::plan_said;
@@ -516,7 +516,7 @@ fn input_line(f: &mut Frame, area: Rect, s: &Screen) {
         "▌".fg(TEXT),
     ];
     if s.input.is_empty() {
-        spans.push(if s.composing { COMPOSING } else { PLACEHOLDER }.fg(BORDER));
+        spans.push(if s.composing { COMPOSING } else { PLACEHOLDER }.fg(DARK_ORANGE));
     }
     f.render_widget(Line::from(spans), area);
 }
