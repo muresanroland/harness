@@ -119,9 +119,11 @@ fn config_changed_between_two_stages_reaches_the_second() {
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
 /// before its session starts: unreadable, naming the file, a field not a
 /// string, a Stage other than the Review off claude, or a plan model split
-/// from Implement's model at default.
+/// from Implement's model where either is not a full claude- id.
 #[test]
 fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
+    const SPLIT_NOT_FULL: &str = "{file}: implement plan_model splits from model: \
+         the split needs a full claude- model id for each half";
     for (body, label, reason) in [
         ("{ not json", "implement", "{file}: "),
         (
@@ -135,10 +137,19 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             "moderator runs on claude only",
         ),
         (
-            r#"{"implement": {"plan_model": "fable"}}"#,
+            r#"{"implement": {"plan_model": "claude-fable-5-1"}}"#,
             "implement",
-            "{file}: implement plan_model is set with model default: \
-             the split needs a named model for each half",
+            SPLIT_NOT_FULL,
+        ),
+        (
+            r#"{"implement": {"model": "opus", "plan_model": "claude-fable-5-1"}}"#,
+            "implement",
+            SPLIT_NOT_FULL,
+        ),
+        (
+            r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "fable"}}"#,
+            "implement",
+            SPLIT_NOT_FULL,
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);

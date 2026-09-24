@@ -98,7 +98,7 @@ impl Row {
     }
 
     /// As the started line names it: "claude", "claude opus/high", on a
-    /// split "claude fable→opus/high".
+    /// split "claude claude-fable-5-1→claude-opus-5-5/high".
     pub(crate) fn said(&self) -> String {
         let model = match &self.plan_model {
             Some(plan) => format!("{plan}→{}", self.model),
@@ -151,16 +151,22 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
         return Err(format!("{key} runs on claude only"));
     }
     let model = field("model", "default")?;
-    // A plan model split from Implement's needs both halves named.
+    // A split: a plan model other than Implement's, not default.
     let plan_model = match key {
         "implement" => Some(field("plan_model", "default")?),
         _ => None,
     }
     .filter(|plan| *plan != model && plan != "default");
-    if plan_model.is_some() && model == "default" {
+    // Full ids: opusplan's remap env takes no alias, and an alias for one
+    // half may resolve through the other's remap to the same model.
+    let full = |m: &str| m.starts_with("claude-");
+    if plan_model
+        .as_deref()
+        .is_some_and(|plan| !full(plan) || !full(&model))
+    {
         return Err(format!(
-            "{}: implement plan_model is set with model default: \
-             the split needs a named model for each half",
+            "{}: implement plan_model splits from model: \
+             the split needs a full claude- model id for each half",
             path.display()
         ));
     }

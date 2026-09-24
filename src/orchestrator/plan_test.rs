@@ -405,7 +405,7 @@ fn feedback_enters_only_on_tell_claude_what_to_change() {
 /// --model, today's settings, and enter on option 1.
 #[test]
 fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
-    let split = r#"{"implement": {"model": "opus", "effort": "high", "plan_model": "fable"}}"#;
+    let split = r#"{"implement": {"model": "claude-opus-5-5", "effort": "high", "plan_model": "claude-fable-5-1"}}"#;
     let clear_second = [
         "Yes, and use auto mode",
         "Yes, clear context and use auto mode",
@@ -456,8 +456,8 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
                 settings,
                 json!({
                     "env": {
-                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "fable",
-                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "opus",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-fable-5-1",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-opus-5-5",
                     },
                     "showClearContextOnPlanAccept": true,
                     "hooks": {
@@ -469,7 +469,9 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
                     },
                 })
             );
-            w.await_line("hx-1 implement started: claude fable→opus/high (pane 1-1)");
+            w.await_line(
+                "hx-1 implement started: claude claude-fable-5-1→claude-opus-5-5/high (pane 1-1)",
+            );
         } else {
             assert!(start.ends_with(" --model opus --effort high"), "{start}");
             assert_eq!(settings, json!({ "hooks": { "PreToolUse": plan_hook } }));
@@ -485,7 +487,7 @@ fn a_split_with_no_clear_context_option_is_a_plan_failure() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     write_file(
         &w.repo.join(".harness/config.json"),
-        r#"{"implement": {"model": "opus", "plan_model": "fable"}}"#,
+        r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "claude-fable-5-1"}}"#,
     );
     plans(&w, "idle");
     o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));

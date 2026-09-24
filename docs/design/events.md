@@ -21,7 +21,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | Moment | Wording |
 |---|---|
 | worktree created | branch `b` created |
-| Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .harness/config.json: implement started: claude opus/high (pane 2-1) · on a split, a plan model other than Implement's: implement started: claude fable→opus/high (pane 2-1) |
+| Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .harness/config.json: implement started: claude opus/high (pane 2-1) · on a split, a plan model other than Implement's: implement started: claude claude-fable-5-1→claude-opus-5-5/high (pane 2-1) |
 | Stage prompted | *log only:* implement prompted, waiting for implement.md |
 | trust dialog | waiting: claude does not trust `dir` yet, open it there once and accept (pane 2-1) |
 | trust accepted | claude trusts `dir` now, carrying on |
