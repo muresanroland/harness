@@ -1115,6 +1115,9 @@ impl Orchestrator {
             match self.take_answer(ticket, Some(pane)) {
                 Some(Answer::Act(Action::Park)) => return Some(Held::Park),
                 Some(Answer::Prompt(text)) => {
+                    // An answered question is no longer open: a session that
+                    // goes idle without rewriting it has no result.
+                    let _ = fs::remove_file(file);
                     if let Err(err) = self.herdr(&["agent", "prompt", pane, &text]) {
                         return Some(Held::Woke(format!("never took your answer: {err}")));
                     }

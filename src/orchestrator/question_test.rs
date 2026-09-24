@@ -2,6 +2,7 @@
 //! or with Away on, its Ticket parked with a bd comment and its pane open.
 
 use super::judgment::fake::Fake;
+use super::judgment::Action;
 use super::result::ResultRequirements;
 use super::stage::{Answer, Ask, ADDRESS, AWAY};
 use super::state::STATUS_PARKED;
@@ -67,6 +68,34 @@ fn a_stage_question_is_put_to_you_never_judged_and_the_deadline_waits() {
         typesafe.requests().is_empty(),
         "a Judgment was asked about a question"
     );
+}
+
+#[test]
+fn an_answered_question_left_unwritten_is_no_result_not_asked_again() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.typesafe = Fake::down();
+    w.session(|p| match p.text.as_str() {
+        "ours" => (String::new(), "idle".to_string()), // idle, the file not rewritten
+        _ if p.stage == "implement" => (ASKS.to_string(), "idle".to_string()),
+        _ => succeed(p),
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let Some(Ask::StageQuestion { pane, .. }) = w.await_event("question in implement").ask else {
+        panic!("no Question raised");
+    };
+    o.answer("hx-1", &pane, Answer::Prompt("ours".to_string()));
+    w.await_line("hx-1 stuck in implement: went idle without a result");
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
+
+    let asked = w
+        .lines()
+        .iter()
+        .filter(|l| l.contains("question in"))
+        .count();
+    assert_eq!(asked, 1, "the answered question was asked again");
 }
 
 #[test]

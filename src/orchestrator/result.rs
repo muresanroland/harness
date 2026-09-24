@@ -92,15 +92,12 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
 /// that start with "- " (a hunk in the question keeps its removed lines).
 pub(crate) fn read_question(path: &Path) -> Option<(String, Vec<String>)> {
     let body = fs::read_to_string(path).ok()?;
-    let mut lines = body.lines();
+    let mut lines = body.trim_end().lines();
     let first = lines.next()?.trim().strip_prefix("STATUS:")?;
     if !first.trim().eq_ignore_ascii_case("question") {
         return None;
     }
-    let mut lines: Vec<&str> = lines.collect();
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
-    }
+    let lines: Vec<&str> = lines.collect();
     let from = lines
         .iter()
         .rposition(|line| !line.starts_with("- "))
