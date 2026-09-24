@@ -101,15 +101,9 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Where the long ones do not fit, the badges shorten.
-    // Counted from when this Ticket's plan opened: another's starts over.
-    let (ticket, opened) = s
-        .opened
-        .take()
-        .filter(|(ticket, _)| *ticket == q.ticket)
-        .unwrap_or_else(|| (q.ticket.clone(), chrono::Local::now()));
+    let opened = *q.opened.get_or_init(chrono::Local::now);
     let new = s.events.iter().filter(|e| e.time >= opened).count();
-    s.opened.set(Some((ticket, opened)));
+    // Where the long ones do not fit, the badges shorten.
     let badges = |short: bool| {
         let mut badges = Vec::new();
         if let Some(score) = judged {

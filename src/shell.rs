@@ -7,7 +7,7 @@
 //! session) becomes a Question, whose answer goes back to the Orchestrator
 //! for that session; the Orchestrator knows no Shell type.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -128,6 +128,8 @@ pub(crate) struct Question {
     /// The first row of a plan shown, which the modal's reading keys move;
     /// the draw, which knows the width, keeps it inside the plan.
     pub(crate) scroll: Cell<usize>,
+    /// When a plan's modal first drew it, for its count of the lines since.
+    pub(crate) opened: OnceCell<chrono::DateTime<chrono::Local>>,
 }
 
 /// What the screen shows, with no terminal in it.
@@ -184,9 +186,6 @@ pub(crate) struct Screen {
     /// The rows the docked plan's headings start on at the last draw, for
     /// Tab and Shift-Tab.
     pub(crate) heads: RefCell<Vec<usize>>,
-    /// Whose plan the modal shows and when it was first drawn, for its
-    /// count of the lines since; None while none shows.
-    pub(crate) opened: Cell<Option<(Option<String>, chrono::DateTime<chrono::Local>)>>,
     /// The updater thread's checks, applied between commands in poll().
     update_sender: Sender<Checked>,
     update_receiver: Receiver<Checked>,
@@ -235,7 +234,6 @@ impl Screen {
             composing: false,
             page: Cell::new(0),
             heads: RefCell::new(Vec::new()),
-            opened: Cell::new(None),
             update_sender,
             update_receiver,
             update: None,
@@ -509,6 +507,7 @@ impl Screen {
             about: About::Asked(ask),
             cursor: 0,
             scroll: Cell::new(0),
+            opened: OnceCell::new(),
         });
         self.tell(Some(&id), &asking);
     }
@@ -1000,6 +999,7 @@ impl Screen {
             about: About::Confirm(pending),
             cursor: 1,
             scroll: Cell::new(0),
+            opened: OnceCell::new(),
         });
     }
 
@@ -1092,6 +1092,7 @@ impl Screen {
                         about: About::Continue { rows },
                         cursor: 0,
                         scroll: Cell::new(0),
+                        opened: OnceCell::new(),
                     });
                 }
             }

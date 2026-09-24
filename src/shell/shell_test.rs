@@ -3049,6 +3049,26 @@ fn plan_screen(repo: &Path) -> Screen {
     s
 }
 
+/// The screen with plans for 11 and 12, 11's drawn and a line said since.
+fn two_plans(repo: &Path) -> Screen {
+    let mut s = screen_at(Fake::quiet(), repo);
+    for id in ["harness-kqe.11", "harness-kqe.12"] {
+        s.push(asking(
+            id,
+            "plan ready in implement (pane 2-1)",
+            Ask::Plan {
+                pane: format!("w1:{id}"),
+                plan: "# a plan\n".to_string(),
+                judged: None,
+                feedback: None,
+            },
+        ));
+    }
+    render(&s, 160, 45);
+    s.say("a line after it opened");
+    s
+}
+
 /// The docked plan's body rows at 160x45, between its lead and the rule
 /// over the options, the box's border and scrollbar trimmed.
 fn plan_body(s: &Screen) -> Vec<String> {
@@ -3380,21 +3400,7 @@ fn answering_the_plan_shows_the_wake_queued_behind_in_the_question_box() {
 #[test]
 fn a_plan_behind_the_plan_counts_its_own_new_lines() {
     let repo = TempDir::new();
-    let mut s = screen_at(Fake::quiet(), repo.path());
-    for id in ["harness-kqe.11", "harness-kqe.12"] {
-        s.push(asking(
-            id,
-            "plan ready in implement (pane 2-1)",
-            Ask::Plan {
-                pane: format!("w1:{id}"),
-                plan: "# a plan\n".to_string(),
-                judged: None,
-                feedback: None,
-            },
-        ));
-    }
-    render(&s, 160, 45);
-    s.say("a line after it opened");
+    let mut s = two_plans(repo.path());
     assert!(row(&render(&s, 160, 45), 1).contains("┃ 1 more waiting · 1 new on RECENT "));
     pick(&mut s, 1);
     let buf = render(&s, 160, 45);
@@ -3411,21 +3417,7 @@ fn a_plan_behind_the_plan_counts_its_own_new_lines() {
 #[test]
 fn the_new_lines_count_follows_the_plan_on_screen() {
     let repo = TempDir::new();
-    let mut s = screen_at(Fake::quiet(), repo.path());
-    for id in ["harness-kqe.11", "harness-kqe.12"] {
-        s.push(asking(
-            id,
-            "plan ready in implement (pane 2-1)",
-            Ask::Plan {
-                pane: format!("w1:{id}"),
-                plan: "# a plan\n".to_string(),
-                judged: None,
-                feedback: None,
-            },
-        ));
-    }
-    render(&s, 160, 45);
-    s.say("a line after it opened");
+    let mut s = two_plans(repo.path());
     pick(&mut s, 4); // open the pane
     assert!(row(&render(&s, 160, 45), 1).contains("1 new on RECENT"));
     pick(&mut s, 2); // feedback of your own

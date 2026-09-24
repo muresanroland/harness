@@ -67,7 +67,6 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     if s.modal() {
         modal::plan(f, s);
     } else {
-        s.opened.set(None);
         shell(f, f.area(), s);
     }
     if !s.truecolor {
