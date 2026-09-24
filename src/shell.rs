@@ -683,7 +683,7 @@ impl Screen {
         }
         // With the input line empty, Up and Down (and the wheel, which the
         // terminal sends as them) scroll RECENT; PageUp and PageDown TICKETS.
-        let scroll = |by: isize| self.scroll.set(self.scroll.get().saturating_add_signed(by));
+        let scroll = |rows: &Cell<usize>, by: isize| rows.set(rows.get().saturating_add_signed(by));
         match key.code {
             KeyCode::Char(_) if held => {}
             KeyCode::Char(c) => self.input.push(c),
@@ -692,12 +692,10 @@ impl Screen {
                     scroll_plan(q, key.code);
                 }
             }
-            KeyCode::Down if self.input.is_empty() => {
-                self.recent.set(self.recent.get().saturating_sub(1))
-            }
-            KeyCode::Up if self.input.is_empty() => self.recent.set(self.recent.get() + 1),
-            KeyCode::PageDown if self.input.is_empty() => scroll(10),
-            KeyCode::PageUp if self.input.is_empty() => scroll(-10),
+            KeyCode::Down if self.input.is_empty() => scroll(&self.recent, -1),
+            KeyCode::Up if self.input.is_empty() => scroll(&self.recent, 1),
+            KeyCode::PageDown if self.input.is_empty() => scroll(&self.scroll, 10),
+            KeyCode::PageUp if self.input.is_empty() => scroll(&self.scroll, -10),
             KeyCode::Backspace => {
                 self.input.pop();
             }

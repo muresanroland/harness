@@ -70,8 +70,8 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         0 => 0,
         n => n as u16 + 2,
     };
-    // The TICKETS tree takes its rows and RECENT keeps at least four, its
-    // rule and three lines. A Question takes RECENT's space, its pane tail
+    // MERGE TO UNBLOCK takes its rows first. The TICKETS tree takes its
+    // rows and RECENT keeps at least four, its rule and three lines. A Question takes RECENT's space, its pane tail
     // cut first; TICKETS gives up rows only when the question and its
     // options do not fit, and on a screen too short for even that the
     // Question's bottom is cut. A taller tree scrolls (PageUp, PageDown with
@@ -225,18 +225,18 @@ fn status(s: &Screen, t: &BdIssue) -> Status {
         Some(STATUS_PR_OPEN) => Status::ToMerge,
         Some(STATUS_MERGED) => Status::Merged,
         _ if t.status == "closed" => Status::Merged,
-        _ if s.running && waits_on(s, t).is_some() => Status::Waiting,
+        _ if s.running && waits_on(s, t).next().is_some() => Status::Waiting,
         _ if !s.running && t.status == "in_progress" => Status::Working,
         _ => Status::Queued,
     }
 }
 
-/// The open PR a Ticket waits on: its bd blocks dependency on a Ticket whose
-/// PR is open (ADR 0002).
-fn waits_on<'a>(s: &'a Screen, t: &BdIssue) -> Option<&'a str> {
+/// The open PRs a Ticket waits on: its bd blocks dependencies on Tickets
+/// whose PR is open (ADR 0002).
+fn waits_on<'a>(s: &'a Screen, t: &'a BdIssue) -> impl Iterator<Item = &'a str> {
     t.blockers()
         .filter_map(|id| s.state.tickets.get(id))
-        .find(|ts| ts.status == STATUS_PR_OPEN)
+        .filter(|ts| ts.status == STATUS_PR_OPEN)
         .map(|ts| ts.pr.as_str())
 }
 
@@ -248,14 +248,10 @@ fn unblock_lines(s: &Screen) -> Vec<Line<'static>> {
         if status(s, t) != Status::Waiting {
             continue;
         }
-        let open = t
-            .blockers()
-            .filter_map(|id| s.state.tickets.get(id))
-            .filter(|ts| ts.status == STATUS_PR_OPEN);
-        for ts in open {
-            match prs.iter_mut().find(|(pr, _)| *pr == ts.pr) {
+        for pr in waits_on(s, t) {
+            match prs.iter_mut().find(|(p, _)| *p == pr) {
                 Some((_, waiting)) => waiting.push(suffix(&t.id)),
-                None => prs.push((&ts.pr, vec![suffix(&t.id)])),
+                None => prs.push((pr, vec![suffix(&t.id)])),
             }
         }
     }
@@ -477,7 +473,10 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
             let ic = if pulsing { lerp((ic, BORDER), 0.6) } else { ic };
             let stage = match (st, s.state.tickets.get(&t.id)) {
                 (Status::Waiting, _) => {
-                    format!("waits on {}", pr_ref(waits_on(s, t).unwrap_or_default()))
+                    format!(
+                        "waits on {}",
+                        pr_ref(waits_on(s, t).next().unwrap_or_default())
+                    )
                 }
                 (Status::ToMerge, Some(ts)) => pr_ref(&ts.pr),
                 (Status::Merged, Some(ts)) => format!("{} merged", pr_ref(&ts.pr)),
@@ -637,7 +636,7 @@ fn recent_lines(s: &Screen, height: usize, width: u16) -> Vec<Line<'static>> {
             None => (e, "harness".to_string(), MUTED),
         })
         .collect();
-    let w = shown
+    let name_width = shown
         .iter()
         .map(|(_, name, _)| name.chars().count())
         .max()
@@ -659,7 +658,7 @@ fn recent_lines(s: &Screen, height: usize, width: u16) -> Vec<Line<'static>> {
     for (e, name, c) in shown {
         lines.push(Line::from(vec![
             Span::styled(format!("{}  ", e.time.format("%H:%M:%S")), fg(MUTED)),
-            Span::styled(format!("{:<w$}  ", cut(&name, w)), fg(c)),
+            Span::styled(format!("{:<name_width$}  ", cut(&name, name_width)), fg(c)),
             Span::styled(e.text.clone(), fg(TEXT)),
         ]));
     }
