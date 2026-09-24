@@ -219,6 +219,28 @@ fn a_changed_app_or_no_session_id_starts_the_stage_fresh() {
 }
 
 #[test]
+fn a_failed_resumed_start_or_continue_starts_the_stage_fresh() {
+    for failing in ["herdr agent start h-hx-1-review ", "herdr agent prompt "] {
+        let (w, stopped) = stopped_at("review", "review 1", true);
+        panes_gone(&w);
+        let o = restarted(&w, &stopped);
+        w.session(succeed);
+        w.fail_once(failing, "boom");
+        let before = w.calls().len();
+        spawn_ticket(o.clone(), "hx-1").wait();
+
+        w.await_line("hx-1 PR #hx-1 opened");
+        let starts = starts(&w, before, "review");
+        assert!(
+            starts.len() == 2 && starts[0].contains("resume") && !starts[1].contains("resume"),
+            "with {failing:?} failing, Review starts = {starts:?}, want the resume then a fresh one"
+        );
+        let said = w.await_event("review 1 not resumed: ").text;
+        assert!(said.ends_with(": boom, starting it fresh"), "{said}");
+    }
+}
+
+#[test]
 fn retry_of_a_parked_ticket_never_resumes() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
     {
