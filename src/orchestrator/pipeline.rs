@@ -175,9 +175,12 @@ impl Orchestrator {
         }
         let result = self.run_stage(ticket, st, round, inputs, want);
         if matches!(result, Err(StageError::Parked(_))) {
-            // a parked Ticket may never continue: put its tree back now,
-            // keeping the snapshot for the resumed Stage's guard
-            let _ = self.guard(ticket, &label, &snapshot);
+            // a parked Ticket may never continue: put its tree back now. Once
+            // back, the snapshot goes: a parked tree is the user's to edit,
+            // and a continued Stage is compared with what they left
+            if self.guard(ticket, &label, &snapshot).is_ok() {
+                let _ = fs::remove_file(&snapshot);
+            }
         }
         let result = result?;
         self.guard(ticket, &label, &snapshot)?;
@@ -216,9 +219,8 @@ impl Orchestrator {
     /// already dirty before the Stage holds work that is not the Stage's
     /// (Implement's, a user's), so it is never reset: a change to it parks
     /// the Ticket, as does a tree that cannot be put back, since Fix would
-    /// commit it. The snapshot is kept: the caller drops it once the Stage
-    /// is done and its tree matches or is put back, so a continued Ticket is
-    /// guarded again.
+    /// commit it. The snapshot is kept: the caller drops it once the tree
+    /// matches or is put back, so a Ticket parked here is guarded again.
     fn guard(&self, ticket: &str, label: &str, snapshot: &Path) -> Result<(), StageError> {
         let Some((head, tree)) = fs::read(snapshot)
             .ok()

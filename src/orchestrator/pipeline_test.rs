@@ -260,8 +260,8 @@ fn a_review_or_debate_that_dirties_or_commits_the_worktree_is_restored_and_says_
 }
 
 /// A Review parked after it dirtied the worktree has the tree put back at
-/// once, since the Ticket may never continue; the snapshot stays for the
-/// resumed Review's guard.
+/// once, since the Ticket may never continue. The parked tree is then the
+/// user's: an edit made while parked survives the continued Review.
 #[test]
 fn a_review_parked_after_dirtying_the_worktree_is_restored_at_once() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -274,10 +274,11 @@ fn a_review_parked_after_dirtying_the_worktree_is_restored_at_once() {
         *changed.lock().unwrap() = " M src/lib.rs\n".to_string();
         (String::new(), "blocked".to_string())
     });
+    let git = status.clone();
     w.hook(move |_, argv| match argv {
-        ["git", "status", "--porcelain"] => Some(Ok(status.lock().unwrap().clone())),
+        ["git", "status", "--porcelain"] => Some(Ok(git.lock().unwrap().clone())),
         ["git", "reset", "--hard", _] => {
-            status.lock().unwrap().clear();
+            git.lock().unwrap().clear();
             Some(Ok(String::new()))
         }
         _ => None,
@@ -291,7 +292,17 @@ fn a_review_parked_after_dirtying_the_worktree_is_restored_at_once() {
     w.await_line("hx-1 review 1 changed the worktree: restored");
     w.await_line("hx-1 parked: by you at review 1");
     assert_eq!(w.called("git clean -fd").len(), 1);
-    assert!(o.run_dir("hx-1").join("before-review-1.json").exists());
+    assert!(!o.run_dir("hx-1").join("before-review-1.json").exists());
+
+    // the user edits the parked tree, then continues with a fresh Review
+    *status.lock().unwrap() = " M notes.md\n".to_string();
+    w.session(succeed);
+    o.update("hx-1", |ts| {
+        ts.panes.remove("review");
+    });
+    o.run_ticket("hx-1");
+    w.await_line("hx-1 PR #hx-1 opened");
+    assert_eq!(w.called("git clean -fd").len(), 1, "user edit reset");
 }
 
 /// A Ticket parked because its Review changed a worktree already dirty is
