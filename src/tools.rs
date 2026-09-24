@@ -1,4 +1,4 @@
-//! Tools is the one seam to every external tool (herdr, bd, gh, git).
+//! Tools is the one seam to every external tool (herdr, bd, gh, git, claude).
 
 use std::fmt;
 use std::path::Path;
