@@ -69,7 +69,7 @@ harness init
    harness
    ```
 
-   It shows the open Epics and their Tickets. Type `/start-epic`, then press Tab to complete the Epic from its id or part of its title.
+   It shows the open Epics and their Tickets. Type `/` to pick a command, then `@` to pick an Epic or Ticket by its id or part of its title; Tab or Enter fills in the one under the cursor.
 
 3. Watch progress in the Shell. Each Ticket's panes appear in its own herdr tab. Answer Questions as they come up: plan approvals, sessions waiting at a prompt, and Wakes the Judgment wasn't sure about.
 

@@ -45,6 +45,31 @@ const DEFAULT_MAX: usize = 3;
 const KEPT_EVENTS: usize = 1000;
 /// An update another process's run keeps from installing is tried this often.
 const RETRY: Duration = Duration::from_secs(60);
+/// Every command the Shell takes: its name, arguments and what it does. The
+/// / list shows it; nothing else lists the commands.
+const COMMANDS: [(&str, &str, &str); 9] = [
+    (
+        "/start-epic",
+        "<epic> [--max N]",
+        "run every Ticket of an open Epic",
+    ),
+    ("/start-ticket", "<ticket>", "run one Ticket"),
+    ("/continue", "", "resume the saved run"),
+    ("/stop-work", "", "stop the run, the panes stay"),
+    (
+        "/retry",
+        "<ticket>",
+        "the Ticket's Stage again, in a fresh session",
+    ),
+    ("/park", "<ticket>", "take a Ticket out to wait for you"),
+    (
+        "/address",
+        "<ticket>",
+        "resolve a PR's conflicts or review comments",
+    ),
+    ("/questions", "", "show the hidden Questions"),
+    ("/exit", "", "leave the Harness"),
+];
 
 /// An open Epic and its child Tickets, one row each on the TICKETS tree.
 pub(crate) struct Epic {
@@ -120,6 +145,8 @@ pub(crate) struct Screen {
     /// The panel's lines, oldest first.
     pub(crate) events: Vec<Event>,
     pub(crate) input: String,
+    /// The open list's cursor row, back to the top on every key that types.
+    pub(crate) pick: usize,
     /// The first TICKETS row shown, for a tree taller than its room; the
     /// draw, which knows the height, keeps it inside the tree.
     pub(crate) scroll: Cell<usize>,
@@ -181,6 +208,7 @@ impl Screen {
             state,
             events: Vec::new(),
             input: String::new(),
+            pick: 0,
             scroll: Cell::new(0),
             recent: Cell::new(0),
             notice: None,
@@ -625,6 +653,78 @@ impl Screen {
         }
     }
 
+    /// The list open above the input line, each row what it fills in, its
+    /// middle column and its text; empty when none is. '/' with no space yet
+    /// lists the commands containing it, else those it is a subsequence of.
+    /// '@<query>' ending the line lists the open Epics and Tickets whose id
+    /// contains it, then whose title does, then whose id it is a subsequence
+    /// of; after a command, only what it takes. None opens on a prompt of
+    /// your own.
+    pub(crate) fn list(&self) -> Vec<(&str, &str, &str)> {
+        if self.composing {
+            return Vec::new();
+        }
+        let input = self.input.to_lowercase();
+        if input.starts_with('/') && !input.contains(' ') {
+            let containing: Vec<_> = COMMANDS
+                .into_iter()
+                .filter(|c| c.0.contains(&input))
+                .collect();
+            if !containing.is_empty() {
+                return containing;
+            }
+            return COMMANDS
+                .into_iter()
+                .filter(|c| subsequence(&input, c.0))
+                .collect();
+        }
+        let Some((before, q)) = input
+            .rsplit_once('@')
+            .filter(|(before, q)| !q.contains(' ') && (before.is_empty() || before.ends_with(' ')))
+        else {
+            return Vec::new();
+        };
+        // What the command before it takes, by its args in COMMANDS.
+        let takes = COMMANDS
+            .iter()
+            .find(|c| Some(c.0) == before.split(' ').next())
+            .map_or("", |c| c.1);
+        let (epics, tickets) = (!takes.starts_with("<ticket>"), !takes.starts_with("<epic>"));
+        let mut found = Vec::new();
+        for e in &self.epics {
+            if epics {
+                found.push((e.id.as_str(), "Epic", e.title.as_str()));
+            }
+            for t in e.tickets.iter().filter(|t| tickets && t.status != "closed") {
+                found.push((t.id.as_str(), "Ticket", t.title.as_str()));
+            }
+        }
+        let rank = |(id, _, title): &(&str, &str, &str)| {
+            let (id, title) = (id.to_lowercase(), title.to_lowercase());
+            [id.contains(q), title.contains(q), subsequence(q, &id)]
+                .iter()
+                .position(|hit| *hit)
+        };
+        let mut ranked: Vec<_> = found
+            .into_iter()
+            .filter_map(|row| Some((rank(&row)?, row)))
+            .collect();
+        ranked.sort_by_key(|(r, _)| *r);
+        ranked.into_iter().map(|(_, row)| row).collect()
+    }
+
+    /// Tab or Enter on an open list: a command fills in as '<command> ', an
+    /// Epic or Ticket id in place of '@<query>', a space after either.
+    fn fill(&mut self, picked: &str) {
+        let at = match picked.starts_with('/') {
+            true => 0,
+            false => self.input.rfind('@').unwrap_or(0),
+        };
+        self.input.truncate(at);
+        self.input.push_str(picked);
+        self.input.push(' ');
+    }
+
     pub(crate) fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
@@ -676,17 +776,43 @@ impl Screen {
                     self.questions.remove(0);
                     self.notice("cancelled", NOTICE_WINDOW);
                 }
-                KeyCode::Char(c) if !held => self.input.push(c),
+                KeyCode::Char(c) if !held => {
+                    self.input.push(c);
+                    self.pick = 0;
+                }
                 _ => {}
             }
             return;
         }
-        // With the input line empty, Up and Down (and the wheel, which the
-        // terminal sends as them) scroll RECENT; PageUp and PageDown TICKETS.
+        // With a list open Up and Down move its cursor, Tab fills in its row
+        // and so does Enter, but on a command typed whole that takes no
+        // argument Enter runs it. With the input line empty, Up and Down (and
+        // the wheel, which the terminal sends as them) scroll RECENT; PageUp
+        // and PageDown TICKETS.
+        let (open, picked, whole, pick) = {
+            let list = self.list();
+            // a reloaded bd cache may have shortened the list under the cursor
+            let pick = self.pick.min(list.len().saturating_sub(1));
+            let row = list.get(pick).copied();
+            let whole = row.is_some_and(|(name, args, _)| args.is_empty() && name == self.input);
+            (list.len(), row.map(|row| row.0.to_string()), whole, pick)
+        };
+        self.pick = pick;
         let scroll = |rows: &Cell<usize>, by: isize| rows.set(rows.get().saturating_add_signed(by));
         match key.code {
             KeyCode::Char(_) if held => {}
-            KeyCode::Char(c) => self.input.push(c),
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.pick = 0;
+            }
+            KeyCode::Up if open > 0 => self.pick = self.pick.saturating_sub(1),
+            KeyCode::Down if open > 0 => self.pick = (self.pick + 1).min(open - 1),
+            KeyCode::Tab => {
+                if let Some(picked) = picked {
+                    self.fill(&picked);
+                }
+            }
+            KeyCode::Enter if picked.is_some() && !whole => self.fill(&picked.unwrap()),
             KeyCode::PageDown | KeyCode::PageUp if self.composing => {
                 if let Some(q) = self.questions.first() {
                     scroll_plan(q, key.code);
@@ -698,6 +824,7 @@ impl Screen {
             KeyCode::PageUp if self.input.is_empty() => scroll(&self.scroll, -10),
             KeyCode::Backspace => {
                 self.input.pop();
+                self.pick = 0;
             }
             KeyCode::Esc if self.composing => {
                 self.composing = false;
@@ -705,7 +832,6 @@ impl Screen {
             }
             KeyCode::Esc if self.input.is_empty() => self.hidden = false,
             KeyCode::Esc => self.input.clear(),
-            KeyCode::Tab => self.complete(),
             KeyCode::Enter if self.composing => {
                 let prompt = std::mem::take(&mut self.input);
                 if !prompt.trim().is_empty() {
@@ -887,6 +1013,7 @@ impl Screen {
         }
         let (name, rest) = line.split_once(' ').unwrap_or((line, ""));
         let query = rest.trim();
+        let query = query.strip_prefix('@').unwrap_or(query); // '@<id>' typed, not picked
         match name {
             "/start-epic" | "/start-ticket" => {
                 if self.busy() {
@@ -964,26 +1091,11 @@ impl Screen {
         }
     }
 
-    /// Tab on '/start-epic <q>' or '/start-ticket <q>' fills in the one id
-    /// that matches, or names the matches.
-    fn complete(&mut self) {
-        let Some((name, query)) = self.input.split_once(' ') else {
-            return;
-        };
-        let (name, query) = (name.to_string(), query.trim().to_string());
-        let epics = match name.as_str() {
-            "/start-epic" => true,
-            "/start-ticket" => false,
-            _ => return,
-        };
-        if let Some(id) = self.resolve(&query, epics) {
-            self.input = format!("{name} {id} ");
-        }
-    }
-
-    /// The one open Epic (or Ticket) an argument names: its id exactly, or
-    /// the only one whose id or title contains it. Anything else is a notice.
+    /// The one open Epic (or Ticket) an argument names, a leading @ stripped:
+    /// its id exactly, or the only one whose id or title contains it.
+    /// Anything else is a notice.
     fn resolve(&mut self, query: &str, epics: bool) -> Option<String> {
+        let query = query.strip_prefix('@').unwrap_or(query); // after --max N
         let candidates: Vec<(&str, &str)> = if epics {
             self.epics
                 .iter()
@@ -1191,6 +1303,12 @@ fn reset_ticket(o: &Orchestrator, id: &str) -> io::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Whether `q`'s characters appear in `text` in order.
+fn subsequence(q: &str, text: &str) -> bool {
+    let mut chars = text.chars();
+    q.chars().all(|c| chars.any(|t| t == c))
 }
 
 /// The child suffix of a bd id: harness-kqe.9 is 9.
