@@ -20,6 +20,9 @@ pub(crate) struct App {
     pub(crate) run_dir_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
+    /// The headless read-only command a Debate side and the audit run,
+    /// before the model and effort args; the brief follows.
+    pub(crate) side: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
@@ -53,6 +56,14 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
+        // The tool list takes every arg up to the next flag: before -p it
+        // cannot take the brief as a tool.
+        side: &[
+            "claude",
+            "--disallowedTools",
+            "Edit,Write,NotebookEdit",
+            "-p",
+        ],
         trust: claude_records,
     },
     App {
@@ -62,6 +73,7 @@ pub(crate) static APPS: [App; 2] = [
         run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
+        side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
     },
 ];
@@ -97,6 +109,13 @@ impl Row {
         out
     }
 
+    /// The headless read-only command, as one shell line.
+    pub(crate) fn side_command(&self) -> String {
+        let head = self.app.side.iter().map(|arg| arg.to_string());
+        let words: Vec<String> = head.chain(self.flags()).map(|arg| word(&arg)).collect();
+        words.join(" ")
+    }
+
     /// As the started line names it: "claude", "claude opus/high", on a
     /// split "claude claude-fable-5-1→claude-opus-5-5/high".
     pub(crate) fn said(&self) -> String {
@@ -117,10 +136,43 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
 }
 
+/// An arg as one shell word: quoted unless plainly safe, since a model id
+/// like claude-opus-5-5[1m] is a glob to the shell.
+fn word(arg: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-_./=,:@%+".contains(c);
+    if !arg.is_empty() && arg.chars().all(safe) {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+/// The Moderator's Inputs, read as the Debate starts: each side's command
+/// from its row, and the audit's, which side A's row runs.
+pub(crate) fn debate_inputs(repo: &Path) -> Result<Vec<(&'static str, String)>, String> {
+    let side_a = row(repo, "side_a")?.side_command();
+    let side_b = row(repo, "side_b")?.side_command();
+    Ok(vec![
+        ("Side A command", side_a.clone()),
+        ("Side B command", side_b),
+        ("Audit command", side_a),
+    ])
+}
+
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
 /// change reaches the Stages that start after it. A missing file, row or
 /// field, or an empty one, is the default; a field not a string refuses.
 pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
+    let key = if st.name == DEBATE.name {
+        "moderator"
+    } else {
+        st.name
+    };
+    row(repo, key)
+}
+
+/// The row under key: a Stage's, or a Debate side's (side_a, side_b).
+fn row(repo: &Path, key: &str) -> Result<Row, String> {
     let path = repo.join(".harness").join("config.json");
     let doc: Value = match fs::read(&path) {
         Ok(raw) => {
@@ -129,12 +181,11 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Value::Null,
         Err(err) => return Err(format!("{}: {err}", path.display())),
     };
-    let key = if st.name == DEBATE.name {
-        "moderator"
+    let default = if matches!(key, "review" | "side_b") {
+        "codex"
     } else {
-        st.name
+        "claude"
     };
-    let default = if key == "review" { "codex" } else { "claude" };
     let field = |name: &str, default: &str| match &doc[key][name] {
         Value::Null => Ok(default.to_string()),
         Value::String(v) if v.is_empty() => Ok(default.to_string()),
@@ -144,10 +195,11 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     let name = field("app", default)?;
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
-    // Off claude only the Review runs, until codex has the two-step Plan, the
-    // network the Moderator's claude -p, codex exec and TypeSafe calls need,
-    // and a Git write path: its sandbox keeps Git metadata read-only.
-    if app.name != "claude" && key != "review" {
+    // Off claude only the Review and the Debate's sides run, until codex has
+    // the two-step Plan, the network the Moderator's side commands and
+    // TypeSafe calls need, and a Git write path: its sandbox keeps Git
+    // metadata read-only.
+    if app.name != "claude" && !matches!(key, "review" | "side_a" | "side_b") {
         return Err(format!("{key} runs on claude only"));
     }
     let model = field("model", "default")?;

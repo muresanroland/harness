@@ -217,3 +217,80 @@ fn open_pr_prunes_build_scratch_and_keeps_evidence() {
         assert!(run_dir.join(kept).exists(), "evidence pruned: {kept}");
     }
 }
+
+/// A Review that leaves the worktree dirty, or commits, is put back to the
+/// HEAD recorded before it through git, and said on RECENT.
+#[test]
+fn a_review_that_dirties_or_commits_the_worktree_is_restored_and_says_so() {
+    for (head, status) in [("a11ce", " M src/lib.rs\n"), ("c0ffee", "")] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        // The worktree as git reports it: HEAD and the status's output.
+        let tree = Arc::new(Mutex::new(("a11ce".to_string(), String::new())));
+        let reviewed = tree.clone();
+        w.session(move |p| {
+            if p.stage == "review" {
+                *reviewed.lock().unwrap() = (head.to_string(), status.to_string());
+            }
+            succeed(p)
+        });
+        let git = tree.clone();
+        w.hook(move |_, argv| {
+            let mut tree = git.lock().unwrap();
+            match argv {
+                ["git", "rev-parse", "HEAD"] => Some(Ok(format!("{}\n", tree.0))),
+                ["git", "status", "--porcelain"] => Some(Ok(tree.1.clone())),
+                ["git", "reset", "--hard", to] => {
+                    *tree = (to.to_string(), String::new());
+                    Some(Ok(String::new()))
+                }
+                _ => None,
+            }
+        });
+        o.run_ticket("hx-1");
+
+        w.await_line("hx-1 review 1 changed the worktree: restored");
+        assert_eq!(
+            w.called("git reset --hard a11ce").len(),
+            1,
+            "{head} {status:?}"
+        );
+        assert_eq!(w.called("git clean -fd").len(), 1, "{head} {status:?}");
+        w.await_line("hx-1 PR #hx-1 opened");
+    }
+}
+
+#[test]
+fn a_clean_review_changes_nothing() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.run_ticket("hx-1");
+
+    w.await_line("hx-1 PR #hx-1 opened");
+    assert!(
+        !w.called("git rev-parse HEAD").is_empty(),
+        "HEAD never recorded"
+    );
+    assert!(
+        w.called("git reset").is_empty() && w.called("git clean").is_empty(),
+        "{}",
+        w.calls().join("\n")
+    );
+    assert!(!w.lines().iter().any(|l| l.contains("changed the worktree")));
+}
+
+/// A resumed run skips a Review already done, and its guard with it: the
+/// tree may hold a later Stage's work.
+#[test]
+fn a_review_already_done_is_not_guarded_again() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    for name in ["implement.md", "review-1.md"] {
+        write_file(&o.run_dir("hx-1").join(name), "STATUS: done\n");
+    }
+    w.hook(|_, argv| match argv {
+        ["git", "status", "--porcelain"] => Some(Ok(" M src/lib.rs\n".to_string())),
+        _ => None,
+    });
+    o.run_ticket("hx-1");
+
+    w.await_line("hx-1 PR #hx-1 opened");
+    assert!(w.called("git reset").is_empty(), "{}", w.calls().join("\n"));
+}

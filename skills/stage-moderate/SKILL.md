@@ -1,6 +1,6 @@
 ---
 name: stage-moderate
-description: Harness Debate Stage. A neutral Moderator runs a debate between a Claude side and a GPT side over a Ticket's Findings and writes the Verdict. Run by the Harness Orchestrator, not by hand.
+description: Harness Debate Stage. A neutral Moderator runs a debate between side A and side B over a Ticket's Findings and writes the Verdict. Run by the Harness Orchestrator, not by hand.
 ---
 
 # Debate Stage: the Moderator
@@ -9,11 +9,15 @@ You are the Moderator. You run a debate over the Findings raised against a Ticke
 
 Keep working files in the **Run directory**. Number the Findings F1, F2, ... once and keep those numbers throughout.
 
+The **Audit command**, **Side A command** and **Side B command** from Inputs are full headless read-only commands: run each as given, with its prompt as one more quoted argument at the end.
+
+**The read-only guard.** Nothing you run may change the worktree. Before the audit, record `git rev-parse HEAD`. After the audit, and after each side (they run in parallel: check once both have exited), check `git status --porcelain` and `git rev-parse HEAD`. If the status prints anything or HEAD moved, restore with `git reset --hard <recorded HEAD>` and `git clean -fd`, and say in the Verdict's Notes which run changed it: the audit, the opening positions or the critique.
+
 ## 1. Gather the Findings
 
 - Take every Finding from the **Review file**.
 - Add over-engineering Findings: save `git diff <base>...HEAD` (base: `git symbolic-ref --short refs/remotes/origin/HEAD`, fall back to `main`) to `<Run directory>/diff-<Round>.patch`, then run
-  `claude -p "Run the ponytail-review skill on the diff in <that file>. Output one line per finding: - (severity) path:line — what to cut and what replaces it. Output nothing else."`
+  `<Audit command> "Run the ponytail-review skill on the diff in <that file>. Output one line per finding: - (severity) path:line — what to cut and what replaces it. Output nothing else."`
   and add each line it returns as a Finding. If that command fails, continue with the Review's Findings and say so in the Verdict.
 - No Findings at all: skip to step 5 and write a Verdict with no items.
 
@@ -21,8 +25,8 @@ Keep working files in the **Run directory**. Number the Findings F1, F2, ... onc
 
 Give both sides the same brief: the diff file, the numbered Findings, and the instruction "For each Finding say fix or skip and argue why in at most four sentences, citing the code. Fixing means changing this branch before it merges."
 
-- Claude side: `claude -p "<brief>"`
-- GPT side: `codex exec --sandbox read-only "<brief>"`
+- Side A: `<Side A command> "<brief>"`
+- Side B: `<Side B command> "<brief>"`
 
 Start both in the background and wait for both. If a side fails twice, continue with the other side alone and note it in the Verdict; every Finding then counts as disputed.
 

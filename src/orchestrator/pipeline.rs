@@ -3,7 +3,7 @@
 
 use std::fs;
 
-use super::result::ResultRequirements;
+use super::result::{read_stage_result, ResultRequirements};
 use super::stage::{
     plural, pr_ref, result_name, Orchestrator, StageError, DEBATE, FIX, IMPLEMENT, REVIEW,
 };
@@ -46,8 +46,19 @@ impl Orchestrator {
 
         let mut verdicts = Vec::new();
         for round in 1..=MAX_ROUNDS {
-            let review =
-                self.run_stage(ticket, &REVIEW, round, &[], ResultRequirements::default())?;
+            // Only a Review that runs now is guarded: a resumed run skips one
+            // already done, and the tree may hold a later Stage's work.
+            // ponytail: a Review resumed or retried records HEAD then, so a
+            // commit made before is caught only if it left the tree dirty;
+            // keep HEAD in the State if that matters.
+            let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
+            let want = ResultRequirements::default();
+            let head = match read_stage_result(&review_file, want).1.is_empty() {
+                true => None,
+                false => self.head(ticket),
+            };
+            let review = self.run_stage(ticket, &REVIEW, round, &[], want)?;
+            self.guard_review(ticket, round, head)?;
             self.report(
                 ticket,
                 &format!(
@@ -55,7 +66,6 @@ impl Orchestrator {
                     plural(review.findings, "finding")
                 ),
             );
-            let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
             let verdict = self.run_stage(
                 ticket,
                 &DEBATE,
@@ -137,6 +147,49 @@ impl Orchestrator {
             self.prune_run_dir(ticket);
             return Ok(());
         }
+        Ok(())
+    }
+
+    /// The worktree's HEAD; None when git cannot say.
+    fn head(&self, ticket: &str) -> Option<String> {
+        let argv = ["git", "rev-parse", "HEAD"];
+        let head = self.cfg.tools.run(&self.worktree(ticket), &argv).ok()?;
+        Some(head.trim().to_string())
+    }
+
+    /// Puts back a worktree the Review changed, whatever its App (not every
+    /// App has a sandbox): a moved HEAD or a dirty tree is reset to the
+    /// HEAD recorded before it, clean. A tree that cannot be put back parks
+    /// the Ticket, since Fix would commit it.
+    fn guard_review(
+        &self,
+        ticket: &str,
+        round: usize,
+        head: Option<String>,
+    ) -> Result<(), StageError> {
+        let Some(head) = head else {
+            return Ok(());
+        };
+        let (tools, worktree) = (&self.cfg.tools, self.worktree(ticket));
+        let dirty = tools
+            .run(&worktree, &["git", "status", "--porcelain"])
+            .map_or(true, |status| !status.trim().is_empty());
+        if !dirty && self.head(ticket).as_ref() == Some(&head) {
+            return Ok(());
+        }
+        // -fd, not -fdx: ignored build caches stay
+        tools
+            .run(&worktree, &["git", "reset", "--hard", &head])
+            .and_then(|_| tools.run(&worktree, &["git", "clean", "-fd"]))
+            .map_err(|err| {
+                StageError::Parked(format!(
+                    "review {round} changed the worktree, not restored: {err}"
+                ))
+            })?;
+        self.report(
+            ticket,
+            &format!("review {round} changed the worktree: restored"),
+        );
         Ok(())
     }
 
