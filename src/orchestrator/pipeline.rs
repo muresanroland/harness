@@ -175,10 +175,17 @@ impl Orchestrator {
         }
         let result = self.run_stage(ticket, st, round, inputs, want);
         if let Err(StageError::Parked(reason)) = &result {
-            // a parked Ticket may never continue: put its tree back now. Once
-            // back, the snapshot goes: a parked tree is the user's to edit,
-            // and a continued Stage is compared with what they left. A tree
-            // not put back keeps it, and the reason says so
+            // a parked Ticket may never continue: end its session, which
+            // could still write, and put its tree back now. Once back, the
+            // snapshot goes: a parked tree is the user's to edit, and a
+            // continued Stage starts fresh and is compared with what they
+            // left. A tree not put back keeps it, and the reason says so
+            if let Some(pane) = self.ticket(ticket).panes.get(st.name) {
+                let _ = self.herdr(&["pane", "close", pane]);
+                self.update(ticket, |ts| {
+                    ts.panes.remove(st.name);
+                });
+            }
             if let Err(StageError::Parked(kept)) = self.guard(ticket, &label, &snapshot) {
                 return Err(StageError::Parked(format!("{reason}; {kept}")));
             }
