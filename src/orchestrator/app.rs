@@ -28,7 +28,17 @@ pub(crate) struct App {
 pub(crate) static APPS: [App; 2] = [
     App {
         name: "claude",
-        run_dir_args: &["--permission-mode", "auto", "--add-dir", "{}"],
+        // --add-dir lets it read the worktree but also write there: the Edit
+        // deny rule stops the file tools and, merged into the strict Bash
+        // sandbox, every command. The path lands in JSON unescaped.
+        run_dir_args: &[
+            "--permission-mode",
+            "auto",
+            "--add-dir",
+            "{}",
+            "--settings",
+            r#"{"permissions":{"deny":["Edit(/{}/**)"]},"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}"#,
+        ],
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
         trust: claude_records,

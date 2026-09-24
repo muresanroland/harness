@@ -50,8 +50,9 @@ fn a_rows_model_and_effort_add_the_flags_on_claude_and_on_codex() {
     w.await_line("hx-1 fix 1 started: claude sonnet (pane 1-4)");
 }
 
-/// A Review on claude starts in the Run directory with the worktree added,
-/// and waits on claude's trust, not on codex's, its default App's.
+/// A Review on claude starts in the Run directory with the worktree added
+/// read-only, and waits on claude's trust, not on codex's, its default
+/// App's.
 #[test]
 fn a_review_on_claude_runs_in_the_run_directory_and_trust_is_read_through_the_rows_app() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -72,7 +73,11 @@ fn a_review_on_claude_runs_in_the_run_directory_and_trust_is_read_through_the_ro
     w.await_line("hx-1 review 1 started: claude (pane 1-2)");
     assert_eq!(
         argv(&w, "review"),
-        format!("--permission-mode auto --add-dir {worktree}")
+        format!(
+            "--permission-mode auto --add-dir {worktree} --settings \
+             {{\"permissions\":{{\"deny\":[\"Edit(/{worktree}/**)\"]}},\"sandbox\":\
+             {{\"enabled\":true,\"failIfUnavailable\":true,\"allowUnsandboxedCommands\":false}}}}"
+        )
     );
     let split = &w.called("herdr pane split")[0];
     assert!(
