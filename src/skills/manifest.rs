@@ -233,9 +233,10 @@ impl Manifest {
     /// with its link, to `to`, and records `to`. A Shipped skill the repo has
     /// committed stays, where init goes on writing it: moved, it would leave
     /// deletions in the working tree. All or none otherwise: when a skill's
-    /// new place or its link is taken, yours say, nothing moves, since a
-    /// skill left behind would leave the manifest naming what is there. Gives
-    /// why nothing moved, or each skill left where it was and why.
+    /// new place or its link is taken, yours say, nothing moves, and when one
+    /// fails to move, those moved go back, since a skill left behind would
+    /// leave the manifest naming what is there. Gives why nothing moved, or
+    /// each skill left where it was and why.
     pub(crate) fn relocate(
         &mut self,
         repo: &Path,
@@ -268,25 +269,33 @@ impl Manifest {
                 taken.display()
             )];
         }
-        let mut stayed: Vec<String> = kept
-            .iter()
+        for (i, name) in names.iter().enumerate() {
+            if let Err(err) = move_skill(repo, &from, &place, name) {
+                let mut said = vec![format!(
+                    "{name} could not move to {}: {err}: the skills stay where they were",
+                    place.skill(name).display()
+                )];
+                // The one cut short too: a part copy would block the next try.
+                for name in names[..=i].iter().rev() {
+                    if let Err(err) = unmove_skill(repo, &from, &place, name) {
+                        said.push(format!(
+                            "{name} is left at {}: {err}",
+                            place.skill(name).display()
+                        ));
+                    }
+                }
+                return said;
+            }
+        }
+        self.location = Some(to);
+        kept.iter()
             .map(|name| {
                 format!(
                     "{name} stays at {}: the repo has it committed",
                     from.skill(name).display()
                 )
             })
-            .collect();
-        for name in names {
-            if let Err(err) = move_skill(repo, &from, &place, name) {
-                stayed.push(format!(
-                    "{name} stays at {}: {err}",
-                    from.skill(name).display()
-                ));
-            }
-        }
-        self.location = Some(to);
-        stayed
+            .collect()
     }
 
     /// Written to a temp file and renamed into place, so that a cut-short
@@ -764,6 +773,38 @@ fn move_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result<(
         }
     }
     link(to, name)?;
+    relink(repo, name, &old, &new);
+    Ok(())
+}
+
+/// Undoes move_skill, finished or cut short: the skill goes back, or its
+/// copy of a user-level skill goes, and the links with it.
+fn unmove_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result<()> {
+    let (old, new) = (from.skill(name), to.skill(name));
+    if let Some(link) = to
+        .link(name)
+        .filter(|link| fs::read_link(link).is_ok_and(|at| at == to.target(name)))
+    {
+        fs::remove_file(link)?;
+    }
+    if fs::symlink_metadata(&new).is_ok() {
+        if from.root != repo {
+            fs::remove_dir_all(&new)?;
+        } else {
+            // A copy cut short left old whole, and one removed short has it
+            // all at new: copied back over old, either comes out whole.
+            fs::rename(&new, &old)
+                .or_else(|_| copy_dir(&new, &old).and_then(|()| fs::remove_dir_all(&new)))?;
+        }
+    }
+    link(from, name)?;
+    relink(repo, name, &new, &old);
+    Ok(())
+}
+
+/// Points the Ticket worktrees' and Run directories' links to the skill at
+/// old to new.
+fn relink(repo: &Path, name: &str, old: &Path, new: &Path) {
     for kind in ["worktrees", "runs"] {
         for dir in fs::read_dir(repo.join(".harness").join(kind))
             .into_iter()
@@ -774,20 +815,19 @@ fn move_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result<(
                 let link = dir.path().join(sub).join(name);
                 // Moved already, so a link that fails does not undo it.
                 if fs::read_link(&link).is_ok_and(|to| to == old) {
-                    let _ = fs::remove_file(&link).and_then(|()| symlink(&new, &link));
+                    let _ = fs::remove_file(&link).and_then(|()| symlink(new, &link));
                 }
             }
         }
     }
-    Ok(())
 }
 
 /// Where a Ticket's worktree and Run directory get the checkout's skills.
 const SUBS: [&str; 2] = [".claude/skills", ".agents/skills"];
 
 /// Links every skill in the checkout's .harness/skills into each dir's
-/// .claude/skills and .agents/skills, where nothing is there already, and
-/// hides the links from git in the repo's .git/info/exclude: a Ticket's
+/// .claude/skills and .agents/skills, where nothing is there already and
+/// that folder is dir's own (own), and hides the links from git in the repo's .git/info/exclude: a Ticket's
 /// worktree, and the Review's Run directory. Absolute: they are never
 /// committed.
 pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()> {
@@ -814,6 +854,9 @@ pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()
     for name in &names {
         for sub in SUBS {
             for dir in dirs {
+                if !own(dir, sub) {
+                    continue;
+                }
                 let link = dir.join(sub).join(name);
                 if fs::symlink_metadata(&link).is_err() {
                     fs::create_dir_all(dir.join(sub))?;

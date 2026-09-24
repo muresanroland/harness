@@ -806,3 +806,69 @@ fn relocating_away_from_user_level_leaves_the_users_skill_for_other_checkouts() 
         );
     }
 }
+
+#[test]
+fn relocating_puts_back_the_skills_moved_when_one_cannot_move() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, home, tools) = installed_at(Location::User);
+    add(
+        repo.path(),
+        home.path(),
+        &*tools,
+        "mattpocock/skills",
+        Some("code-review"),
+    )
+    .unwrap();
+    // code-review is copied first; tdd's copy stops at a file it cannot read.
+    let locked = home.path().join(".agents/skills/tdd/tests.md");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut manifest = Manifest::load(repo.path()).unwrap();
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Checkout);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("tdd could not move"), "{said:?}");
+    assert_eq!(manifest.location, Some(Location::User));
+    for name in ["tdd", "code-review"] {
+        assert!(!repo.path().join(".harness/skills").join(name).exists());
+        assert!(home
+            .path()
+            .join(".claude/skills")
+            .join(name)
+            .join("SKILL.md")
+            .exists());
+    }
+
+    let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Checkout);
+    assert!(said.is_empty(), "{said:?}");
+    assert_eq!(manifest.location, Some(Location::Checkout));
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".harness/skills/tdd/tests.md")).unwrap(),
+        "good tests"
+    );
+}
+
+#[test]
+fn checkout_skills_are_not_linked_through_a_linked_skills_folder() {
+    let (repo, _home, _tools) = installed_at(Location::Checkout);
+    let outside = TempDir::new();
+    let worktree = repo.path().join(".harness/worktrees/t-1");
+    let run = repo.path().join(".harness/runs/t-1");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    fs::create_dir_all(run.join(".agents")).unwrap();
+    // The repo's own setup, and a folder shared with another checkout.
+    std::os::unix::fs::symlink("../.agents/skills", worktree.join(".claude/skills")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), run.join(".agents/skills")).unwrap();
+    link_checkout_skills(repo.path(), &[&worktree, &run]).unwrap();
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    for skill in [
+        worktree.join(".claude/skills/tdd/SKILL.md"),
+        worktree.join(".agents/skills/tdd/SKILL.md"),
+        run.join(".claude/skills/tdd/SKILL.md"),
+    ] {
+        assert_eq!(
+            fs::read_to_string(&skill).ok().as_deref(),
+            Some(TDD),
+            "{skill:?}"
+        );
+    }
+}
