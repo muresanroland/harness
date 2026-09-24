@@ -123,6 +123,9 @@ pub(crate) struct Screen {
     /// The first TICKETS row shown, for a tree taller than its room; the
     /// draw, which knows the height, keeps it inside the tree.
     pub(crate) scroll: Cell<usize>,
+    /// RECENT's rows scrolled up from the newest, 0 sticking to the bottom;
+    /// the draw, which knows the height, keeps it inside the lines.
+    pub(crate) recent: Cell<usize>,
     /// One line above the input, and when it goes.
     pub(crate) notice: Option<(String, Instant)>,
     ctrl_c: Option<Instant>,
@@ -179,6 +182,7 @@ impl Screen {
             events: Vec::new(),
             input: String::new(),
             scroll: Cell::new(0),
+            recent: Cell::new(0),
             notice: None,
             ctrl_c: None,
             ticks: 0,
@@ -472,6 +476,10 @@ impl Screen {
     /// A line on RECENT.
     fn show(&mut self, event: Event) {
         self.events.push(event);
+        // scrolled up, RECENT stays on the lines it shows
+        if self.recent.get() > 0 {
+            self.recent.set(self.recent.get() + 1);
+        }
         if self.events.len() > KEPT_EVENTS {
             self.events.drain(..self.events.len() - KEPT_EVENTS);
         }
@@ -673,7 +681,9 @@ impl Screen {
             }
             return;
         }
-        let scroll = |by: isize| self.scroll.set(self.scroll.get().saturating_add_signed(by));
+        // With the input line empty, Up and Down (and the wheel, which the
+        // terminal sends as them) scroll RECENT; PageUp and PageDown TICKETS.
+        let scroll = |rows: &Cell<usize>, by: isize| rows.set(rows.get().saturating_add_signed(by));
         match key.code {
             KeyCode::Char(_) if held => {}
             KeyCode::Char(c) => self.input.push(c),
@@ -682,10 +692,10 @@ impl Screen {
                     scroll_plan(q, key.code);
                 }
             }
-            KeyCode::Down if self.input.is_empty() => scroll(1),
-            KeyCode::Up if self.input.is_empty() => scroll(-1),
-            KeyCode::PageDown if self.input.is_empty() => scroll(10),
-            KeyCode::PageUp if self.input.is_empty() => scroll(-10),
+            KeyCode::Down if self.input.is_empty() => scroll(&self.recent, -1),
+            KeyCode::Up if self.input.is_empty() => scroll(&self.recent, 1),
+            KeyCode::PageDown if self.input.is_empty() => scroll(&self.scroll, 10),
+            KeyCode::PageUp if self.input.is_empty() => scroll(&self.scroll, -10),
             KeyCode::Backspace => {
                 self.input.pop();
             }

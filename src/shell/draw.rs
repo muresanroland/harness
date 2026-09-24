@@ -1,6 +1,6 @@
-//! The layout: header, status row, Overall, the TICKETS sections, the RECENT
-//! box newest first (a Question takes its place when one shows), a notice
-//! line and the input line.
+//! The layout: header, status row, Overall, the TICKETS sections, RECENT
+//! under its rule newest at the bottom (a Question takes its place when one
+//! shows), the MERGE TO UNBLOCK box, a notice line and the input line.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -10,7 +10,7 @@ use ratatui::Frame;
 
 use super::logo::{
     banner, lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GRAY, GREEN, HOP, MUTED, ORANGE, PINK,
-    PURPLE, REST, TEXT, TICKET_COLORS,
+    PURPLE, RED, REST, TEXT, TICKET_COLORS,
 };
 use super::{suffix, About, Epic, Screen};
 use crate::orchestrator::judgment::plan_said;
@@ -59,18 +59,24 @@ pub(crate) fn ticket_color(id: &str) -> Color {
     TICKET_COLORS[n.wrapping_sub(1) % TICKET_COLORS.len()]
 }
 
-/// Header, status row, Overall, the TICKETS sections, boxed RECENT (newest
-/// first), the boxed QUESTION, notice, input.
+/// Header, status row, Overall, the TICKETS sections, RECENT (newest at the
+/// bottom), the boxed QUESTION, the red MERGE TO UNBLOCK box, notice, input.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     let area = f.area();
     let tree = sections(s, area.width.saturating_sub(2) as usize);
     let head_h = header_height(area);
-    // The TICKETS tree takes its rows and RECENT keeps at least four. A
-    // Question takes RECENT's space, its pane tail cut first; TICKETS gives
-    // up rows only when the question and its options do not fit, and on a
-    // screen too short for even that the Question's bottom is cut. A taller
-    // tree scrolls (Up, Down, PageUp, PageDown with the input empty).
-    let free = area.height.saturating_sub(head_h + 5);
+    let unblock = unblock_lines(s);
+    let unblock_h = match unblock.len() {
+        0 => 0,
+        n => n as u16 + 2,
+    };
+    // MERGE TO UNBLOCK takes its rows first. The TICKETS tree takes its
+    // rows and RECENT keeps at least four, its rule and three lines. A Question takes RECENT's space, its pane tail
+    // cut first; TICKETS gives up rows only when the question and its
+    // options do not fit, and on a screen too short for even that the
+    // Question's bottom is cut. A taller tree scrolls (PageUp, PageDown with
+    // the input empty).
+    let free = area.height.saturating_sub(head_h + 5 + unblock_h);
     let mut tickets_h = (tree.len() as u16).min(free.saturating_sub(4).max(3));
     let width = area.width.saturating_sub(4) as usize;
     let asked = s.showing().then(|| {
@@ -84,7 +90,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         (lines, height)
     });
     let asked_h = asked.as_ref().map_or(0, |(_, h)| *h);
-    let [head, top, over, _, tickets, recent, question, notice, input] = Layout::vertical([
+    let [head, top, over, _, tickets, recent, question, merge, notice, input] = Layout::vertical([
         Constraint::Length(head_h),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -92,6 +98,7 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Constraint::Length(tickets_h),
         Constraint::Min(0),
         Constraint::Length(asked_h),
+        Constraint::Length(unblock_h),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -106,10 +113,9 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         Paragraph::new(scrolled(s, tree, tickets_h as usize)),
         inset(tickets),
     );
-    let inner = boxed("RECENT").inner(recent);
     f.render_widget(
-        Paragraph::new(recent_lines(s, inner.height as usize, area.width)).block(boxed("RECENT")),
-        recent,
+        Paragraph::new(recent_lines(s, recent.height as usize, area.width)),
+        inset(recent),
     );
     if let Some((lines, _)) = asked {
         let title = match s.questions.len() {
@@ -128,6 +134,12 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
         };
         let block = boxed(&title).title_bottom(Span::styled(format!(" {hint} "), fg(MUTED)));
         f.render_widget(Paragraph::new(lines).block(block), question);
+    }
+    if !unblock.is_empty() {
+        f.render_widget(
+            Paragraph::new(unblock).block(boxed("MERGE TO UNBLOCK").border_style(fg(RED))),
+            merge,
+        );
     }
     if let Some((text, _)) = &s.notice {
         f.render_widget(
@@ -213,19 +225,47 @@ fn status(s: &Screen, t: &BdIssue) -> Status {
         Some(STATUS_PR_OPEN) => Status::ToMerge,
         Some(STATUS_MERGED) => Status::Merged,
         _ if t.status == "closed" => Status::Merged,
-        _ if s.running && waits_on(s, t).is_some() => Status::Waiting,
+        _ if s.running && waits_on(s, t).next().is_some() => Status::Waiting,
         _ if !s.running && t.status == "in_progress" => Status::Working,
         _ => Status::Queued,
     }
 }
 
-/// The open PR a Ticket waits on: its bd blocks dependency on a Ticket whose
-/// PR is open (ADR 0002).
-fn waits_on<'a>(s: &'a Screen, t: &BdIssue) -> Option<&'a str> {
+/// The open PRs a Ticket waits on: its bd blocks dependencies on Tickets
+/// whose PR is open (ADR 0002).
+fn waits_on<'a>(s: &'a Screen, t: &'a BdIssue) -> impl Iterator<Item = &'a str> {
     t.blockers()
         .filter_map(|id| s.state.tickets.get(id))
-        .find(|ts| ts.status == STATUS_PR_OPEN)
+        .filter(|ts| ts.status == STATUS_PR_OPEN)
         .map(|ts| ts.pr.as_str())
+}
+
+/// MERGE TO UNBLOCK's lines: each open PR a waiting Ticket depends on, and
+/// every waiting Ticket's suffix, 'merge to unblock 5, 11: <url>'.
+fn unblock_lines(s: &Screen) -> Vec<Line<'static>> {
+    let mut prs: Vec<(&str, Vec<&str>)> = Vec::new();
+    for t in listed(s).flat_map(|e| &e.tickets) {
+        if status(s, t) != Status::Waiting {
+            continue;
+        }
+        for pr in waits_on(s, t) {
+            match prs.iter_mut().find(|(p, _)| *p == pr) {
+                Some((_, waiting)) => waiting.push(suffix(&t.id)),
+                None => prs.push((pr, vec![suffix(&t.id)])),
+            }
+        }
+    }
+    prs.into_iter()
+        .map(|(pr, waiting)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("merge to unblock {}: ", waiting.join(", ")),
+                    bold(RED),
+                ),
+                Span::styled(pr.to_string(), fg(RED)),
+            ])
+        })
+        .collect()
 }
 
 /// Idle: every open Epic. Live: only the Epics with a Ticket in the run.
@@ -433,7 +473,10 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
             let ic = if pulsing { lerp((ic, BORDER), 0.6) } else { ic };
             let stage = match (st, s.state.tickets.get(&t.id)) {
                 (Status::Waiting, _) => {
-                    format!("waits on {}", pr_ref(waits_on(s, t).unwrap_or_default()))
+                    format!(
+                        "waits on {}",
+                        pr_ref(waits_on(s, t).next().unwrap_or_default())
+                    )
                 }
                 (Status::ToMerge, Some(ts)) => pr_ref(&ts.pr),
                 (Status::Merged, Some(ts)) => format!("{} merged", pr_ref(&ts.pr)),
@@ -575,30 +618,51 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// HH:MM:SS  <suffix> <title>  <event>; the Ticket column colored per Ticket
-/// and cut to `name_width`; run-level rows read harness.
-fn event_line(s: &Screen, ev: &Event, name_width: usize) -> Line<'static> {
-    let (name, color) = match &ev.ticket {
-        Some(id) => (s.name(id), ticket_color(id)),
-        None => ("harness".to_string(), MUTED),
-    };
-    let name: String = name.chars().take(name_width).collect();
-    Line::from(vec![
-        Span::styled(format!("{}  ", ev.time.format("%H:%M:%S")), fg(MUTED)),
-        Span::styled(format!("{name:<name_width$}  "), fg(color)),
-        Span::styled(ev.text.clone(), fg(TEXT)),
-    ])
-}
-
-/// Newest first; the Ticket column narrows to 12 under 70 terminal columns.
-fn recent_lines(s: &Screen, rows: usize, width: u16) -> Vec<Line<'static>> {
-    let name_width = if width < 70 { 12 } else { 22 };
-    s.events
+/// RECENT, `height` rows: the rule, counting the lines hidden older and
+/// newer, then `HH:MM:SS  <suffix> <title>  <event>` with the newest on the
+/// last row, `s.recent` rows up from it, which it keeps inside the lines.
+/// The Ticket column is as wide as the longest name shown, up to 34% of
+/// `width`, cut with … and colored per Ticket; run-level rows read harness.
+fn recent_lines(s: &Screen, height: usize, width: u16) -> Vec<Line<'static>> {
+    let rows = height.saturating_sub(1);
+    let back = s.recent.get().min(s.events.len().saturating_sub(rows));
+    s.recent.set(back);
+    let end = s.events.len() - back;
+    let start = end.saturating_sub(rows);
+    let shown: Vec<(&Event, String, Color)> = s.events[start..end]
         .iter()
-        .rev()
-        .take(rows)
-        .map(|e| event_line(s, e, name_width))
-        .collect()
+        .map(|e| match &e.ticket {
+            Some(id) => (e, s.name(id), ticket_color(id)),
+            None => (e, "harness".to_string(), MUTED),
+        })
+        .collect();
+    let name_width = shown
+        .iter()
+        .map(|(_, name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(width as usize * 34 / 100);
+    let hint = match (start, back) {
+        (0, 0) => String::new(),
+        (o, 0) => format!(" ↑ {o} older "),
+        (0, n) => format!(" ↓ {n} newer "),
+        (o, n) => format!(" ↑ {o} older · ↓ {n} newer "),
+    };
+    let label = format!("── RECENT {hint}");
+    let fill = (width as usize).saturating_sub(label.chars().count() + 2);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(label, fg(MUTED)),
+        Span::styled("─".repeat(fill), fg(BORDER)),
+    ])];
+    lines.resize(height.saturating_sub(shown.len()), Line::default());
+    for (e, name, c) in shown {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}  ", e.time.format("%H:%M:%S")), fg(MUTED)),
+            Span::styled(format!("{:<name_width$}  ", cut(&name, name_width)), fg(c)),
+            Span::styled(e.text.clone(), fg(TEXT)),
+        ]));
+    }
+    lines
 }
 
 fn input_line(f: &mut Frame, area: Rect, s: &Screen) {

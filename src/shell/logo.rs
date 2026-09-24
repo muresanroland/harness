@@ -16,6 +16,7 @@ pub(crate) const MUTED: Color = Color::Rgb(132, 147, 173);
 pub(crate) const BORDER: Color = Color::Rgb(84, 98, 124);
 pub(crate) const GRAY: Color = Color::Rgb(160, 160, 160);
 pub(crate) const DARK_ORANGE: Color = Color::Rgb(200, 110, 20);
+pub(crate) const RED: Color = Color::Rgb(255, 90, 90);
 /// A Ticket's color, by its child suffix.
 pub(crate) const TICKET_COLORS: [Color; 7] = [GREEN, CYAN, PURPLE, BLUE, ORANGE, PINK, MUTED];
 
