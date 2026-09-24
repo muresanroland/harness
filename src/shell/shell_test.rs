@@ -3724,6 +3724,34 @@ fn summary_counts_each_tickets_rounds_and_findings_from_its_run_directory() {
     );
 }
 
+/// Fixed counts the fix items a later Verdict followed: not the last
+/// Verdict's before its Fix Stage ran, nor a cap's whose PR never opened.
+#[test]
+fn fixed_leaves_out_the_last_verdicts_fix_items() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    let runs = w.repo.join(".harness/runs");
+    let one = verdict(&["(low) src/a.rs:1 — one"], &[]);
+    let files = [
+        ("hx-1/verdict-1.md", verdict(&["(high) a", "(low) b"], &[])),
+        ("hx-2/verdict-1.md", one.clone()),
+        ("hx-2/verdict-2.md", one.clone()),
+        ("hx-2/verdict-3.md", one),
+        ("hx-2/fix-3.md", "STATUS: failed\nno PR\n".to_string()),
+    ];
+    for (path, body) in files {
+        write_file(&runs.join(path), &body);
+    }
+    let mut s = shell(&w);
+    s.command("/summary hx");
+    let sum = s.summary.as_ref().expect("no summary");
+    let got: Vec<_> = sum
+        .tickets
+        .iter()
+        .map(|t| (t.rounds, t.fixed, t.left.len()))
+        .collect();
+    assert_eq!(got, [(1, 0, 0), (3, 2, 0)]);
+}
+
 /// The summary takes the whole terminal: the title bar, the lead and the
 /// totals, a TICKETS outline from 100 columns, a section per Ticket then
 /// PARKED, and the position line. Read only: Tab goes Ticket to Ticket,
@@ -3894,7 +3922,8 @@ fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
     s.command("/summary hy-1");
     assert_eq!(notice(&s), "no Epic hy-1 in bd");
 
-    // A closed Epic by its id; three Rounds with no PR leave nothing on one.
+    // A closed Epic by its id; three Rounds with no PR leave nothing on one,
+    // and the cap's fix item is not fixed.
     let runs = w.repo.join(".harness/runs/hw-1");
     for n in 1..=3 {
         let body = verdict(&["(low) src/w.rs:1 — w"], &[]);
@@ -3907,7 +3936,7 @@ fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
         "{:#?}",
         rows(&buf)
     );
-    assert!(find(&buf, "3 Rounds · 3 fixed · 0 skipped · 0 left").is_some());
+    assert!(find(&buf, "3 Rounds · 2 fixed · 0 skipped · 0 left").is_some());
     s.key(key(KeyCode::Esc));
 
     // Typed whole, Enter runs it: the saved run's Epic.
@@ -3969,6 +3998,36 @@ fn the_summary_opens_by_itself_once_when_the_last_pr_opens() {
         thread::sleep(Duration::from_millis(1));
     }
     assert!(s.summary.is_none(), "it opened again");
+    s.command("/stop-work");
+    await_end(&mut s);
+}
+
+/// A Ticket added to the Epic mid-run holds the summary back until it has
+/// its PR too: bd is read again before the summary opens by itself.
+#[test]
+fn a_ticket_added_mid_run_holds_the_summary_until_its_pr_opens() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    w.lock().tickets.push(BdTicket {
+        status: "open".to_string(),
+        issue_type: "task".to_string(),
+        deps: vec!["hx-1".to_string()],
+        ..BdTicket::new("hx-2")
+    });
+    await_line(&mut s, "hx-1 PR #hx-1 opened after 1 round");
+    for _ in 0..20 {
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(s.summary.is_none(), "opened before hx-2 has its PR");
+
+    w.lock().prs.insert(
+        "https://example.test/pr/hx-1".to_string(),
+        r#"{"state":"MERGED","mergeable":"UNKNOWN"}"#.to_string(),
+    );
+    await_line(&mut s, "hx-2 PR #hx-2 opened after 1 round");
+    await_summary(&mut s);
     s.command("/stop-work");
     await_end(&mut s);
 }

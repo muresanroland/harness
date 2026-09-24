@@ -392,11 +392,18 @@ impl Screen {
     }
 
     /// The bd cache again: on open, on every /start-epic, after a Ticket
-    /// closes and when a run ends.
-    fn reload_epics(&mut self) {
+    /// closes, when a run ends and before the Epic summary opens by
+    /// itself. Whether bd answered.
+    fn reload_epics(&mut self) -> bool {
         match load_epics(&self.cfg.repo, &*self.cfg.tools) {
-            Ok(epics) => self.epics = epics,
-            Err(err) => self.notice(&format!("bd list failed: {err}"), NOTICE_WINDOW),
+            Ok(epics) => {
+                self.epics = epics;
+                true
+            }
+            Err(err) => {
+                self.notice(&format!("bd list failed: {err}"), NOTICE_WINDOW);
+                false
+            }
         }
     }
 
@@ -434,7 +441,13 @@ impl Screen {
         }
         let run = self.run.as_ref().unwrap();
         self.state = run.o.state.lock().unwrap().clone();
-        if run.epic && !run.summarized && self.all_prs_open() {
+        // the cache again once it says done: a Ticket added since has no PR
+        if run.epic
+            && !run.summarized
+            && self.all_prs_open()
+            && self.reload_epics()
+            && self.all_prs_open()
+        {
             self.run.as_mut().unwrap().summarized = true;
             let epic = self.state.epic.clone();
             self.summarize(&epic);
@@ -1012,7 +1025,7 @@ impl Screen {
                     Pending::Close(epic) => {
                         let argv = ["bd", "close", &epic, "--reason", "every Ticket merged"];
                         match self.cfg.tools.run(&self.cfg.repo, &argv) {
-                            Ok(_) => self.reload_epics(),
+                            Ok(_) => _ = self.reload_epics(),
                             Err(err) => self.notice(&err.to_string(), NOTICE_WINDOW),
                         }
                     }

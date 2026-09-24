@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use super::modal::wrap_spans;
+use super::modal::{scrolled, wrap_spans};
 use super::{bold, cut, fg, inset, ticket_color};
 use crate::orchestrator::stage::{plural, pr_ref};
 use crate::shell::logo::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
@@ -95,12 +95,8 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
     };
     let (rows, heads) = sections(summary, body.width as usize);
     let (total, h) = (rows.len(), body.height as usize);
-    s.page.set(h.saturating_sub(2).max(1));
-    *s.heads.borrow_mut() = heads.iter().map(|(row, _)| *row).collect();
-    let from = summary.scroll.get().min(total.saturating_sub(h));
-    summary.scroll.set(from);
-    let shown: Vec<Line> = rows.into_iter().skip(from).take(h).collect();
-    f.render_widget(Paragraph::new(shown), body);
+    let starts = heads.iter().map(|(row, _)| *row).collect();
+    let from = scrolled(f, s, rows, starts, &summary.scroll, body);
 
     // The outline marks the Ticket the first row shown belongs to.
     if outline_w > 0 {

@@ -105,7 +105,6 @@ fn ticket(repo: &Path, state: &State, t: &BdIssue) -> Ticket {
         Some(last) if rounds == MAX_ROUNDS && !pr.is_empty() => last.fixes.clone(),
         _ => Vec::new(),
     };
-    let fixes: usize = verdicts.iter().map(|v| v.fixes.len()).sum();
     let ts = state.tickets.get(&t.id);
     Ticket {
         id: t.id.clone(),
@@ -113,7 +112,8 @@ fn ticket(repo: &Path, state: &State, t: &BdIssue) -> Ticket {
         pr,
         merged: t.status == "closed" || ts.is_some_and(|ts| ts.status == STATUS_MERGED),
         rounds,
-        fixed: fixes - left.len(),
+        // all but the last Verdict: no Review re-checked its fix items
+        fixed: verdicts.iter().rev().skip(1).map(|v| v.fixes.len()).sum(),
         skipped: verdicts
             .iter()
             .flat_map(|v| &v.skips)
@@ -130,5 +130,7 @@ fn ticket(repo: &Path, state: &State, t: &BdIssue) -> Ticket {
 /// without the mark, the reason or how it was settled.
 fn finding(line: &str) -> String {
     let item = line.split_once("] ").map_or(line, |(_, rest)| rest);
-    item.split(" | reason:").next().unwrap_or(item).to_string()
+    item.split_once(" | reason:")
+        .map_or(item, |(f, _)| f)
+        .to_string()
 }
