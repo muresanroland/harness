@@ -705,12 +705,9 @@ impl Screen {
                 .iter()
                 .position(|hit| *hit)
         };
-        let mut ranked: Vec<_> = found
-            .into_iter()
-            .filter_map(|row| Some((rank(&row)?, row)))
-            .collect();
-        ranked.sort_by_key(|(r, _)| *r);
-        ranked.into_iter().map(|(_, row)| row).collect()
+        found.retain(|row| rank(row).is_some());
+        found.sort_by_key(rank);
+        found
     }
 
     /// Tab or Enter on an open list: a command fills in as '<command> ', an

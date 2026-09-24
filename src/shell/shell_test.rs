@@ -225,9 +225,7 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 fn type_line(s: &mut Screen, line: &str) {
-    for c in line.chars() {
-        s.key(key(KeyCode::Char(c)));
-    }
+    type_in(s, line);
     s.key(key(KeyCode::Enter));
 }
 
