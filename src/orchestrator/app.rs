@@ -5,7 +5,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
@@ -15,9 +15,9 @@ use super::trust::{claude_records, codex_records};
 pub(crate) struct App {
     /// Its name in config.json, and herdr's agent kind.
     pub(crate) name: &'static str,
-    /// The unattended args of the Review, in the Run directory; "{}" is the
+    /// The unattended args of the Review, in the Run directory, given the
     /// worktree.
-    pub(crate) run_dir_args: &'static [&'static str],
+    pub(crate) run_dir_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
@@ -30,15 +30,27 @@ pub(crate) static APPS: [App; 2] = [
         name: "claude",
         // --add-dir lets it read the worktree but also write there: the Edit
         // deny rule stops the file tools and, merged into the strict Bash
-        // sandbox, every command. The path lands in JSON unescaped.
-        run_dir_args: &[
-            "--permission-mode",
-            "auto",
-            "--add-dir",
-            "{}",
-            "--settings",
-            r#"{"permissions":{"deny":["Edit(/{}/**)"]},"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}"#,
-        ],
+        // sandbox, every command.
+        run_dir_args: |worktree| {
+            let settings = json!({
+                "permissions": { "deny": [format!("Edit(/{worktree}/**)")] },
+                "sandbox": {
+                    "enabled": true,
+                    "failIfUnavailable": true,
+                    "allowUnsandboxedCommands": false,
+                },
+            });
+            [
+                "--permission-mode",
+                "auto",
+                "--add-dir",
+                worktree,
+                "--settings",
+                &settings.to_string(),
+            ]
+            .map(String::from)
+            .to_vec()
+        },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
         trust: claude_records,
@@ -47,7 +59,7 @@ pub(crate) static APPS: [App; 2] = [
         name: "codex",
         // The sandbox writes only where the pane starts: the result file
         // there, nothing in the worktree.
-        run_dir_args: &["--sandbox", "workspace-write"],
+        run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
         trust: codex_records,
@@ -92,7 +104,7 @@ impl Row {
 }
 
 /// An arg form with value put in for "{}".
-pub(crate) fn fill(form: &[&str], value: &str) -> Vec<String> {
+fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
 }
 

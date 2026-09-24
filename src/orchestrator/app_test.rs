@@ -1,6 +1,7 @@
 //! The App table and .harness/config.json: each Stage's App, model and
 //! effort, read when the Stage starts.
 
+use super::app::app;
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, World};
 use super::write_file;
 use crate::tempdir::TempDir;
@@ -76,13 +77,25 @@ fn a_review_on_claude_runs_in_the_run_directory_and_trust_is_read_through_the_ro
         format!(
             "--permission-mode auto --add-dir {worktree} --settings \
              {{\"permissions\":{{\"deny\":[\"Edit(/{worktree}/**)\"]}},\"sandbox\":\
-             {{\"enabled\":true,\"failIfUnavailable\":true,\"allowUnsandboxedCommands\":false}}}}"
+             {{\"allowUnsandboxedCommands\":false,\"enabled\":true,\"failIfUnavailable\":true}}}}"
         )
     );
     let split = &w.called("herdr pane split")[0];
     assert!(
         split.contains(&format!("--cwd {} ", o.run_dir("hx-1").display())),
         "{split}"
+    );
+}
+
+/// A worktree path with a quote or backslash still makes valid settings JSON.
+#[test]
+fn a_worktree_path_is_escaped_in_the_review_settings_on_claude() {
+    let worktree = r#"/tmp/a"b\c"#;
+    let args = (app("claude").unwrap().run_dir_args)(worktree);
+    let settings: serde_json::Value = serde_json::from_str(args.last().unwrap()).unwrap();
+    assert_eq!(
+        settings["permissions"]["deny"][0],
+        format!("Edit(/{worktree}/**)")
     );
 }
 

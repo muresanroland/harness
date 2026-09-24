@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{fill, stage_row, App};
+use super::app::{stage_row, App};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
@@ -733,10 +733,7 @@ impl Orchestrator {
             .map(String::from)
             .to_vec()
         } else if st.name == REVIEW.name {
-            fill(
-                row.app.run_dir_args,
-                &self.worktree(ticket).display().to_string(),
-            )
+            (row.app.run_dir_args)(&self.worktree(ticket).display().to_string())
         } else {
             // Debate, Fix and Address run on claude alone (stage_row).
             ["--permission-mode", "auto", "--add-dir", &run_dir]
