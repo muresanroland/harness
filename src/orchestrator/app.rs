@@ -3,13 +3,21 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
+use crate::tools::Tools;
+
+/// The Review's fallback row, for when the Review's App is Limited; its
+/// model starts as none, no fallback.
+pub(crate) const IF_LIMITED: &str = "review_if_limited";
+
+/// A model id and its effort levels, as an App lists them.
+pub(crate) type Model = (String, Vec<String>);
 
 /// An agent CLI a Stage can run on: one row of the App table. In the arg
 /// forms, "{}" is the value put in.
@@ -29,6 +37,10 @@ pub(crate) struct App {
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
+    /// Its models' family, which /config labels each with.
+    pub(crate) family: &'static str,
+    /// The models /config offers besides default, run in the given dir.
+    pub(crate) models: fn(&dyn Tools, &Path) -> Result<Vec<Model>, String>,
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -77,6 +89,13 @@ pub(crate) static APPS: [App; 2] = [
             "-p",
         ],
         trust: claude_records,
+        family: "Anthropic",
+        models: |_, _| {
+            let efforts = ["low", "medium", "high", "xhigh", "max"].map(String::from);
+            Ok(["fable", "opus", "sonnet", "haiku"]
+                .map(|m| (m.to_string(), efforts.to_vec()))
+                .to_vec())
+        },
     },
     App {
         name: "codex",
@@ -88,8 +107,37 @@ pub(crate) static APPS: [App; 2] = [
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
+        family: "OpenAI",
+        models: codex_models,
     },
 ];
+
+/// codex's catalog: the models it lists for picking, each with its reasoning
+/// levels; --bundled skips the refresh.
+fn codex_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
+    let out = tools
+        .run(dir, &["codex", "debug", "models", "--bundled"])
+        .map_err(|err| err.to_string())?;
+    let doc: Value =
+        serde_json::from_str(&out).map_err(|err| format!("codex debug models: {err}"))?;
+    let strings = |v: &Value, name: &str| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x[name].as_str().map(String::from))
+            .collect()
+    };
+    Ok(doc["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list")
+        .filter_map(|m| {
+            let slug = m["slug"].as_str()?.to_string();
+            Some((slug, strings(&m["supported_reasoning_levels"], "effort")))
+        })
+        .collect())
+}
 
 /// The App config.json names.
 pub(crate) fn app(name: &str) -> Option<&'static App> {
@@ -185,39 +233,74 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
 
 /// The row under key: a Stage's, or a Debate side's (side_a, side_b).
 fn row(repo: &Path, key: &str) -> Result<Row, String> {
+    let (path, doc) = read(repo)?;
+    row_in(&doc, key, &path)
+}
+
+/// .harness/config.json and its path; a missing file is Null.
+pub(crate) fn read(repo: &Path) -> Result<(PathBuf, Value), String> {
     let path = repo.join(".harness").join("config.json");
-    let doc: Value = match fs::read(&path) {
+    let doc = match fs::read(&path) {
         Ok(raw) => {
             serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display()))?
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => Value::Null,
         Err(err) => return Err(format!("{}: {err}", path.display())),
     };
-    let default = if matches!(key, "review" | "side_b") {
-        "codex"
-    } else {
-        "claude"
+    Ok((path, doc))
+}
+
+/// Writes config.json whole through a temp file, so a Stage reading it as
+/// it starts never sees half of it.
+pub(crate) fn write(path: &Path, doc: &Value) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(doc).unwrap() + "\n";
+    fs::create_dir_all(path.parent().unwrap())
+        .and_then(|()| fs::write(&tmp, text))
+        .and_then(|()| fs::rename(&tmp, path))
+        .map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// A field of the row under key: missing or empty, its default (the row's
+/// App, the fallback's none, else default); not a string refuses.
+pub(crate) fn field(doc: &Value, key: &str, name: &str) -> Result<String, String> {
+    let default = match name {
+        "app" if matches!(key, "review" | "side_b") => "codex",
+        "app" => "claude",
+        "model" if key == IF_LIMITED => "none",
+        _ => "default",
     };
-    let field = |name: &str, default: &str| match &doc[key][name] {
+    match &doc[key][name] {
         Value::Null => Ok(default.to_string()),
         Value::String(v) if v.is_empty() => Ok(default.to_string()),
         Value::String(v) => Ok(v.clone()),
-        _ => Err(format!("{}: {key} {name} is not a string", path.display())),
-    };
-    let name = field("app", default)?;
+        _ => Err(format!("{key} {name} is not a string")),
+    }
+}
+
+/// Off claude only the Review, its fallback and the Debate's sides run,
+/// until codex has the two-step Plan, the network the Moderator's side
+/// commands and TypeSafe calls need, and a Git write path: its sandbox keeps
+/// Git metadata read-only.
+pub(crate) fn runs_on(key: &str, app: &App) -> Result<(), String> {
+    match app.name == "claude" || matches!(key, "review" | IF_LIMITED | "side_a" | "side_b") {
+        true => Ok(()),
+        false => Err(format!("{key} runs on claude only")),
+    }
+}
+
+/// The row under key in doc, the config.json at path.
+pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String> {
+    let field =
+        |name: &str| field(doc, key, name).map_err(|err| format!("{}: {err}", path.display()));
+    let name = field("app")?;
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
-    // Off claude only the Review and the Debate's sides run, until codex has
-    // the two-step Plan, the network the Moderator's side commands and
-    // TypeSafe calls need, and a Git write path: its sandbox keeps Git
-    // metadata read-only.
-    if app.name != "claude" && !matches!(key, "review" | "side_a" | "side_b") {
-        return Err(format!("{key} runs on claude only"));
-    }
-    let model = field("model", "default")?;
+    runs_on(key, app)?;
+    let model = field("model")?;
     // A split: a plan model other than Implement's, not default.
     let plan_model = match key {
-        "implement" => Some(field("plan_model", "default")?),
+        "implement" => Some(field("plan_model")?),
         _ => None,
     }
     .filter(|plan| *plan != model && plan != "default");
@@ -237,7 +320,16 @@ fn row(repo: &Path, key: &str) -> Result<Row, String> {
     Ok(Row {
         app,
         model,
-        effort: field("effort", "default")?,
+        effort: field("effort")?,
         plan_model,
     })
+}
+
+/// The one-line prompt that tries model on app, before /config saves it:
+/// the App's headless read-only command, in dir.
+pub(crate) fn probe(app: &App, dir: &Path, model: &str) -> Vec<String> {
+    let mut argv = fill(app.side, &dir.display().to_string());
+    argv.extend(fill(app.model, model));
+    argv.push("Reply with ok".to_string());
+    argv
 }

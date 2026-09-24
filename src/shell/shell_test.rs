@@ -61,7 +61,7 @@ fn screen() -> Screen {
     screen_at(Fake::quiet(), Path::new(""))
 }
 
-fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
+pub(super) fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
     let epic = Epic {
         id: "harness-kqe".to_string(),
         title: "Build: the Rust port".to_string(),
@@ -103,7 +103,7 @@ fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
 }
 
 /// The Shell over the fake world, no terminal: what the slash commands drive.
-fn shell(w: &Arc<World>) -> Screen {
+pub(super) fn shell(w: &Arc<World>) -> Screen {
     Screen::new(
         Config::for_tests(w.clone(), &w.repo, &w.home),
         "~/hx".to_string(),
@@ -114,7 +114,7 @@ fn shell(w: &Arc<World>) -> Screen {
 }
 
 /// Polls the Shell until a panel line (as world::lines formats it) shows.
-fn await_line(s: &mut Screen, want: &str) {
+pub(super) fn await_line(s: &mut Screen, want: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         s.poll();
@@ -129,7 +129,7 @@ fn await_line(s: &mut Screen, want: &str) {
     );
 }
 
-fn line(e: &Event) -> String {
+pub(super) fn line(e: &Event) -> String {
     match &e.ticket {
         Some(id) => format!("{id} {}", e.text),
         None => e.text.clone(),
@@ -146,35 +146,35 @@ fn await_end(s: &mut Screen) {
     }
 }
 
-fn notice(s: &Screen) -> &str {
+pub(super) fn notice(s: &Screen) -> &str {
     s.notice.as_ref().map_or("", |(t, _)| t.as_str())
 }
 
-fn log(w: &World) -> String {
+pub(super) fn log(w: &World) -> String {
     std::fs::read_to_string(w.repo.join(".harness/orchestrator.log")).unwrap_or_default()
 }
 
-fn render(s: &Screen, w: u16, h: u16) -> Buffer {
+pub(super) fn render(s: &Screen, w: u16, h: u16) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| draw(f, s)).unwrap();
     t.backend().buffer().clone()
 }
 
-fn row(buf: &Buffer, y: u16) -> String {
+pub(super) fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
 }
 
-fn rows(buf: &Buffer) -> Vec<String> {
+pub(super) fn rows(buf: &Buffer) -> Vec<String> {
     (0..buf.area.height).map(|y| row(buf, y)).collect()
 }
 
 /// Columns `from..to` of row `y`.
-fn cols(buf: &Buffer, y: u16, from: usize, to: usize) -> String {
+pub(super) fn cols(buf: &Buffer, y: u16, from: usize, to: usize) -> String {
     row(buf, y).chars().skip(from).take(to - from).collect()
 }
 
 /// The column and row where `text` first appears.
-fn find(buf: &Buffer, text: &str) -> Option<(u16, u16)> {
+pub(super) fn find(buf: &Buffer, text: &str) -> Option<(u16, u16)> {
     (0..buf.area.height).find_map(|y| {
         let line = row(buf, y);
         line.find(text)
@@ -195,7 +195,7 @@ fn event(ticket: Option<&str>, text: &str, panel: bool) -> Event {
 }
 
 /// A panel line that asks, as the Orchestrator sends a Wake or a prompt.
-fn asking(ticket: &str, text: &str, ask: Ask) -> Event {
+pub(super) fn asking(ticket: &str, text: &str, ask: Ask) -> Event {
     Event {
         ask: Some(ask),
         ..event(Some(ticket), text, true)
@@ -203,7 +203,7 @@ fn asking(ticket: &str, text: &str, ask: Ask) -> Event {
 }
 
 /// Whether the log holds `line` ('<bd id> <event>') as a whole line.
-fn logged(w: &World, line: &str) -> bool {
+pub(super) fn logged(w: &World, line: &str) -> bool {
     log(w).lines().any(|l| l.get(20..) == Some(line))
 }
 
@@ -220,11 +220,11 @@ fn asked_pane(s: &Screen) -> String {
     }
 }
 
-fn key(code: KeyCode) -> KeyEvent {
+pub(super) fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn type_line(s: &mut Screen, line: &str) {
+pub(super) fn type_line(s: &mut Screen, line: &str) {
     type_in(s, line);
     s.key(key(KeyCode::Enter));
 }
@@ -379,7 +379,7 @@ fn the_overall_bar_counts_the_epics_tickets_and_blends_purple_to_green_by_the_pr
 }
 
 /// Types `text` without Enter.
-fn type_in(s: &mut Screen, text: &str) {
+pub(super) fn type_in(s: &mut Screen, text: &str) {
     for c in text.chars() {
         s.key(key(KeyCode::Char(c)));
     }
@@ -561,7 +561,8 @@ fn up_and_down_move_an_open_lists_cursor_and_scroll_recent_when_none_is() {
     for _ in 0..20 {
         s.key(key(KeyCode::Down));
     }
-    assert_eq!(s.pick, 8, "past the last row");
+    assert_eq!(s.pick, 9, "past the last row");
+    s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Enter));
     assert_eq!(s.input, "/questions ");
@@ -630,12 +631,12 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     assert_eq!(at("run every Ticket").0, TEXT);
     assert_eq!(at("run one Ticket").0, MUTED);
     // The window follows the cursor to the last row.
-    for _ in 0..8 {
+    for _ in 0..9 {
         s.key(key(KeyCode::Down));
     }
     let buf = render(&s, 120, 40);
     assert!(
-        row(&buf, 29).starts_with("   /start-ticket"),
+        row(&buf, 29).starts_with("   /continue"),
         "{:#?}",
         rows(&buf)
     );
@@ -645,7 +646,7 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     assert!(row(&buf, 11).contains("harness-kqe"), "{:#?}", rows(&buf));
     assert!(row(&buf, 13).contains("6 more, PgDn"), "{:#?}", rows(&buf));
     assert!(
-        row(&buf, 14).starts_with("   /continue"),
+        row(&buf, 14).starts_with("   /stop-work"),
         "{:#?}",
         rows(&buf)
     );

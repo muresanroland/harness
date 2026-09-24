@@ -31,7 +31,7 @@ const DEL_BG: Color = Color::Rgb(56, 20, 26);
 /// it the input line (and a notice or the / or @ list, while one shows),
 /// with margins from 100x30 up. The box and its border, which the caller
 /// titles and renders.
-fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
+pub(super) fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
     let area = f.area();
     let (rect, border) = if area.width >= FOLD {
         let [left, right] =

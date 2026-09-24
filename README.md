@@ -94,6 +94,7 @@ harness init
 | `/park <ticket>` | Take the Ticket out of the pipeline; the others keep going |
 | `/address <ticket>` | Act on the review comments or merge conflicts on the Ticket's open PR |
 | `/questions` | Show the Questions waiting for you |
+| `/config` | Pick the App, model and effort each Stage runs on; every change saves at once to `.harness/config.json`, and during a run the Stages that start after it use it |
 | `/exit` | Leave the Shell (asks first during a run). Ctrl-C twice does the same |
 
 Leaving the Shell never kills agent panes.

@@ -1,7 +1,8 @@
 //! The layout: header, status row, Overall, the TICKETS sections, RECENT
 //! under its rule newest at the bottom (a Question takes its place when one
 //! shows), the MERGE TO UNBLOCK box, the / or @ list, a notice line and the
-//! input line. A plan Question docks the Shell beside it (draw/modal.rs).
+//! input line. A plan Question docks the Shell beside it (draw/modal.rs), and
+//! so does /config (draw/config.rs).
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -19,6 +20,7 @@ use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
 use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
+mod config;
 mod modal;
 
 const PLACEHOLDER: &str = "  / for a command, @ for an Epic or Ticket";
@@ -64,7 +66,9 @@ pub(crate) fn ticket_color(id: &str) -> Color {
 
 /// The Shell over the whole terminal, or docked beside a plan Question.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
-    if s.modal() {
+    if s.settings.is_some() {
+        config::config(f, s);
+    } else if s.modal() {
         modal::plan(f, s);
     } else {
         shell(f, f.area(), s);

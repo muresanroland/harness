@@ -700,6 +700,7 @@ impl Tools for World {
             command,
             status: "exit status 1".to_string(),
             stderr,
+            stdout: String::new(),
         })
     }
 }

@@ -29,6 +29,7 @@ use crate::setup;
 use crate::tools::Tools;
 use crate::update::{self, Checked, Ready, Releases};
 
+mod config;
 mod draw;
 mod logo;
 
@@ -47,7 +48,7 @@ const KEPT_EVENTS: usize = 1000;
 const RETRY: Duration = Duration::from_secs(60);
 /// Every command the Shell takes: its name, arguments and what it does. The
 /// / list shows it; nothing else lists the commands.
-const COMMANDS: [(&str, &str, &str); 9] = [
+const COMMANDS: [(&str, &str, &str); 10] = [
     (
         "/start-epic",
         "<epic> [--max N]",
@@ -68,6 +69,11 @@ const COMMANDS: [(&str, &str, &str); 9] = [
         "resolve a PR's conflicts or review comments",
     ),
     ("/questions", "", "show the hidden Questions"),
+    (
+        "/config",
+        "",
+        "the App, model and effort each Stage runs on",
+    ),
     ("/exit", "", "leave the Harness"),
 ];
 
@@ -180,6 +186,8 @@ pub(crate) struct Screen {
     pub(crate) hidden: bool,
     /// The input line is a prompt of the user's own for the front Question.
     pub(crate) composing: bool,
+    /// /config, while it is open: it takes every key but Ctrl-C.
+    pub(crate) settings: Option<config::Settings>,
     /// The docked plan's page at the last draw, which PageUp, PageDown
     /// and Space move by.
     pub(crate) page: Cell<usize>,
@@ -232,6 +240,7 @@ impl Screen {
             questions: Vec::new(),
             hidden: false,
             composing: false,
+            settings: None,
             page: Cell::new(0),
             heads: RefCell::new(Vec::new()),
             update_sender,
@@ -392,6 +401,7 @@ impl Screen {
         while let Ok(checked) = self.update_receiver.try_recv() {
             self.updated(checked);
         }
+        self.probed();
         let Some(run) = &mut self.run else {
             return;
         };
@@ -751,6 +761,9 @@ impl Screen {
             }
             return;
         }
+        if self.settings.is_some() {
+            return self.config_key(key);
+        }
         // With a Question showing and the input line empty the keys are
         // its: arrows or a number pick, Enter answers, Esc hides or cancels,
         // Space toggles a /continue row, y and n answer a confirmation; a
@@ -1101,6 +1114,7 @@ impl Screen {
                 false => self.hidden = false,
             },
             "/stop-work" => self.stop_work(),
+            "/config" => self.open_config(),
             "/retry" | "/park" | "/address" => {
                 let waiting = self
                     .questions
@@ -1440,5 +1454,7 @@ fn run(terminal: &mut DefaultTerminal, screen: &mut Screen) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod config_test;
 #[cfg(test)]
 mod shell_test;
