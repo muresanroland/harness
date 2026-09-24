@@ -131,12 +131,11 @@ fn add_installs_the_named_skill_of_two_and_records_its_source() {
     let manifest = Manifest::load(repo.path()).unwrap();
     let tdd = &manifest.skills["tdd"];
     assert_eq!(
-        (&*tdd.repo, &*tdd.path, &*tdd.commit, &*tdd.at, tdd.shipped),
+        (&*tdd.repo, &*tdd.path, &*tdd.commit, tdd.shipped),
         (
             "https://github.com/mattpocock/skills",
             "skills/engineering/tdd",
             "abc123",
-            ".agents/skills/tdd",
             false
         )
     );
@@ -286,7 +285,6 @@ fn a_shipped_skill_refuses_removal() {
     manifest.skills.insert(
         "stage-fix".into(),
         Installed {
-            at: ".agents/skills/stage-fix".into(),
             shipped: true,
             ..Installed::default()
         },
@@ -353,33 +351,47 @@ fn a_skill_named_none_or_a_path_is_not_taken() {
 }
 
 #[test]
-fn an_entry_not_at_its_own_folder_is_neither_removed_nor_updated() {
+fn an_entry_whose_name_climbs_out_is_neither_removed_nor_updated() {
     let repo = TempDir::new();
     write_file(&repo.path().join("src/main.rs"), "fn main() {}");
+    write_file(&repo.path().join(".agents/skills/own/SKILL.md"), "own");
     let tools = git(&remote("abc123", TWO_SKILLS));
-    // A hand-edited manifest: no at, which reads as the checkout itself, one
-    // elsewhere, and a name that climbs out of .agents/skills.
-    for (name, at) in [("tdd", ""), ("tdd", "src"), ("..", ".agents/skills/..")] {
+    // A hand-edited manifest, with names that leave .agents/skills.
+    for name in ["..", "../../src"] {
         let mut manifest = Manifest::default();
         manifest.skills.insert(
             name.into(),
             Installed {
                 repo: "https://github.com/mattpocock/skills".into(),
                 path: "skills/engineering/tdd".into(),
-                at: at.into(),
                 ..Installed::default()
             },
         );
         manifest.save(repo.path()).unwrap();
         let err = remove(repo.path(), name).unwrap_err();
-        assert!(err.contains("will not touch"), "{name} at {at:?}: {err}");
+        assert!(err.contains("will not touch"), "{name}: {err}");
         let err = update(repo.path(), &*tools, name).unwrap_err();
-        assert!(err.contains("will not touch"), "{name} at {at:?}: {err}");
+        assert!(err.contains("will not touch"), "{name}: {err}");
         assert_eq!(update_all(repo.path(), &*tools).unwrap().len(), 1);
-        assert!(repo.path().join("src/main.rs").exists(), "{name} at {at:?}");
+        assert!(repo.path().join("src/main.rs").exists(), "{name}");
+        assert!(repo.path().join(".agents/skills/own").exists(), "{name}");
         assert_eq!(Manifest::load(repo.path()).unwrap(), manifest);
     }
     assert!(tools.calls().is_empty(), "cloned: {:?}", tools.calls());
+}
+
+#[test]
+fn an_older_manifests_at_is_ignored() {
+    let repo = TempDir::new();
+    write_file(&repo.path().join("src/main.rs"), "fn main() {}");
+    write_file(&repo.path().join(".agents/skills/tdd/SKILL.md"), TDD);
+    write_file(
+        &repo.path().join(".harness/skills.json"),
+        r#"{"skills": {"tdd": {"repo": "https://github.com/mattpocock/skills", "at": "src"}}}"#,
+    );
+    remove(repo.path(), "tdd").unwrap();
+    assert!(!repo.path().join(".agents/skills/tdd").exists());
+    assert!(repo.path().join("src/main.rs").exists());
 }
 
 #[test]
@@ -405,6 +417,91 @@ fn a_skill_under_a_linked_agents_folder_is_neither_removed_nor_updated() {
         .unwrap()
         .skills
         .contains_key("tdd"));
+}
+
+#[test]
+fn a_skill_under_agents_skills_linked_to_the_checkout_is_neither_removed_nor_updated() {
+    let repo = TempDir::new();
+    write_file(&repo.path().join("src/main.rs"), "fn main() {}");
+    fs::create_dir(repo.path().join(".agents")).unwrap();
+    std::os::unix::fs::symlink("..", repo.path().join(".agents/skills")).unwrap();
+    let mut manifest = Manifest::default();
+    manifest.skills.insert(
+        "src".into(),
+        Installed {
+            repo: "https://github.com/someone/src".into(),
+            ..Installed::default()
+        },
+    );
+    manifest.save(repo.path()).unwrap();
+    let tools = git(&remote("abc123", &[("SKILL.md", "---\nname: src\n---\n")]));
+    let err = remove(repo.path(), "src").unwrap_err();
+    assert!(err.contains("will not touch"), "{err}");
+    let err = update(repo.path(), &*tools, "src").unwrap_err();
+    assert!(err.contains("will not touch"), "{err}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join("src/main.rs")).unwrap(),
+        "fn main() {}"
+    );
+}
+
+#[test]
+fn a_skill_linked_from_a_linked_claude_folder_is_not_removed() {
+    let repo = TempDir::new();
+    let tools = git(&remote("abc123", TWO_SKILLS));
+    add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap();
+    // .claude swapped for a link out of the checkout, whose skills/tdd is a
+    // link the Harness never made.
+    let outside = TempDir::new();
+    fs::create_dir(outside.path().join("skills")).unwrap();
+    std::os::unix::fs::symlink("/elsewhere", outside.path().join("skills/tdd")).unwrap();
+    fs::remove_dir_all(repo.path().join(".claude")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.path().join(".claude")).unwrap();
+    let err = remove(repo.path(), "tdd").unwrap_err();
+    assert!(err.contains("will not touch"), "{err}");
+    assert!(fs::symlink_metadata(outside.path().join("skills/tdd")).is_ok());
+    assert!(repo.path().join(".agents/skills/tdd/SKILL.md").exists());
+}
+
+#[test]
+fn a_source_folder_that_links_out_of_the_clone_is_not_taken() {
+    let repo = TempDir::new();
+    add(
+        repo.path(),
+        &*git(&remote("abc123", TWO_SKILLS)),
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    let outside = TempDir::new();
+    write_file(&outside.path().join("SKILL.md"), TDD);
+    write_file(&outside.path().join("secret"), "not the clone's");
+    let out = outside.path().to_path_buf();
+    let linked = Fake::new(move |_, argv| {
+        if argv.contains(&"clone") {
+            let engineering = Path::new(argv.last().unwrap()).join("skills/engineering");
+            fs::create_dir_all(&engineering).unwrap();
+            std::os::unix::fs::symlink(&out, engineering.join("tdd")).unwrap();
+            Ok(String::new())
+        } else {
+            Ok("def456\n".to_string())
+        }
+    });
+    let err = add(
+        repo.path(),
+        &*linked,
+        "someone/linked/skills/engineering/tdd",
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("no folder"), "{err}");
+    let err = update(repo.path(), &*linked, "tdd").unwrap_err();
+    assert!(err.contains("no longer has tdd"), "{err}");
+    assert!(!repo.path().join(".agents/skills/tdd/secret").exists());
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".agents/skills/tdd/SKILL.md")).unwrap(),
+        TDD
+    );
 }
 
 #[test]

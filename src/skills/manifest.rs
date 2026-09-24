@@ -101,7 +101,7 @@ pub(crate) const JOBS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-/// One skill the Harness installed.
+/// One skill the Harness installed, at .agents/skills/<name>.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Installed {
@@ -115,8 +115,6 @@ pub(crate) struct Installed {
     pub(crate) path: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) commit: String,
-    /// Where it was put, from the checkout's root.
-    pub(crate) at: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) shipped: bool,
 }
@@ -134,12 +132,13 @@ pub(crate) struct Manifest {
 
 impl Manifest {
     /// A checkout without one has an empty manifest. A garbled one is an
-    /// error, so that saving over it cannot lose what it held.
-    pub(crate) fn load(repo: &Path) -> io::Result<Self> {
+    /// error, so that saving over it cannot lose what it held. Errors are
+    /// messages for the Shell.
+    pub(crate) fn load(repo: &Path) -> Result<Self, String> {
         match fs::read_to_string(repo.join(MANIFEST)) {
-            Ok(text) => Ok(serde_json::from_str(&text)?),
+            Ok(text) => serde_json::from_str(&text).map_err(|err| format!("{MANIFEST}: {err}")),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(err) => Err(err),
+            Err(err) => Err(format!("{MANIFEST}: {err}")),
         }
     }
 
@@ -154,24 +153,12 @@ impl Manifest {
         }
     }
 
-    pub(crate) fn save(&self, repo: &Path) -> io::Result<()> {
-        fs::create_dir_all(repo.join(".harness"))?;
-        fs::write(
-            repo.join(MANIFEST),
-            serde_json::to_string_pretty(self)? + "\n",
-        )
+    pub(crate) fn save(&self, repo: &Path) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(self).unwrap() + "\n";
+        fs::create_dir_all(repo.join(".harness"))
+            .and_then(|()| fs::write(repo.join(MANIFEST), text))
+            .map_err(|err| format!("{MANIFEST}: {err}"))
     }
-}
-
-/// The manifest for an operation, whose errors are messages for the Shell.
-fn open(repo: &Path) -> Result<Manifest, String> {
-    Manifest::load(repo).map_err(|err| format!("{MANIFEST}: {err}"))
-}
-
-fn store(repo: &Path, manifest: &Manifest) -> Result<(), String> {
-    manifest
-        .save(repo)
-        .map_err(|err| format!("{MANIFEST}: {err}"))
 }
 
 /// Where a skill comes from: a clone URL, the ref to clone (empty for the
@@ -247,11 +234,14 @@ pub(crate) fn add(
     name: Option<&str>,
 ) -> Result<Added, String> {
     let source = parse_source(source)?;
-    let mut manifest = open(repo)?;
+    let mut manifest = Manifest::load(repo)?;
     let (tmp, commit) = fetch(repo, tools, &source.repo, &source.git_ref)?;
-    let clone = tmp.path();
+    // Canonical, so that find gives each skill's folder from the clone's root.
+    let clone = tmp.path().canonicalize().map_err(|err| err.to_string())?;
+    let dir = in_clone(&clone, &source.path)
+        .ok_or_else(|| format!("no folder {} inside {}", source.path, source.repo))?;
     let mut skills = Vec::new();
-    find(clone, &clone.join(&source.path), &mut skills);
+    find(&clone, &dir, &mut skills);
     skills.sort();
     let (name, path) = match (name, skills.len()) {
         (Some(name), _) => match skills.iter().position(|(found, _)| found == name) {
@@ -314,11 +304,10 @@ pub(crate) fn add(
                 git_ref: source.git_ref.clone(),
                 path,
                 commit,
-                at: at.clone(),
                 shipped: false,
             };
             manifest.skills.insert(name.clone(), skill);
-            store(repo, &manifest)
+            manifest.save(repo)
         });
     if installed.is_err() {
         // Nothing left half installed, which a later add would take for the
@@ -332,19 +321,15 @@ pub(crate) fn add(
 /// Fetches an installed skill's source again, replaces its folder with the
 /// skill at the recorded path, and records the new commit.
 pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), String> {
-    let mut manifest = open(repo)?;
+    let mut manifest = Manifest::load(repo)?;
     let skill = third_party(repo, &manifest, name)?.clone();
     let (clone, commit) = fetch(repo, tools, &skill.repo, &skill.git_ref)?;
-    let from = clone.path().join(&skill.path);
-    if skill_in(&from).as_deref() != Some(name) {
-        return Err(format!(
-            "{} no longer has {name} at {}",
-            skill.repo, skill.path
-        ));
-    }
+    let from = in_clone(clone.path(), &skill.path)
+        .filter(|from| skill_in(from).as_deref() == Some(name))
+        .ok_or_else(|| format!("{} no longer has {name} at {}", skill.repo, skill.path))?;
     // The new copy goes beside the old one first, so that a copy that fails
     // leaves the installed skill whole.
-    let at = repo.join(&skill.at);
+    let at = repo.join(".agents/skills").join(name);
     let fresh = at.with_file_name(format!(".{name}.new"));
     let _ = fs::remove_dir_all(&fresh);
     let swapped = copy_dir(&from, &fresh).and_then(|()| {
@@ -355,18 +340,16 @@ pub(crate) fn update(repo: &Path, tools: &dyn Tools, name: &str) -> Result<(), S
     });
     if let Err(err) = swapped {
         let _ = fs::remove_dir_all(&fresh);
-        return Err(format!("{}: {err}", skill.at));
+        return Err(format!(".agents/skills/{name}: {err}"));
     }
-    if let Some(installed) = manifest.skills.get_mut(name) {
-        installed.commit = commit;
-    }
-    store(repo, &manifest)
+    manifest.skills.get_mut(name).unwrap().commit = commit;
+    manifest.save(repo)
 }
 
 /// Updates every installed skill but the Shipped ones, and returns those
 /// that failed, each with why.
 pub(crate) fn update_all(repo: &Path, tools: &dyn Tools) -> Result<Vec<(String, String)>, String> {
-    Ok(open(repo)?
+    Ok(Manifest::load(repo)?
         .skills
         .into_iter()
         .filter(|(_, skill)| !skill.shipped)
@@ -377,12 +360,18 @@ pub(crate) fn update_all(repo: &Path, tools: &dyn Tools) -> Result<Vec<(String, 
 /// Removes a skill the Harness fetched: its folder, its link and its entry.
 /// A job it did, picked or by default, is set to none.
 pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
-    let mut manifest = open(repo)?;
-    let at = third_party(repo, &manifest, name)?.at.clone();
+    let mut manifest = Manifest::load(repo)?;
+    third_party(repo, &manifest, name)?;
     let link = repo.join(".claude/skills").join(name);
     if fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        if !own(repo, ".claude/skills") {
+            return Err(format!(
+                ".claude/skills is not the checkout's own folder: the Harness will not touch {name}"
+            ));
+        }
         fs::remove_file(&link).map_err(|err| format!("{}: {err}", link.display()))?;
     }
+    let at = format!(".agents/skills/{name}");
     if repo.join(&at).exists() {
         fs::remove_dir_all(repo.join(&at)).map_err(|err| format!("{at}: {err}"))?;
     }
@@ -392,13 +381,13 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
         }
     }
     manifest.skills.remove(name);
-    store(repo, &manifest)
+    manifest.save(repo)
 }
 
 /// An installed skill the Harness fetched from a source, which update and
-/// remove may touch. Only at the folder add gives it, and only while
-/// .agents/skills resolves inside the checkout: they delete that folder, and
-/// an entry edited by hand, or a linked .agents, could name something else.
+/// remove may touch. Only while its name is a folder name and .agents/skills
+/// is the checkout's own: they delete .agents/skills/<name>, and an entry
+/// edited by hand, or a linked .agents, could name something else.
 fn third_party<'a>(
     repo: &Path,
     manifest: &'a Manifest,
@@ -409,25 +398,32 @@ fn third_party<'a>(
         Some(skill) if skill.shipped => Err(format!(
             "{name} is a Shipped skill: it cannot be removed, and harness init updates it"
         )),
-        Some(skill) if !safe_name(name) || skill.at != format!(".agents/skills/{name}") => {
-            Err(format!(
-                "{name} in {MANIFEST} is at '{}', not .agents/skills/{name}: the Harness will not touch it",
-                skill.at
-            ))
-        }
-        Some(_)
-            if !repo.canonicalize().is_ok_and(|root| {
-                repo.join(".agents/skills")
-                    .canonicalize()
-                    .is_ok_and(|skills| skills.starts_with(root))
-            }) =>
-        {
-            Err(format!(
-                ".agents/skills is not a folder inside the checkout: the Harness will not touch {name}"
-            ))
-        }
+        Some(_) if !safe_name(name) => Err(format!(
+            "{name} in {MANIFEST} is not a folder name: the Harness will not touch it"
+        )),
+        Some(_) if !own(repo, ".agents/skills") => Err(format!(
+            ".agents/skills is not the checkout's own folder: the Harness will not touch {name}"
+        )),
         Some(skill) => Ok(skill),
     }
+}
+
+/// Whether dir, from the checkout's root, is the checkout's own: no link on
+/// the way leads anywhere else, not even elsewhere in the checkout.
+fn own(repo: &Path, dir: &str) -> bool {
+    repo.canonicalize().is_ok_and(|root| {
+        repo.join(dir)
+            .canonicalize()
+            .is_ok_and(|real| real == root.join(dir))
+    })
+}
+
+/// The folder at path in the clone, resolved, when it is inside the clone: a
+/// link there could lead anywhere on this machine.
+fn in_clone(clone: &Path, path: &str) -> Option<PathBuf> {
+    let root = clone.canonicalize().ok()?;
+    let dir = clone.join(path).canonicalize().ok()?;
+    (dir.starts_with(&root) && dir.is_dir()).then_some(dir)
 }
 
 /// Shallow-clones url at git_ref (the default branch when empty) into a
