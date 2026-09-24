@@ -391,14 +391,16 @@ pub(crate) fn remove(repo: &Path, name: &str) -> Result<(), String> {
     let mut manifest = Manifest::load(repo)?;
     third_party(repo, &manifest, name)?;
     let link = repo.join(".claude/skills").join(name);
-    // Only a link is removed, and a failed save puts it back.
+    // Only the link put makes is removed, not one the user put there instead,
+    // and a failed save puts it back.
     let target = fs::read_link(&link).ok();
+    if target.is_some() && !own(repo, ".claude/skills") {
+        return Err(format!(
+            ".claude/skills is not the checkout's own folder: the Harness will not touch {name}"
+        ));
+    }
+    let target = target.filter(|target| *target == Path::new("../../.agents/skills").join(name));
     if target.is_some() {
-        if !own(repo, ".claude/skills") {
-            return Err(format!(
-                ".claude/skills is not the checkout's own folder: the Harness will not touch {name}"
-            ));
-        }
         fs::remove_file(&link).map_err(|err| format!("{}: {err}", link.display()))?;
     }
     for (job, _) in JOBS {

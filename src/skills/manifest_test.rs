@@ -491,6 +491,22 @@ fn a_skill_linked_from_a_linked_claude_folder_is_not_removed() {
 }
 
 #[test]
+fn removing_a_skill_keeps_a_link_the_user_put_in_place_of_the_harness_one() {
+    let repo = TempDir::new();
+    let tools = git(&remote("abc123", TWO_SKILLS));
+    add(repo.path(), &*tools, "mattpocock/skills", Some("tdd")).unwrap();
+    let link = repo.path().join(".claude/skills/tdd");
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink("../../my-skills/tdd", &link).unwrap();
+    remove(repo.path(), "tdd").unwrap();
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        Path::new("../../my-skills/tdd")
+    );
+    assert!(!repo.path().join(".agents/skills/tdd").exists());
+}
+
+#[test]
 fn a_source_folder_that_links_out_of_the_clone_is_not_taken() {
     let repo = TempDir::new();
     add(
