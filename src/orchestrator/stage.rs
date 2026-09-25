@@ -283,7 +283,7 @@ impl Orchestrator {
     }
 
     pub(crate) fn run_dir(&self, ticket: &str) -> PathBuf {
-        self.cfg.repo.join(".harness").join("runs").join(ticket)
+        run_dir(&self.cfg.repo, ticket)
     }
 
     pub(crate) fn worktree(&self, ticket: &str) -> PathBuf {
@@ -479,6 +479,11 @@ pub(crate) fn log_line(time: chrono::DateTime<chrono::Local>, ticket: &str, text
         format!("{ticket} ")
     };
     format!("{} {id}{text}\n", time.format("%Y-%m-%d %H:%M:%S"))
+}
+
+/// A Ticket's Run directory under the Target repo.
+pub(crate) fn run_dir(repo: &Path, ticket: &str) -> PathBuf {
+    repo.join(".harness").join("runs").join(ticket)
 }
 
 /// How a Stage is named in an event: "implement", "review 1", "fix 2".
