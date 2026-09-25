@@ -1,7 +1,7 @@
 //! The App table and .harness/config.json: each Stage's App, model and
 //! effort, read when the Stage starts.
 
-use super::app::app;
+use super::app::{app, canonical, rules, App, APPS, IF_LIMITED};
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, World};
 use super::write_file;
 use crate::skills::manifest::{Manifest, NONE};
@@ -241,7 +241,7 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
         (
             r#"{"side_b": {"app": "claude"}}"#,
             "debate 1",
-            "side_a and side_b both run Anthropic models: the Debate needs two families",
+            "Both sides would be Anthropic: the Debate needs two families",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -427,4 +427,146 @@ fn the_fallback_is_unset_at_none_and_runs_a_row_with_no_model() {
     assert_eq!(fallback(), None);
     config(&w, r#"{"review_if_limited": {"app": "claude"}}"#);
     assert_eq!(fallback().as_deref(), Some("claude"));
+}
+
+/// One name per model whichever App runs it: an alias, a dotted version, a
+/// provider prefix, a [1m] suffix and a dated id all name one model.
+#[test]
+fn a_model_has_one_name_across_apps() {
+    for (model, want) in [
+        ("opus", "claude-opus-5-5"),
+        ("opus-5.5", "claude-opus-5-5"),
+        ("anthropic/claude-opus-5-5", "claude-opus-5-5"),
+        ("claude-opus-5-5[1m]", "claude-opus-5-5"),
+        ("fable", "claude-fable-5-1"),
+        ("sonnet-5", "claude-sonnet-5"),
+        ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
+        ("haiku", "claude-haiku-4-5"),
+        ("openai/gpt-5.5", "gpt-5-5"),
+        ("gpt-6-sol", "gpt-6-sol"),
+    ] {
+        assert_eq!(canonical(model), want, "{model}");
+    }
+}
+
+/// An App of no one family, as pi is: its default's family is unknown.
+fn many() -> &'static App {
+    Box::leak(Box::new(App {
+        name: "pi",
+        family: None,
+        ..APPS[0]
+    }))
+}
+
+/// Each rule over a table of rows (key, App, model), "plan" for
+/// Implement's plan model: whether it holds, and what it says.
+fn rules_of(table: &[(&str, &'static App, &str)]) -> Vec<(Option<bool>, String)> {
+    rules(|key| {
+        let (_, app, model) = table.iter().find(|r| r.0 == key)?;
+        Some((*app, model.to_string()))
+    })
+    .into_iter()
+    .map(|c| (c.holds, c.text))
+    .collect()
+}
+
+#[test]
+fn the_rules_over_row_tables() {
+    let (claude, codex, pi) = (&APPS[0], &APPS[1], many());
+    let base = |rows: &[(&'static str, &'static App, &'static str)]| {
+        let mut table = vec![
+            ("implement", claude, "default"),
+            ("review", codex, "default"),
+            (IF_LIMITED, claude, "none"),
+            ("side_a", claude, "default"),
+            ("side_b", codex, "default"),
+        ];
+        for row in rows {
+            table.retain(|r| r.0 != row.0);
+            table.push(*row);
+        }
+        rules_of(&table)
+    };
+    let holds = |text: &str| (Some(true), text.to_string());
+    let broken = |text: &str| (Some(false), text.to_string());
+    let unknown = |text: &str| (None, text.to_string());
+    // The defaults hold; the fallback at none is not checked.
+    assert_eq!(
+        base(&[]),
+        [
+            holds("The Review runs on codex's default, not Implement's claude's default"),
+            holds("The sides come from two families: Anthropic and OpenAI"),
+        ]
+    );
+    // One model across Apps and spellings.
+    assert_eq!(
+        base(&[
+            ("implement", claude, "opus"),
+            ("review", pi, "anthropic/claude-opus-5-5"),
+            (IF_LIMITED, claude, "opus-5.5"),
+        ])[..2],
+        [
+            broken("The Review would run on Implement's model, claude-opus-5-5: it must not review its own work"),
+            broken("The Review if limited would run on Implement's model, claude-opus-5-5: it must not review its own work"),
+        ]
+    );
+    // One App's default is one model.
+    assert_eq!(
+        base(&[("review", claude, "default")])[0],
+        broken("The Review would run on Implement's model, claude's default: it must not review its own work")
+    );
+    // A default of no one family cannot be told apart.
+    assert_eq!(
+        base(&[("review", pi, "default")])[0],
+        unknown("The Review's model can't be told (pi default): pick a named model")
+    );
+    assert_eq!(
+        base(&[("implement", pi, "default")])[0],
+        unknown("Implement's model can't be told (pi default): pick a named model")
+    );
+    // The Debate: two families, each told.
+    assert_eq!(
+        base(&[("side_b", claude, "sonnet")])[1],
+        broken("Both sides would be Anthropic: the Debate needs two families")
+    );
+    assert_eq!(
+        base(&[("side_b", pi, "default")])[1],
+        unknown("side B's family can't be told (pi default): pick a model that names it")
+    );
+    assert_eq!(
+        base(&[("side_a", pi, "mystery-9")])[1],
+        unknown("side A's family can't be told (pi mystery-9): pick a model that names it")
+    );
+    assert_eq!(
+        base(&[("side_b", pi, "google/gemini-3-pro")])[1],
+        holds("The sides come from two families: Anthropic and Google")
+    );
+    assert_eq!(
+        base(&[("side_b", pi, "anthropic/claude-sonnet-5")])[1],
+        broken("Both sides would be Anthropic: the Debate needs two families")
+    );
+    // A split: plan and implementation one family, checked first.
+    assert_eq!(
+        base(&[("implement", claude, "opus"), ("plan", claude, "fable")])[0],
+        holds("Plans on fable and implements on opus, both Anthropic")
+    );
+    assert_eq!(
+        base(&[
+            ("implement", pi, "anthropic/claude-opus-5-5"),
+            ("plan", pi, "openai/gpt-6-sol"),
+        ])[0],
+        broken("The plan (openai/gpt-6-sol) and the implementation (anthropic/claude-opus-5-5) must be one family")
+    );
+    assert_eq!(
+        base(&[("implement", pi, "mystery-9"), ("plan", pi, "google/gemini-3-pro")])[0],
+        unknown("The plan's family or the implementation's can't be told (pi google/gemini-3-pro, mystery-9): pick models that name it")
+    );
+    // A plan on Implement's model, or default, is no split.
+    for plan in ["opus", "default"] {
+        assert_eq!(
+            base(&[("implement", claude, "opus"), ("plan", claude, plan)]).len(),
+            2,
+            "{plan}"
+        );
+    }
 }

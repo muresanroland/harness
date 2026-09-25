@@ -97,7 +97,7 @@ harness init
 | `/park <ticket>` | Take the Ticket out of the pipeline; the others keep going |
 | `/address <ticket>` | Act on the review comments or merge conflicts on the Ticket's open PR |
 | `/questions` | Show the Questions waiting for you |
-| `/config` | Pick the App, model and effort each Stage runs on; every change saves at once to `.harness/config.json`, and during a run the Stages that start after it use it |
+| `/config` | Pick the App, model and effort each Stage runs on, and a plan model other than Implement's; every change saves at once to `.harness/config.json`, and during a run the Stages that start after it use it. A change that breaks a check (the Review on Implement's model, the Debate's sides in one family) is refused; the Apps page shows which Apps are installed |
 | `/away` | Toggle Away: a Stage's question parks its Ticket, with a bd comment, until you `/continue @ticket` it |
 | `/summary [<epic>]` | Show the Epic's PRs, Rounds and Findings; it also opens by itself once every Ticket has its PR or is Parked |
 | `/exit` | Leave the Shell (asks first during a run). Ctrl-C twice does the same |

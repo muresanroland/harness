@@ -13,9 +13,9 @@ use crossterm::event::KeyCode;
 use ratatui::style::Color;
 use serde_json::{json, Value};
 
-use super::logo::{GREEN, MUTED, RED};
+use super::logo::{GREEN, MUTED, ORANGE, RED};
 use super::{Screen, NOTICE_WINDOW};
-use crate::orchestrator::app::{self, app, App, Model, Row, APPS, IF_LIMITED};
+use crate::orchestrator::app::{self, app, App, Check, Model, Row, APPS, IF_LIMITED};
 use crate::skills::manifest::Manifest;
 use crate::tools::RunError;
 
@@ -114,20 +114,38 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 5] = [
     ),
 ];
 
+/// The Apps page's place on the left, after the Pipeline's sections.
+pub(crate) const APPS_PAGE: usize = SECTIONS.len();
+
 /// A setting of a row.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Field {
     App,
     Model,
     Effort,
+    /// Implement's plan model, other than its model on a split.
+    Plan,
+    /// Plan + Implement's 'Same model for plan and implementation'.
+    Same,
 }
 
 impl Field {
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Field::Plan => "plan model",
+            Field::Same => "same model",
+            field => field.key(),
+        }
+    }
+
+    /// Its name in config.json.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
             Field::App => "app",
             Field::Model => "model",
             Field::Effort => "effort",
+            Field::Plan => "plan_model",
+            Field::Same => "same",
         }
     }
 }
@@ -157,6 +175,10 @@ pub(crate) struct Entry {
     pub(crate) name: String,
     pub(crate) detail: String,
     pub(crate) current: bool,
+    /// The rule a model picked would break: '✗ side A's family'.
+    pub(crate) mark: Option<(&'static str, Color)>,
+    /// Greyed: an App not installed.
+    pub(crate) dim: bool,
     pub(crate) picks: Option<Picked>,
 }
 
@@ -174,10 +196,18 @@ pub(crate) struct Settings {
     pub(crate) doc: Value,
     /// Each App's models, as APPS orders them, read when /config opened.
     models: Vec<Result<Vec<Model>, String>>,
-    /// The Apps on PATH, and the skills installed but the Shipped ones.
-    pub(crate) installed: usize,
+    /// Whether each App, as APPS orders them, is on PATH, and the first
+    /// line its --version prints.
+    pub(crate) installed: Vec<bool>,
+    pub(crate) versions: Vec<String>,
+    /// herdr's other integrated Apps, not supported yet.
+    pub(crate) others: Vec<String>,
+    /// The skills installed but the Shipped ones.
     pub(crate) skills: usize,
-    /// The section on the left, and whether the cursor is on its page.
+    /// The window on an App not installed: where to get it.
+    pub(crate) home: Option<&'static App>,
+    /// The section on the left (APPS_PAGE past them), and whether the
+    /// cursor is on its page.
     pub(crate) section: usize,
     pub(crate) open: bool,
     /// The setting under the cursor on the page, of Settings::items.
@@ -195,11 +225,19 @@ pub(crate) struct Settings {
 /// A row's setting in doc, the default filled in; a field not a string
 /// shows why.
 fn value(doc: &Value, row: usize, field: Field) -> String {
-    app::field(doc, ROWS[row].key, field.name()).unwrap_or_else(|err| err)
+    app::field(doc, ROWS[row].key, field.key()).unwrap_or_else(|err| err)
+}
+
+/// Implement's plan model in doc on a split: one other than its model, not
+/// default.
+fn split(doc: &Value) -> Option<String> {
+    let plan = value(doc, 0, Field::Plan);
+    (plan != "default" && plan != value(doc, 0, Field::Model)).then_some(plan)
 }
 
 /// A row in doc as RECENT's started line names it: "codex gpt-6-sol/high",
-/// or "none" for a fallback that is not set.
+/// on a split "claude claude-fable-5-1→claude-opus-5-5", or "none" for a
+/// fallback that is not set.
 fn said(doc: &Value, row: usize) -> String {
     let model = value(doc, row, Field::Model);
     match app(&value(doc, row, Field::App)) {
@@ -209,15 +247,26 @@ fn said(doc: &Value, row: usize) -> String {
             app,
             model,
             effort: value(doc, row, Field::Effort),
-            plan_model: None,
+            plan_model: split(doc).filter(|_| row == 0),
         }
         .said(),
     }
 }
 
+/// A model's family on app as /config labels it.
+pub(crate) fn family(app: &App, model: &str) -> &'static str {
+    app::family(app, model).unwrap_or("family unknown")
+}
+
 /// The rows of a section.
 fn rows_of(section: usize) -> impl Iterator<Item = usize> {
     (0..ROWS.len()).filter(move |&r| ROWS[r].section == section)
+}
+
+/// The section a check shows on: its last row's.
+pub(crate) fn section_of(check: &Check) -> usize {
+    let key = check.rows[check.rows.len() - 1];
+    ROWS.iter().find(|r| r.key == key).unwrap().section
 }
 
 /// Each once, in the order first met.
@@ -241,6 +290,50 @@ impl Settings {
         app(&self.value(row, Field::App))
     }
 
+    /// Whether app was on PATH when /config opened.
+    pub(crate) fn is_installed(&self, app: &App) -> bool {
+        APPS.iter()
+            .zip(&self.installed)
+            .any(|(a, &on)| on && a.name == app.name)
+    }
+
+    /// The Apps line on the left: "1 of 2 installed".
+    pub(crate) fn apps_summary(&self) -> String {
+        let on = self.installed.iter().filter(|&&on| on).count();
+        format!("{on} of {} installed", APPS.len())
+    }
+
+    /// The foot's note on the Apps page's App i.
+    pub(crate) fn app_note(&self, i: usize) -> String {
+        match self.installed[i] {
+            true => format!("{} is on PATH: a Stage can run on it.", APPS[i].name),
+            false => format!("Not on PATH. Enter shows where to get {}.", APPS[i].name),
+        }
+    }
+
+    /// Implement's plan model on a split.
+    pub(crate) fn split(&self) -> Option<String> {
+        split(&self.doc)
+    }
+
+    /// The rules on the rows as they are, those of a section when given.
+    pub(crate) fn checks(&self, section: Option<usize>) -> Vec<Check> {
+        let mut checks = app::checks(&self.doc);
+        checks.retain(|c| section.is_none_or(|s| section_of(c) == s));
+        checks
+    }
+
+    /// A section's mark on the left: ✗ for a broken rule, else ? for one
+    /// that cannot be told.
+    pub(crate) fn mark(&self, section: usize) -> Option<(&'static str, Color)> {
+        let holds: Vec<_> = self.checks(Some(section)).iter().map(|c| c.holds).collect();
+        match () {
+            _ if holds.contains(&Some(false)) => Some(("✗", RED)),
+            _ if holds.contains(&None) => Some(("?", ORANGE)),
+            _ => None,
+        }
+    }
+
     /// A section's line on the left: its row's App and model; the Debate's
     /// Apps.
     pub(crate) fn summary(&self, section: usize) -> String {
@@ -248,15 +341,27 @@ impl Settings {
             return distinct(rows_of(section).map(|r| self.value(r, Field::App))).join("+");
         }
         let row = rows_of(section).next().unwrap();
+        if let Some(plan) = self.split().filter(|_| section == 0) {
+            let model = self.value(row, Field::Model);
+            return format!("{} {plan}→{model}", self.value(row, Field::App));
+        }
         match self.value(row, Field::Model).as_str() {
             "default" => self.value(row, Field::App),
             model => format!("{} {model}", self.value(row, Field::App)),
         }
     }
 
-    /// A section's settings, row by row.
-    pub(crate) fn items(section: usize) -> Vec<(usize, Field)> {
-        rows_of(section)
+    /// The open section's settings, row by row; Plan + Implement's with
+    /// its toggle, and the plan model on a split.
+    pub(crate) fn items(&self) -> Vec<(usize, Field)> {
+        if self.section == 0 {
+            let plan = self.split().map(|_| (0, Field::Plan));
+            let head = [(0, Field::App), (0, Field::Same)].into_iter().chain(plan);
+            return head
+                .chain([(0, Field::Model), (0, Field::Effort)])
+                .collect();
+        }
+        rows_of(self.section)
             .flat_map(|r| [Field::App, Field::Model, Field::Effort].map(|f| (r, f)))
             .collect()
     }
@@ -300,11 +405,24 @@ impl Settings {
                 Some(Picked::Typed) => true,
                 Some(_) => name.to_lowercase().contains(&filter),
             };
+            let model = matches!(pick.field, Field::Model | Field::Plan);
+            let current = match &picks {
+                None => false,
+                Some(_) if model => app::canonical(name) == app::canonical(&current),
+                Some(_) => name == current,
+            };
+            let mark = match &picks {
+                Some(Picked::Value(m)) if model => self.mark_of(pick, m),
+                _ => None,
+            };
+            let dim = matches!(&picks, Some(Picked::App(a)) if !self.is_installed(a));
             if shown {
                 out.push(Entry {
                     name: name.to_string(),
                     detail,
-                    current: picks.is_some() && name == current,
+                    current,
+                    mark,
+                    dim,
                     picks,
                 });
             }
@@ -313,23 +431,37 @@ impl Settings {
         match (pick.field, self.pick_app(pick)) {
             (Field::App, _) => {
                 for a in &APPS {
-                    entry(a.name, a.family.to_string(), Some(Picked::App(a)));
+                    let detail = match self.is_installed(a) {
+                        true => family(a, "default"),
+                        false => "not installed",
+                    };
+                    entry(a.name, detail.into(), Some(Picked::App(a)));
                 }
             }
-            (_, None) => {}
+            (_, None) | (Field::Same, _) => {}
+            (Field::Plan, Some(app)) => {
+                let theirs = app::family(app, &self.value(pick.row, Field::Model));
+                for (id, _) in self.listed(app) {
+                    if app::family(app, id) == theirs {
+                        entry(id, family(app, id).into(), Some(Picked::Value(id.clone())));
+                    }
+                }
+                let detail = "probed before it saves".to_string();
+                entry("type an id…", detail, Some(Picked::Typed));
+            }
             (Field::Model, Some(app)) => {
                 let value = |m: &str| Some(Picked::Value(m.to_string()));
                 if ROWS[pick.row].key == IF_LIMITED {
                     let detail = "no fallback".to_string();
                     entry("none", detail, value("none"));
                 }
-                let detail = format!("{}'s own · {}", app.name, app.family);
+                let detail = format!("{}'s own · {}", app.name, family(app, "default"));
                 entry("default", detail, value("default"));
                 if let Err(err) = self.catalog(app) {
                     entry(err, String::new(), None);
                 }
                 for (id, _) in self.listed(app) {
-                    entry(id, app.family.to_string(), value(id));
+                    entry(id, family(app, id).into(), value(id));
                 }
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
@@ -351,6 +483,32 @@ impl Settings {
         out
     }
 
+    /// The rule model, picked from pick's list, would break, of those that
+    /// read the pick's row.
+    fn mark_of(&self, pick: &Pick, model: &str) -> Option<(&'static str, Color)> {
+        let key = ROWS[pick.row].key;
+        let mut fields = vec![(pick.field, model.to_string())];
+        if let Some(app) = pick.app {
+            fields.insert(0, (Field::App, app.name.to_string()));
+        }
+        let mut doc = self.doc.clone();
+        put(&mut doc, key, &fields);
+        let broken = app::checks(&doc)
+            .into_iter()
+            .find(|c| c.holds != Some(true) && c.rows.contains(&key))?;
+        let mark = match (broken.holds, broken.rows, key) {
+            (None, ..) => "? family unknown",
+            (_, ["implement"], _) if pick.field == Field::Plan => "✗ not Implement's family",
+            (_, ["implement"], _) => "✗ not the plan's family",
+            (_, [_, "review"], "implement") => "✗ the Review's model",
+            (_, [_, _], "implement") => "✗ the fallback's model",
+            (_, ["implement", _], _) => "✗ Implement's model",
+            (_, _, "side_a") => "✗ side B's family",
+            _ => "✗ side A's family",
+        };
+        Some((mark, if broken.holds.is_none() { ORANGE } else { RED }))
+    }
+
     pub(crate) fn choices(&self, pick: &Pick) -> Vec<Picked> {
         self.entries(pick)
             .into_iter()
@@ -358,10 +516,23 @@ impl Settings {
             .collect()
     }
 
-    /// The foot's note on a setting.
-    pub(crate) fn note_of(row: usize, field: Field) -> String {
+    /// The foot's note on a setting, or on its open pick list.
+    pub(crate) fn note_of(&self, row: usize, field: Field) -> String {
         let tail = match field {
             Field::App => "Changing the App leads into its model list; the pair saves together.",
+            Field::Same => match self.split() {
+                Some(plan) => {
+                    let model = self.value(row, Field::Model);
+                    return format!("Off: plans on {plan}, implements on {model}. Enter or Space turns it on: one model plans and implements.");
+                }
+                None => return "On: one model plans and implements. Enter or Space turns it off to plan on another model of Implement's family.".to_string(),
+            },
+            Field::Plan if self.pick.is_some() && self.split().is_none() => {
+                return "Pick the plan's model to split planning from implementing; Esc keeps one model for both.".to_string();
+            }
+            Field::Plan => {
+                return "Plans in plan mode, on a model of Implement's family; Implement's own model plans on one model again.".to_string();
+            }
             _ => "Default passes no flag.",
         };
         format!("{} {tail}", ROWS[row].note)
@@ -420,14 +591,45 @@ fn staged(
 ) -> Result<(PathBuf, Value, Value, Row), String> {
     let (path, read) = app::read_object(repo)?;
     let mut doc = read.clone();
+    put(&mut doc, key, fields);
+    let row = app::row_in(&doc, key, &path)?;
+    if let Some(broken) = app::checks(&doc)
+        .into_iter()
+        .find(|c| c.holds != Some(true))
+    {
+        return Err(broken.text);
+    }
+    Ok((path, read, doc, row))
+}
+
+/// doc with a row's fields put in. On Implement a new App, or a plan model
+/// that is default or Implement's own, plans on one model again, so an App
+/// change never strands the plan; a split names both halves by full id, as
+/// opusplan's remap needs. A field not a string is left for row_in to refuse.
+pub(crate) fn put(doc: &mut Value, key: &str, fields: &[(Field, String)]) {
     if !doc[key].is_object() {
         doc[key] = json!({});
     }
     for (field, value) in fields {
-        doc[key][field.name()] = json!(value);
+        doc[key][field.key()] = json!(value);
     }
-    let row = app::row_in(&doc, key, &path)?;
-    Ok((path, read, doc, row))
+    if key != "implement" {
+        return;
+    }
+    let (Ok(model), Ok(plan)) = (
+        app::field(doc, key, "model"),
+        app::field(doc, key, "plan_model"),
+    ) else {
+        return;
+    };
+    let row = doc[key].as_object_mut().unwrap();
+    let new_app = fields.iter().any(|(field, _)| *field == Field::App);
+    if new_app || plan == "default" || app::canonical(&plan) == app::canonical(&model) {
+        row.remove("plan_model");
+    } else {
+        row.insert("model".into(), json!(app::full_id(&model)));
+        row.insert("plan_model".into(), json!(app::full_id(&plan)));
+    }
 }
 
 impl Screen {
@@ -443,17 +645,39 @@ impl Screen {
             Err(err) => return self.notice(&err, NOTICE_WINDOW),
         };
         let tools = &*self.cfg.tools;
-        let installed = APPS
+        let installed: Vec<bool> = APPS
             .iter()
-            .filter(|a| tools.run(repo, &["which", a.name]).is_ok())
-            .count();
+            .map(|a| tools.run(repo, &["which", a.name]).is_ok())
+            .collect();
+        let versions = APPS
+            .iter()
+            .zip(&installed)
+            .map(|(a, &on)| match on {
+                true => tools.run(repo, &[a.name, "--version"]).unwrap_or_default(),
+                false => String::new(),
+            })
+            .map(|v| v.lines().next().unwrap_or_default().trim().to_string())
+            .collect();
+        // herdr 0.9.1 prints "letta (experimental): not installed (<path>)".
+        let status = tools
+            .run(repo, &["herdr", "integration", "status"])
+            .unwrap_or_default();
+        let others = status
+            .lines()
+            .filter_map(|line| line.split([':', ' ']).next())
+            .filter(|name| !name.is_empty() && app(name).is_none())
+            .map(String::from)
+            .collect();
         let skills =
             Manifest::load(repo).map_or(0, |m| m.skills.values().filter(|s| !s.shipped).count());
         self.settings = Some(Settings {
             doc,
             models: APPS.iter().map(|a| (a.models)(tools, repo)).collect(),
             installed,
+            versions,
+            others,
             skills,
+            home: None,
             section: 0,
             open: false,
             setting: 0,
@@ -472,6 +696,14 @@ impl Screen {
     pub(super) fn config_key(&mut self, code: KeyCode, held: bool) {
         let st = self.settings.as_mut().unwrap();
         st.note = None;
+        if let Some(app) = st.home {
+            match code {
+                KeyCode::Esc => st.home = None,
+                KeyCode::Enter => self.open_home(app),
+                _ => {}
+            }
+            return;
+        }
         if st.probe.is_some() {
             if code == KeyCode::Esc {
                 st.probe = None;
@@ -526,7 +758,7 @@ impl Screen {
         if !st.open {
             match code {
                 KeyCode::Up => st.section = st.section.saturating_sub(1),
-                KeyCode::Down => st.section = (st.section + 1).min(SECTIONS.len() - 1),
+                KeyCode::Down => st.section = (st.section + 1).min(APPS_PAGE),
                 KeyCode::Right | KeyCode::Enter => {
                     st.open = true;
                     st.setting = 0;
@@ -536,11 +768,27 @@ impl Screen {
             }
             return;
         }
-        let items = Settings::items(st.section);
+        if st.section == APPS_PAGE {
+            match code {
+                KeyCode::Up => st.setting = st.setting.saturating_sub(1),
+                KeyCode::Down => st.setting = (st.setting + 1).min(APPS.len() - 1),
+                KeyCode::Left | KeyCode::Esc => st.open = false,
+                KeyCode::Enter if st.installed[st.setting] => {
+                    st.note = Some((st.app_note(st.setting), MUTED));
+                }
+                KeyCode::Enter => st.home = Some(&APPS[st.setting]),
+                _ => {}
+            }
+            return;
+        }
+        let items = st.items();
         match code {
             KeyCode::Up => st.setting = st.setting.saturating_sub(1),
             KeyCode::Down => st.setting = (st.setting + 1).min(items.len() - 1),
             KeyCode::Left | KeyCode::Esc => st.open = false,
+            KeyCode::Enter | KeyCode::Char(' ') if items[st.setting].1 == Field::Same => {
+                self.toggle()
+            }
             KeyCode::Enter => {
                 let (row, field) = items[st.setting];
                 match st.app(row) {
@@ -555,18 +803,59 @@ impl Screen {
         }
     }
 
+    /// 'Same model for plan and implementation': on, a split turns it off
+    /// through the plan's model list, refused off claude (opusplan) or with
+    /// Implement's model at default; off, turning it on saves at once.
+    fn toggle(&mut self) {
+        let st = self.settings.as_mut().unwrap();
+        if st.split().is_some() {
+            return self.change(0, vec![(Field::Plan, "default".to_string())]);
+        }
+        let refused = match st.app(0) {
+            Some(app) if app.name != "claude" => format!(
+                "Refused: {} cannot plan on one model and implement on another: only claude splits, through opusplan. Nothing changed.",
+                app.name
+            ),
+            _ if st.value(0, Field::Model) == "default" => {
+                "Pick Implement's model first: the split needs a named model for each half."
+                    .to_string()
+            }
+            _ => return st.open_pick(0, Field::Plan, None),
+        };
+        st.note = Some((refused, RED));
+    }
+
+    /// An App's homepage, opened through Tools; the window closes.
+    fn open_home(&mut self, app: &'static App) {
+        let open = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let opened = self.cfg.tools.run(&self.cfg.repo, &[open, app.home]);
+        let st = self.settings.as_mut().unwrap();
+        st.home = None;
+        st.note = Some(match opened {
+            Ok(_) => (format!("Opened {}.", app.home), MUTED),
+            Err(err) => (err.to_string(), RED),
+        });
+    }
+
     /// A pick list's choice: a new App leads into its model list, one a
     /// row cannot run on refused; a model or an effort changes the row.
     fn choose(&mut self, pick: Pick, picked: Picked) {
         let st = self.settings.as_mut().unwrap();
         match picked {
+            Picked::App(a) if !st.is_installed(a) => st.home = Some(a),
             Picked::App(a) if st.app(pick.row).is_some_and(|now| now.name == a.name) => {}
             Picked::App(a) => match app::runs_on(ROWS[pick.row].key, a) {
                 Ok(()) => st.open_pick(pick.row, Field::Model, Some(a)),
                 Err(err) => st.note = Some((format!("Refused: {err}. Nothing changed."), RED)),
             },
             Picked::Typed => st.typing = Some((pick, String::new())),
-            Picked::Value(value) if pick.field == Field::Model => self.pick_model(&pick, &value),
+            Picked::Value(value) if matches!(pick.field, Field::Model | Field::Plan) => {
+                self.pick_model(&pick, &value)
+            }
             Picked::Value(value) => self.change(pick.row, vec![(Field::Effort, value)]),
         }
     }
@@ -576,8 +865,8 @@ impl Screen {
     /// list it.
     fn pick_model(&mut self, pick: &Pick, model: &str) {
         let st = self.settings.as_ref().unwrap();
-        let mut fields = vec![(Field::Model, model.to_string())];
-        if let Some(app) = st.pick_app(pick) {
+        let mut fields = vec![(pick.field, model.to_string())];
+        if let Some(app) = st.pick_app(pick).filter(|_| pick.field == Field::Model) {
             if pick.app.is_some() {
                 fields.insert(0, (Field::App, app.name.to_string()));
             }
@@ -601,22 +890,29 @@ impl Screen {
         let tools = self.cfg.tools.clone();
         let st = self.settings.as_mut().unwrap();
         let key = ROWS[row].key;
-        let (now, app, model) = match staged(&repo, key, &fields) {
-            Ok((_, now, _, staged)) => (now, staged.app, staged.model),
+        let (now, doc, staged) = match staged(&repo, key, &fields) {
+            Ok((_, now, doc, staged)) => (now, doc, staged),
             Err(err) => {
                 st.note = Some((format!("Refused: {err}. Nothing changed."), RED));
                 return;
             }
         };
         let same =
-            |(field, v): &(Field, String)| app::field(&now, key, field.name()).as_ref() == Ok(v);
-        if fields.iter().all(same) {
+            |(field, v): &(Field, String)| app::field(&now, key, field.key()).as_ref() == Ok(v);
+        if doc == now || fields.iter().all(same) {
             return;
         }
-        let picked = fields.iter().any(|(field, _)| *field == Field::Model);
-        if !picked || model == "default" || model == "none" {
+        // The model picked: a plan model, or the row's model.
+        let has = |f: Field| fields.iter().any(|(field, _)| *field == f);
+        let picked = match () {
+            _ if has(Field::Plan) => staged.plan_model,
+            _ if has(Field::Model) => Some(staged.model),
+            _ => None,
+        };
+        let Some(model) = picked.filter(|m| m != "default" && m != "none") else {
             return self.save(row, &fields);
-        }
+        };
+        let app = staged.app;
         let argv = app::probe(app, &repo, &model);
         let (tx, result) = mpsc::channel();
         thread::spawn(move || {

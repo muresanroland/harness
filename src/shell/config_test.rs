@@ -1,6 +1,7 @@
 //! /config over fake Tools and the fake world: the docked modal, its pick
 //! lists, the probe, and a change saved during a run.
 
+use super::config::{put, Field};
 use super::logo::PURPLE;
 use super::shell_test::{
     asking, await_line, cols, find, key, logged, render, row, rows, screen_at, shell, type_in,
@@ -162,7 +163,10 @@ fn a_typed_id_whose_probe_fails_keeps_the_old_value_and_shows_the_error() {
     let tools = apps("claude-nope");
     let mut s = screen_at(tools.clone(), repo.path());
     type_line(&mut s, "/config");
-    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+    keys(
+        &mut s,
+        &[KeyCode::Enter, KeyCode::Down, KeyCode::Down, KeyCode::Enter],
+    );
     type_in(&mut s, "type"); // only 'type an id…' is left
     s.key(key(KeyCode::Enter));
     type_in(&mut s, "claude-nope");
@@ -210,7 +214,10 @@ fn none_typed_off_the_fallback_is_refused_unprobed() {
     let tools = apps("");
     let mut s = screen_at(tools.clone(), repo.path());
     type_line(&mut s, "/config");
-    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+    keys(
+        &mut s,
+        &[KeyCode::Enter, KeyCode::Down, KeyCode::Down, KeyCode::Enter],
+    );
     type_in(&mut s, "type");
     s.key(key(KeyCode::Enter));
     type_in(&mut s, "none");
@@ -334,7 +341,7 @@ fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
 
     keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Down]);
     let buf = render(&s, 160, 45);
-    let right: Vec<String> = (1..19).map(|y| text(&buf, y, 99, 158)).collect();
+    let right: Vec<String> = (1..21).map(|y| text(&buf, y, 99, 158)).collect();
     assert_eq!(
         right,
         [
@@ -355,6 +362,8 @@ fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
             "  side B model          gpt-6-sol  OpenAI",
             "  side B effort         default",
             "",
+            "CHECKS",
+            "  ✓ The sides come from two families: Anthropic and OpenAI.",
             "",
         ]
     );
@@ -370,7 +379,7 @@ fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
         &mut s,
         &[KeyCode::Esc, KeyCode::Up, KeyCode::Up, KeyCode::Enter],
     );
-    keys(&mut s, &[KeyCode::Down, KeyCode::Enter]);
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
     let buf = render(&s, 160, 45);
     let right: Vec<String> = (1..9).map(|y| text(&buf, y, 99, 158)).collect();
     assert_eq!(
@@ -444,7 +453,11 @@ fn a_refused_probe_shows_what_the_app_said() {
         for _ in 0..section {
             s.key(key(KeyCode::Down));
         }
-        keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+        keys(&mut s, &[KeyCode::Enter, KeyCode::Down]);
+        if section == 0 {
+            s.key(key(KeyCode::Down)); // past the toggle
+        }
+        s.key(key(KeyCode::Enter));
         type_in(&mut s, if section == 0 { "opus" } else { "6-sol" });
         s.key(key(KeyCode::Enter));
         await_probe(&mut s);
@@ -557,4 +570,427 @@ fn a_config_json_not_an_object_is_refused_not_replaced() {
     type_line(&mut s, "/config");
     assert!(s.settings.is_none());
     assert_eq!(super::shell_test::notice(&s), why);
+}
+
+/// A config.json edited by hand to break a rule refuses the run, naming
+/// the rule, and /config marks it: ✗ on the Review, the badge counting it,
+/// the rule spelt out under CHECKS.
+#[test]
+fn a_hand_edited_config_that_breaks_a_rule_refuses_the_run_and_shows_it() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"implement": {"model": "claude-opus-5-5"}, "review": {"app": "claude", "model": "opus"}}"#,
+    );
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    let rule = "The Review would run on Implement's model, claude-opus-5-5: it must not review its own work";
+    assert_eq!(super::shell_test::notice(&s), rule);
+    assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
+
+    type_line(&mut s, "/config");
+    let buf = render(&s, 160, 45);
+    assert!(row(&buf, 0).contains("━ ✗ 1 check ┓"), "{:?}", row(&buf, 0));
+    assert!(
+        find(&buf, "  Review    claude opus ✗").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert_eq!(buf[(93, 4)].fg, super::logo::RED);
+    keys(&mut s, &[KeyCode::Down]);
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "CHECKS").is_some(), "{:#?}", rows(&buf));
+    assert!(
+        find(&buf, &format!("✗ {}", &rule[..40])).is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// A pick that would break a rule is refused before any probe: the rule
+/// shows in the foot and config.json stays byte for byte as it was.
+#[test]
+fn a_refused_pick_says_the_rule_and_leaves_config_json_as_it_was() {
+    let repo = TempDir::new();
+    let file = repo.path().join(".harness/config.json");
+    let before = "{ \"implement\":{\"model\":\"opus\"} }\n";
+    write_file(&file, before);
+    let tools = apps("");
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    // The Review's App, claude, then its opus-5.5: Implement's opus.
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
+    keys(&mut s, &[KeyCode::Up, KeyCode::Enter]);
+    type_in(&mut s, "type");
+    s.key(key(KeyCode::Enter));
+    type_in(&mut s, "opus-5.5");
+    s.key(key(KeyCode::Enter));
+    assert!(s.settings.as_ref().unwrap().probe.is_none());
+    assert!(
+        !tools.calls().iter().any(|c| c.ends_with("Reply with ok")),
+        "{:#?}",
+        tools.calls()
+    );
+    assert_eq!(
+        note(&s),
+        "Refused: The Review would run on Implement's model, claude-opus-5-5: \
+         it must not review its own work. Nothing changed."
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+}
+
+/// Implement's fields put into config.json: a plan other than Implement's
+/// model splits, both halves by full id; the plan on Implement's own model,
+/// or a new App for Plan + Implement, plans on one model again.
+// ponytail: a unit test, as Implement cannot leave claude on screen until
+// harness-7nq.12 lifts runs_on; a screen test of the App change then.
+#[test]
+fn a_split_takes_full_ids_and_an_app_change_plans_on_one_model_again() {
+    let implement = |doc: Value, fields: &[(Field, &str)]| {
+        let mut doc = doc;
+        let fields: Vec<_> = fields.iter().map(|(f, v)| (*f, v.to_string())).collect();
+        put(&mut doc, "implement", &fields);
+        doc
+    };
+    let split = implement(
+        json!({"implement": {"model": "opus", "effort": "high"}}),
+        &[(Field::Plan, "fable")],
+    );
+    assert_eq!(
+        split,
+        json!({"implement": {"model": "claude-opus-5-5", "plan_model": "claude-fable-5-1", "effort": "high"}})
+    );
+    let one = json!({"implement": {"model": "claude-opus-5-5", "effort": "high"}});
+    assert_eq!(implement(split.clone(), &[(Field::Plan, "opus")]), one);
+    assert_eq!(implement(split.clone(), &[(Field::Plan, "default")]), one);
+    assert_eq!(
+        implement(split, &[(Field::App, "codex"), (Field::Model, "gpt-6-sol")]),
+        json!({"implement": {"app": "codex", "model": "gpt-6-sol", "effort": "high"}})
+    );
+    // Another row keeps what it is given.
+    let mut doc = json!({});
+    put(&mut doc, "review", &[(Field::Model, "opus".to_string())]);
+    assert_eq!(doc, json!({"review": {"model": "opus"}}));
+}
+
+/// 'Same model for plan and implementation' is on by default; turning it
+/// off with Implement's model at default is refused, as the split needs a
+/// named model for each half.
+#[test]
+fn the_toggle_off_with_implement_at_default_is_refused() {
+    let repo = TempDir::new();
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Down]);
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "▸ [x] Same model for plan and implementation").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    for code in [KeyCode::Enter, KeyCode::Char(' ')] {
+        s.key(key(code));
+        assert!(s.settings.as_ref().unwrap().pick.is_none());
+        assert_eq!(
+            note(&s),
+            "Pick Implement's model first: the split needs a named model for each half."
+        );
+    }
+    assert!(!repo.path().join(".harness/config.json").exists());
+}
+
+/// Turning the toggle off opens the plan's model list, Implement's App's
+/// models of its family; Esc keeps one model. A plan model picked is probed
+/// and splits, both halves saved by full id, with plan model and implement
+/// model rows and the rule under CHECKS; the plan on Implement's own model
+/// is one model again, and so is the toggle turned on.
+#[test]
+fn the_toggle_splits_on_a_plan_model_and_joins_again() {
+    let repo = TempDir::new();
+    let file = repo.path().join(".harness/config.json");
+    write_file(
+        &file,
+        r#"{"implement": {"model": "opus", "effort": "high"}}"#,
+    );
+    let tools = apps("");
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Char(' ')]);
+    let buf = render(&s, 160, 45);
+    let text =
+        |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
+    let right: Vec<String> = (1..8).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "Implement plan model · claude   filter › ▏",
+            "▸ fable             Anthropic",
+            "  opus              Anthropic",
+            "  sonnet            Anthropic",
+            "  haiku             Anthropic",
+            "  type an id…       probed before it saves",
+            "",
+        ]
+    );
+    assert!(
+        find(
+            &buf,
+            "Pick the plan's model to split planning from implementing; Esc keeps one model for both."
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Esc));
+    assert_eq!(
+        config_json(repo.path()),
+        json!({"implement": {"model": "opus", "effort": "high"}})
+    );
+
+    s.key(key(KeyCode::Char(' ')));
+    s.key(key(KeyCode::Enter)); // fable
+    await_probe(&mut s);
+    assert!(
+        tools
+            .calls()
+            .iter()
+            .any(|c| c.ends_with("-p --model claude-fable-5-1 Reply with ok")),
+        "{:#?}",
+        tools.calls()
+    );
+    let split = json!({"implement": {
+        "model": "claude-opus-5-5", "plan_model": "claude-fable-5-1", "effort": "high"
+    }});
+    assert_eq!(config_json(repo.path()), split);
+    assert_eq!(
+        note(&s),
+        "saved: Implement claude claude-fable-5-1→claude-opus-5-5/high, in .harness/config.json"
+    );
+    let buf = render(&s, 160, 45);
+    let right: Vec<String> = (5..16).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "  app                   claude",
+            "▸ [ ] Same model for plan and implementation",
+            "  plan model            claude-fable-5-1  Anthropic",
+            "  implement model       claude-opus-5-5  Anthropic",
+            "  effort                high",
+            "",
+            "CHECKS",
+            "  ✓ Plans on claude-fable-5-1 and implements on",
+            "    claude-opus-5-5, both Anthropic.",
+            "",
+            "",
+        ]
+    );
+
+    // The plan on Implement's own model: one model again, nothing probed.
+    let calls = tools.calls().len();
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter]);
+    type_in(&mut s, "opus");
+    s.key(key(KeyCode::Enter));
+    assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
+    let one = json!({"implement": {"model": "claude-opus-5-5", "effort": "high"}});
+    assert_eq!(config_json(repo.path()), one);
+
+    // Split again, then the toggle turned on.
+    keys(&mut s, &[KeyCode::Up, KeyCode::Char(' '), KeyCode::Enter]);
+    await_probe(&mut s);
+    assert_eq!(config_json(repo.path()), split);
+    s.key(key(KeyCode::Enter));
+    assert_eq!(config_json(repo.path()), one);
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "▸ [x] Same model for plan and implementation").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// A pick list marks each model that would break a rule: every claude
+/// model for side B, as side A is Anthropic; Implement's model in the
+/// Review's list; the Review's model in Implement's.
+#[test]
+fn a_pick_list_marks_each_model_that_would_break_a_rule() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"implement": {"model": "opus"}, "review": {"app": "claude", "model": "sonnet"}}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    let text =
+        |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
+    // side B's App, claude
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    keys(&mut s, &[KeyCode::Down; 6]);
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Up, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    let right: Vec<String> = (1..8).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "Debate side B model · claude (new App)   filter › ▏",
+            "▸ default           claude's own · Anth… ✗ side A's family",
+            "  fable             Anthropic            ✗ side A's family",
+            "  opus              Anthropic            ✗ side A's family",
+            "  sonnet            Anthropic            ✗ side A's family",
+            "  haiku             Anthropic            ✗ side A's family",
+            "  type an id…       probed before it sa…",
+        ]
+    );
+    let (x, y) = find(&buf, "✗ side A's family").unwrap();
+    assert_eq!(buf[(x, y)].fg, super::logo::RED);
+
+    // The Review's model list: Implement's opus.
+    keys(
+        &mut s,
+        &[KeyCode::Esc, KeyCode::Left, KeyCode::Up, KeyCode::Enter],
+    );
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    assert!(
+        text(&buf, find(&buf, "  opus ").unwrap().1, 99, 158)
+            .ends_with("Anthropic          ✗ Implement's model"),
+        "{:#?}",
+        rows(&buf)
+    );
+    // Implement's: the Review's sonnet.
+    keys(
+        &mut s,
+        &[KeyCode::Esc, KeyCode::Left, KeyCode::Up, KeyCode::Enter],
+    );
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    assert!(
+        text(&buf, find(&buf, "  sonnet ").unwrap().1, 99, 158)
+            .ends_with("Anthropic         ✗ the Review's model"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        text(&buf, find(&buf, "▸ opus ").unwrap().1, 99, 158).ends_with("✓ current"),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// herdr's integrations as `herdr integration status` prints them.
+const STATUS: &str = "pi: not installed (/home/u/.pi/agent/extensions/herdr-agent-state.ts)
+claude: current (v10) (/home/u/.claude/hooks/herdr-agent-state.sh)
+codex: current (v8) (/home/u/.codex/herdr-agent-state.sh)
+opencode: not installed (/home/u/.config/opencode/plugins/herdr-agent-state.js)
+letta (experimental): not installed (/home/u/.letta/hooks/herdr-agent-session.sh)
+";
+
+/// Fake Tools where codex is not on PATH and claude says its version.
+fn codex_missing() -> Arc<Fake> {
+    Fake::new(|_, argv| match argv.join(" ").as_str() {
+        "which codex" => Err("codex not found".to_string()),
+        "claude --version" => Ok("2.1.282 (Claude Code)\n".to_string()),
+        "herdr integration status" => Ok(STATUS.to_string()),
+        _ => Ok(String::new()),
+    })
+}
+
+/// The Apps page: each App of the table installed with its version, or
+/// greyed not installed with its homepage; herdr's other Apps greyed, not
+/// supported yet.
+#[test]
+fn the_apps_page_renders_each_app_installed_or_not() {
+    let repo = TempDir::new();
+    let mut s = screen_at(codex_missing(), repo.path());
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Down; 5]);
+    let text =
+        |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
+    let buf = render(&s, 160, 45);
+    assert_eq!(text(&buf, 12, 69, 97), "▸ Apps      1 of 2 installed");
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    let right: Vec<String> = (1..12).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "Apps  1 of 2 installed",
+            "The agent CLIs a Stage runs on, found on PATH when /config",
+            "opened; harness init installs herdr's integration for each.",
+            "",
+            "▸ claude      installed      2.1.282 (Claude Code)",
+            "  codex       not installed  https://developers.openai.com…",
+            "",
+            "  pi          not supported yet",
+            "  opencode    not supported yet",
+            "  letta       not supported yet",
+            "",
+        ]
+    );
+    let (x, y) = find(&buf, "codex       not installed").unwrap();
+    assert_eq!(buf[(x, y)].fg, super::logo::MUTED);
+}
+
+/// An App not installed is greyed in an App list; picking it opens a
+/// window with its homepage, which Enter opens through Tools and Esc
+/// closes. So does Enter on it on the Apps page.
+#[test]
+fn an_app_not_installed_opens_a_window_that_opens_its_homepage() {
+    let repo = TempDir::new();
+    let tools = codex_missing();
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    // The Review's App list, codex: its current App, greyed.
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    let (x, y) = find(&buf, "codex").unwrap();
+    assert_eq!(buf[(x, y)].fg, super::logo::MUTED);
+    assert!(
+        cols(&buf, y, 99, 158).contains("not installed"),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, " codex is not installed ").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        find(&buf, "https://developers.openai.com/codex").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        find(&buf, "harness init again").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    let calls = tools.calls().len();
+    s.key(key(KeyCode::Esc));
+    assert!(s.settings.as_ref().unwrap().home.is_none());
+    assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
+
+    // From the Apps page: Enter opens the homepage and closes the window.
+    keys(
+        &mut s,
+        &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down],
+    );
+    keys(
+        &mut s,
+        &[KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter],
+    );
+    assert!(s.settings.as_ref().unwrap().home.is_some());
+    s.key(key(KeyCode::Enter));
+    let open = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    assert_eq!(
+        tools.calls().last().unwrap(),
+        &format!("{open} https://developers.openai.com/codex")
+    );
+    assert!(s.settings.as_ref().unwrap().home.is_none());
+    assert!(!repo.path().join(".harness/config.json").exists());
 }
