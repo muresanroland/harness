@@ -20,6 +20,8 @@ use super::result::{
 };
 use super::state::{load_state, Session, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
+use crate::skills::manifest::{self, Manifest};
+use crate::skills::stage_skill;
 use crate::tools::{RunError, Tools};
 
 /// One step of the Pipeline, carried out by a fresh agent session in its own
@@ -769,38 +771,43 @@ impl Orchestrator {
         }
         let run_dir = self.run_dir(ticket).display().to_string();
         // The Moderator is given each Debate side's command, read now too,
-        // and which side's App is Limited.
+        // and which side's App is Limited. Each job's Delegate skill, as the
+        // App that runs its line loads and names one: the audit, the Debate's
+        // job, runs on side A's command.
         let now = (self.cfg.clock)();
         let limited = |app: &str| self.limited_until(app).map(|reset| until(reset, now));
-        let sides = match st.name == DEBATE.name {
+        let (sides, runs) = match st.name == DEBATE.name {
             true => match debate_inputs(&self.cfg.repo, &run_dir, limited) {
-                Ok(sides) => sides,
+                Ok(got) => got,
                 Err(err) => return Held::Woke(err),
             },
-            false => Vec::new(),
+            false => (Vec::new(), row.app),
         };
-        let mut inputs = inputs.to_vec();
-        inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
-        // Wherever init put it: a copy committed in the repo first, then the
-        // checkout's, then the user's.
         let (repo, home) = (&self.cfg.repo, &self.cfg.home);
-        let mut dirs = vec![repo.join(".agents/skills"), repo.join(".harness/skills")];
-        if !home.as_os_str().is_empty() {
-            dirs.push(home.join(".agents/skills"));
-        }
-        // Only an absent copy falls through: an unreadable one is said.
-        let found = dirs.iter().find_map(|dir| {
-            let path = dir.join(st.skill).join("SKILL.md");
-            match fs::read_to_string(&path) {
-                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-                read => Some(read.map_err(|err| format!("cannot read {}: {err}", path.display()))),
-            }
-        });
-        let skill = match found {
+        let skill = match stage_skill(repo, home, st.skill) {
             Some(Ok(skill)) => skill,
             Some(Err(err)) => return Held::Woke(err),
             None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
         };
+        let manifest = match Manifest::load(repo) {
+            Ok(manifest) => manifest,
+            Err(err) => return Held::Woke(err),
+        };
+        let have: Vec<String> = manifest::list(repo, home, &*self.cfg.tools)
+            .into_iter()
+            .filter(|(name, path)| path.parent().is_some_and(|dir| runs.loads(name, dir)))
+            .map(|(name, _)| name)
+            .collect();
+        let (skill, lacking) = manifest.fill_jobs(&skill, &have, runs.built_in, runs.mention);
+        let lacking = (!lacking.is_empty()).then(|| {
+            format!(
+                "{}: their lines are left out; say so in the result file",
+                lacking.join(", ")
+            )
+        });
+        let mut inputs = inputs.to_vec();
+        inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
+        inputs.extend(lacking.as_deref().map(|value| ("Not installed", value)));
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());
         }
