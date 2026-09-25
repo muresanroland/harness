@@ -34,6 +34,9 @@ pub(crate) struct App {
     pub(crate) limits: &'static [&'static str],
     /// How a Stage skill's "Use the {} skill" names a job's pick.
     pub(crate) mention: fn(&str) -> String,
+    /// The skills built into it: a pick of one needs nothing installed here,
+    /// and is not installed on another App.
+    pub(crate) built_in: &'static [&'static str],
     /// Whether it loads a skill manifest::list found: the name list gives
     /// it, and the folder it is in.
     pub(crate) reads: fn(&str, &Path) -> bool,
@@ -91,6 +94,7 @@ pub(crate) static APPS: [App; 2] = [
         ],
         // In words, a plugin's skill plugin-qualified as the pick names it.
         mention: |pick| pick.to_string(),
+        built_in: &[],
         // Its own folders, where the checkout's skills are linked too, and
         // its enabled plugins', named plugin:skill.
         reads: |name, dir| {
@@ -115,8 +119,9 @@ pub(crate) static APPS: [App; 2] = [
             r"You['’]ve hit your (?P<what>usage limit)\..*?[Tt]ry again (?:at (?P<reset>.+?)|later)\.",
         ],
         // $name, which a skill with implicit invocation off (review-agent)
-        // needs; codex has no Claude Code plugins to qualify it by.
-        mention: |pick| format!("${}", pick.split_once(':').map_or(pick, |(_, name)| name)),
+        // needs.
+        mention: |pick| format!("${pick}"),
+        built_in: &["review-agent"],
         // .agents/skills, where the checkout's skills are linked too; never
         // Claude's .claude/skills or its plugins.
         reads: |_, dir| {
@@ -195,20 +200,22 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
 }
 
+/// Inputs as (name, value).
+type Inputs = Vec<(&'static str, String)>;
+
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row, the audit running on side A's, and TypeSafe when off.
-pub(crate) fn debate_inputs(
-    repo: &Path,
-    run_dir: &str,
-) -> Result<Vec<(&'static str, String)>, String> {
+/// from its row, the audit running on side A's, and TypeSafe when off. With
+/// them side A's App, which runs the audit's line.
+pub(crate) fn debate_inputs(repo: &Path, run_dir: &str) -> Result<(Inputs, &'static App), String> {
+    let side_a = row(repo, "side_a")?;
     let mut inputs = vec![
-        ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
+        ("Side A command", side_a.side_command(run_dir)),
         ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
     ];
     if !typesafe(repo) {
         inputs.push(("TypeSafe", "off".to_string()));
     }
-    Ok(inputs)
+    Ok((inputs, side_a.app))
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a

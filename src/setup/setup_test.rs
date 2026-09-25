@@ -469,6 +469,16 @@ fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
         picks_missing(repo.path(), home.path()),
         Vec::<String>::new()
     );
+    // Only codex has it: a Review on claude lacks it.
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"review": {"app": "claude"}}"#,
+    );
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        ["the review skill review-agent is missing: /config installs it, or picks another"]
+    );
+    fs::remove_file(repo.path().join(".harness/config.json")).unwrap();
 
     // A pick you have anywhere, at user level here, is there. One not a
     // job's default is /config's to install.

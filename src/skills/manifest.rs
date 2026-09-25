@@ -19,8 +19,8 @@ const MANIFEST: &str = ".harness/skills.json";
 pub(crate) const NONE: &str = "none";
 
 /// Each job a Delegate skill can do, with its suggestions, the default first:
-/// (skill name, source). An empty source is built into the App: nothing to
-/// install.
+/// (skill name, source). An empty source is built into an App (its
+/// built_in): nothing to install.
 pub(crate) const JOBS: &[(&str, &[(&str, &str)])] = &[
     (
         "test-first",
@@ -108,15 +108,10 @@ pub(crate) fn placeholder(job: &str) -> String {
     format!("{{{{{job}}}}}")
 }
 
-/// Whether the job's pick is a skill missing from have (list's names): none
-/// needs nothing, nor does a skill built into its App.
-pub(crate) fn lacks(job: &str, pick: &str, have: &[String]) -> bool {
-    let built_in = JOBS
-        .iter()
-        .filter(|(name, _)| *name == job)
-        .flat_map(|(_, suggestions)| suggestions.iter())
-        .any(|&(name, source)| name == pick && source.is_empty());
-    pick != NONE && !built_in && !have.iter().any(|name| name == pick)
+/// Whether a job's pick is a skill missing from have (list's names): none
+/// needs nothing, nor does one built_in to the App running the job's line.
+pub(crate) fn lacks(pick: &str, have: &[String], built_in: &[&str]) -> bool {
+    pick != NONE && !built_in.contains(&pick) && !have.iter().any(|name| name == pick)
 }
 
 /// Where the skills the Harness installs go, as harness init asked.
@@ -249,12 +244,13 @@ impl Manifest {
     /// A Stage skill with each job's placeholder filled in with the job's
     /// pick, as mention names it. A pick of none drops the placeholder's
     /// line, leaving the Stage skill's own instruction around it, and so
-    /// does one lacking from have (list's names); those are given back too,
-    /// each as "pick (job)".
+    /// does one lacking from have (list's names) and built_in; those are
+    /// given back too, each as "pick (job)".
     pub(crate) fn fill_jobs(
         &self,
         skill: &str,
         have: &[String],
+        built_in: &[&str],
         mention: fn(&str) -> String,
     ) -> (String, Vec<String>) {
         let mut lacking = Vec::new();
@@ -268,7 +264,7 @@ impl Manifest {
                         continue;
                     }
                     let pick = self.pick(job);
-                    if lacks(job, pick, have) {
+                    if lacks(pick, have, built_in) {
                         let said = format!("{pick} ({job})");
                         if !lacking.contains(&said) {
                             lacking.push(said);

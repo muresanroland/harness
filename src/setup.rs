@@ -749,12 +749,23 @@ pub(crate) fn preflight(
         missing
             .push("no create-pr skill: run 'harness init' to install the shipped one".to_string());
     }
-    // Each job's pick, but none and one built into its App.
+    // Each job's pick, but none and one built into the App its row runs on.
     match Manifest::load(repo) {
         Ok(manifest) => {
             for (job, suggestions) in JOBS {
                 let pick = manifest.pick(job);
-                if manifest::lacks(job, pick, &have) {
+                // The row running the job's line: the audit is side A's.
+                let key = match *job {
+                    "review" => "review",
+                    "audit" => "side_a",
+                    "merge-conflicts" => "address",
+                    _ => "implement",
+                };
+                // A row that cannot be read is the Orchestrator's to refuse.
+                let Ok(row) = app::row(repo, key) else {
+                    continue;
+                };
+                if manifest::lacks(pick, &have, row.app.built_in) {
                     // init installs only the default
                     let fix = if pick == suggestions[0].0 {
                         "harness init installs it, or /config picks another"

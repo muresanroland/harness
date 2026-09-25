@@ -352,6 +352,22 @@ fn a_pick_only_another_app_loads_is_not_installed() {
     }
 }
 
+/// A pick built into codex is not installed on claude.
+#[test]
+fn a_built_in_pick_is_not_installed_on_another_app() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    config(&w, r#"{"review": {"app": "claude"}}"#);
+    pick(&w, &[("review", "review-agent")]);
+    o.run_ticket("hx-1");
+
+    let review = prompt(&w, "review-1.md");
+    assert!(!review.contains("review-agent skill"), "{review}");
+    assert!(
+        review.contains("- Not installed: review-agent (review)"),
+        "{review}"
+    );
+}
+
 /// The audit at none: no audit line, so the Moderator skips it and notes it.
 #[test]
 fn the_audit_at_none_is_skipped_and_noted() {

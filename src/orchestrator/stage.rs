@@ -743,27 +743,20 @@ impl Orchestrator {
         }
         let run_dir = self.run_dir(ticket).display().to_string();
         // The Moderator is given each Debate side's command, read now too.
-        let sides = match st.name == DEBATE.name {
+        // Each job's Delegate skill, as the App that runs its line loads and
+        // names one: the audit, the Debate's job, runs on side A's command.
+        let (sides, runs) = match st.name == DEBATE.name {
             true => match debate_inputs(&self.cfg.repo, &run_dir) {
-                Ok(sides) => sides,
+                Ok(got) => got,
                 Err(err) => return Held::Woke(err),
             },
-            false => Vec::new(),
+            false => (Vec::new(), row.app),
         };
         let (repo, home) = (&self.cfg.repo, &self.cfg.home);
         let skill = match stage_skill(repo, home, st.skill) {
             Some(Ok(skill)) => skill,
             Some(Err(err)) => return Held::Woke(err),
             None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
-        };
-        // Each job's Delegate skill, as the App that runs its line loads and
-        // names one: the audit, the Debate's job, runs on side A's command.
-        let runs = match st.name == DEBATE.name {
-            true => match super::app::row(repo, "side_a") {
-                Ok(side) => side.app,
-                Err(err) => return Held::Woke(err),
-            },
-            false => row.app,
         };
         let manifest = match Manifest::load(repo) {
             Ok(manifest) => manifest,
@@ -774,7 +767,7 @@ impl Orchestrator {
             .filter(|(name, path)| path.parent().is_some_and(|dir| (runs.reads)(name, dir)))
             .map(|(name, _)| name)
             .collect();
-        let (skill, lacking) = manifest.fill_jobs(&skill, &have, runs.mention);
+        let (skill, lacking) = manifest.fill_jobs(&skill, &have, runs.built_in, runs.mention);
         let lacking = (!lacking.is_empty()).then(|| {
             format!(
                 "{}: their lines are left out; say so in the result file",
