@@ -24,7 +24,7 @@ use crate::orchestrator::judgment::{self, Action};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{log_line, Answer, Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
-    acquire_lock, load_state, Lock, State, TicketState, STATUS_MERGED, STATUS_PARKED,
+    acquire_lock, load_state, Lock, Review, State, TicketState, STATUS_MERGED, STATUS_PARKED,
     STATUS_PR_OPEN, STATUS_RUNNING,
 };
 use crate::setup;
@@ -582,7 +582,10 @@ impl Screen {
             Ask::Wake { .. } | Ask::PlanFailed { .. } => {
                 text.split_once(": ").map_or(text.as_str(), |(s, _)| s)
             }
-            Ask::Blocked { .. } | Ask::Plan { .. } | Ask::StageQuestion { .. } => text.as_str(),
+            Ask::Blocked { .. }
+            | Ask::Plan { .. }
+            | Ask::Limited { .. }
+            | Ask::StageQuestion { .. } => text.as_str(),
         };
         let asking = format!("asking you: {short}");
         // /continue @ticket's goes after a confirmation, and the Question
@@ -733,6 +736,11 @@ impl Screen {
                     )
                     .collect()
             }
+            About::Asked(Ask::Limited { fallback, .. }) => ["wait for the reset".to_string()]
+                .into_iter()
+                .chain(fallback.iter().map(|f| format!("review with {f}")))
+                .chain(["open the PR unreviewed".to_string()])
+                .collect(),
             About::Asked(Ask::StageQuestion { options, .. }) => options
                 .iter()
                 .cloned()
@@ -1051,6 +1059,24 @@ impl Screen {
             ) => {
                 let feedback = f.clone();
                 self.reply("feedback", Answer::Prompt(feedback));
+            }
+            // wait, review with the fallback, open the PR unreviewed: the
+            // answer stands for every Review on the App until the reset
+            (About::Asked(Ask::Limited { app, .. }), n) => {
+                let (app, options) = (app.clone(), self.options());
+                let answer = match n {
+                    0 => Review::Wait,
+                    n if n + 1 == options.len() => Review::Unreviewed,
+                    _ => Review::Fallback,
+                };
+                let q = self.questions.remove(0);
+                self.tell(
+                    q.ticket.as_deref(),
+                    &format!("you answered: {}", options[n]),
+                );
+                if let Some(run) = &self.run {
+                    run.o.review(&app, answer);
+                }
             }
             // the Stage's options, an answer of your own, open the pane, park
             (About::Asked(Ask::StageQuestion { options, pane, .. }), n) => {

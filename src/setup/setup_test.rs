@@ -559,4 +559,13 @@ fn preflight_names_each_row_whose_app_is_not_on_path() {
             "side_b runs on codex, which is not on PATH",
         ]
     );
+    // The Review's fallback once its key is set, no model needed; unset, it
+    // runs nothing.
+    let config = repo.path().join(".harness/config.json");
+    crate::orchestrator::write_file(&config, r#"{"review_if_limited": {"app": "codex"}}"#);
+    let got = preflight(repo.path(), &*no_codex, &home_env(home.path()));
+    assert!(
+        got.contains(&"review_if_limited runs on codex, which is not on PATH".to_string()),
+        "{got:?}"
+    );
 }

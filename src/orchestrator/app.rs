@@ -11,6 +11,9 @@ use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
 
+/// The Review's fallback row, for while the Review's App is Limited.
+pub(crate) const IF_LIMITED: &str = "review_if_limited";
+
 /// An agent CLI a Stage can run on: one row of the App table. In the arg
 /// forms, "{}" is the value put in.
 pub(crate) struct App {
@@ -171,19 +174,35 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
 }
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row, the audit running on side A's, and TypeSafe when off.
+/// from its row, and "limited until <t>" for a side whose App `limited`
+/// says is, the audit running on side A's, and TypeSafe when off.
 pub(crate) fn debate_inputs(
     repo: &Path,
     run_dir: &str,
+    limited: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(&'static str, String)>, String> {
+    let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
     let mut inputs = vec![
-        ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
-        ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
+        ("Side A command", a.side_command(run_dir)),
+        ("Side B command", b.side_command(run_dir)),
     ];
+    for (side, row) in [("Side A", &a), ("Side B", &b)] {
+        if let Some(when) = limited(row.app.name) {
+            inputs.push((side, format!("limited until {when}")));
+        }
+    }
     if !typesafe(repo) {
         inputs.push(("TypeSafe", "off".to_string()));
     }
     Ok(inputs)
+}
+
+/// The Review's fallback row; None while config.json has no review_if_limited.
+pub(crate) fn fallback_row(repo: &Path) -> Result<Option<Row>, String> {
+    if config(repo)?.get(IF_LIMITED).is_none() {
+        return Ok(None);
+    }
+    row(repo, IF_LIMITED).map(Some)
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
@@ -233,9 +252,10 @@ fn config(repo: &Path) -> Result<Value, String> {
 }
 
 /// The key of every row of config.json.
-pub(crate) const ROWS: [&str; 7] = [
+pub(crate) const ROWS: [&str; 8] = [
     "implement",
     "review",
+    IF_LIMITED,
     "moderator",
     "side_a",
     "side_b",
@@ -261,11 +281,11 @@ pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
     let name = field("app", default)?;
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
-    // Off claude only the Review and the Debate's sides run, until codex has
-    // the two-step Plan, the network the Moderator's side commands and
-    // TypeSafe calls need, and a Git write path: its sandbox keeps Git
-    // metadata read-only.
-    if app.name != "claude" && !matches!(key, "review" | "side_a" | "side_b") {
+    // Off claude only the Review, its fallback and the Debate's sides run,
+    // until codex has the two-step Plan, the network the Moderator's side
+    // commands and TypeSafe calls need, and a Git write path: its sandbox
+    // keeps Git metadata read-only.
+    if app.name != "claude" && !matches!(key, "review" | IF_LIMITED | "side_a" | "side_b") {
         return Err(format!("{key} runs on claude only"));
     }
     let model = field("model", "default")?;

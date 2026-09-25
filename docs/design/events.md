@@ -63,6 +63,10 @@ Decided on the map tickets "Limited" (harness-0sx.8) and "Apps per Stage" (harne
 | the reset + 2 minutes | claude session limit over: implement carries on (pane 2-1) *(a pane still idle with no result is sent `continue` first)* |
 | a long limit (a reset more than a day away, or Claude's options menu) | *(harness)* claude weekly limit until Mon 12:00am: sessions saved, panes closed, /continue after the reset *(the run ends; no "stopped" line follows)* |
 | a session that would not take the continue | Wake reason: never took the continue |
+| the Review's App at a short limit, once for the run *(Ticket 15)* | asking you: codex limited until 3:05pm: how do Reviews go until then? *(options: wait for the reset · review with claude opus, when review_if_limited is set · open the PR unreviewed; every other Ticket reaching Review holds, log only, until the answer, which stands until the reset)* |
+| the answer | you answered: wait for the reset *(the Review holds as any Stage)* · you answered: review with claude opus *(then: review 1 started: claude opus (pane 2-3))* · you answered: open the PR unreviewed |
+| a Review skipped, the PR to open unreviewed | review 1 and debate 1 skipped: codex was limited until 3:05pm *(the last Fix gets the Input Unreviewed: codex was limited until 3:05pm)* |
+| a Debate side's App at its limit | *no line:* the Moderator's Inputs carry Side B: limited until 3:05pm |
 
 ## Wake reasons
 
