@@ -1386,24 +1386,27 @@ fn typesafe_on_without_a_key_asks_it_masked() {
     s.cfg.api_key = String::new();
     typesafe_page(&mut s);
     s.key(key(KeyCode::Enter));
-    type_in(&mut s, "sk-new9");
+    type_in(&mut s, "ts_live_51c9d0e7");
     let buf = render(&s, 160, 45);
     assert!(
-        find(&buf, "TypeSafe key › •••••••▏").is_some(),
+        find(&buf, "TypeSafe key › ••••••••••••••••▏").is_some(),
         "{:#?}",
         rows(&buf)
     );
-    assert!(find(&buf, "sk-new9").is_none(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "ts_live").is_none(), "{:#?}", rows(&buf));
     s.key(key(KeyCode::Enter));
     let file = repo.path().join(".harness/typesafe-key");
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "sk-new9\n");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "ts_live_51c9d0e7\n"
+    );
     let mode = std::fs::metadata(&file).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
     assert_eq!(config_json(repo.path()), json!({"typesafe": true}));
-    assert_eq!(s.cfg.api_key, "sk-new9");
+    assert_eq!(s.cfg.api_key, "ts_live_51c9d0e7");
     assert_eq!(note(&s), "TypeSafe on");
     let buf = render(&s, 160, 45);
-    assert!(find(&buf, "••••new9").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "••••d0e7").is_some(), "{:#?}", rows(&buf));
 }
 
 /// u fetches a skill's source again and says the new commit; U fetches
@@ -1431,4 +1434,67 @@ fn updating_says_the_new_commit_or_up_to_date() {
     s.key(key(KeyCode::Char('U')));
     await_busy(&mut s);
     assert_eq!(note(&s), "every skill is up to date");
+}
+
+/// A suggested skill you have from another source is used as it is:
+/// picked, nothing cloned.
+#[test]
+fn a_suggestion_installed_from_a_fork_is_picked_as_it_is() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/skills.json"),
+        r#"{"picks": {"test-first": "none"}}"#,
+    );
+    let tools = clones();
+    add(
+        repo.path(),
+        Path::new(""),
+        &*tools,
+        "someone/fork",
+        Some("tdd"),
+    )
+    .unwrap();
+    let calls = tools.calls().len();
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Down]);
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    let (_, y) = find(&buf, "  tdd ").unwrap();
+    assert!(
+        cols(&buf, y, 99, 158).contains("someone/fork     installed"),
+        "{:#?}",
+        rows(&buf)
+    );
+    keys(
+        &mut s,
+        &[KeyCode::Up, KeyCode::Up, KeyCode::Up, KeyCode::Enter],
+    );
+    assert!(s.settings.as_ref().unwrap().busy.is_none());
+    assert_eq!(manifest(repo.path()).pick("test-first"), "tdd");
+    assert_eq!(note(&s), "Plan + Implement test-first picks tdd");
+    let cloned = tools.calls()[calls..].iter().any(|c| c.contains("clone"));
+    assert!(!cloned, "{:#?}", tools.calls());
+}
+
+/// A garbled Skill manifest still opens /config, saying why no skills
+/// show, and a pick refuses rather than save over it.
+#[test]
+fn a_garbled_manifest_opens_config_and_refuses_a_pick() {
+    let repo = TempDir::new();
+    let file = repo.path().join(".harness/skills.json");
+    write_file(&file, "{");
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    assert!(
+        note(&s).starts_with(".harness/skills.json: "),
+        "{}",
+        note(&s)
+    );
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Down]);
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    type_in(&mut s, "none");
+    s.key(key(KeyCode::Enter));
+    assert!(note(&s).ends_with("Nothing changed."), "{}", note(&s));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{");
 }

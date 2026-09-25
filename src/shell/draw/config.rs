@@ -11,6 +11,7 @@ use ratatui::Frame;
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
+use crate::setup;
 use crate::shell::config::{
     distinct, job_name, short, short_commit, Field, Listing, Pick, Settings, Typing, APPS_PAGE,
     ROWS, SECTIONS, SKILLS_PAGE, TYPESAFE_PAGE,
@@ -219,10 +220,12 @@ fn typesafe_page(s: &Screen, st: &Settings, width: usize) -> (Vec<Line<'static>>
             Span::styled("  every Wake and Plan is a Question", fg(MUTED)),
         ],
     };
+    // the tail of a long key only, to tell keys apart
     let shown = match key.chars().count() {
         0 => Span::styled("none", fg(MUTED)),
+        n if n < 12 => Span::styled("••••", fg(TEXT)),
         n => {
-            let tail: String = key.chars().skip(n.saturating_sub(4)).collect();
+            let tail: String = key.chars().skip(n - 4).collect();
             Span::styled(format!("••••{tail}"), fg(TEXT))
         }
     };
@@ -324,7 +327,7 @@ fn badges(s: &Screen, st: &Settings) -> Vec<Span<'static>> {
 fn hint(st: &Settings) -> &'static str {
     match st {
         _ if st.probe.is_some() => "probing… · Esc drops it",
-        _ if st.busy.is_some() => "working… · Esc stops waiting",
+        _ if st.busy.is_some() => "working…",
         _ if st.confirm.is_some() => "y yes · n no",
         Settings {
             typing: Some((Typing::Model(_), _)),
@@ -643,7 +646,7 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
             Typing::Key => (
                 "TypeSafe key › ".to_string(),
                 "•".repeat(text.chars().count()),
-                "Shown as dots; kept in .harness/typesafe-key, readable only by you.".to_string(),
+                format!("Shown as dots; kept in {}, readable only by you.", setup::KEY_FILE),
             ),
         };
         let (help, color) = st.note.clone().unwrap_or((help, MUTED));

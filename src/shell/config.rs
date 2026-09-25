@@ -8,7 +8,7 @@
 //! cloned off the screen thread too, and TypeSafe on or off with its key.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use crossterm::event::KeyCode;
@@ -19,9 +19,7 @@ use super::logo::{CYAN, GREEN, MUTED, ORANGE, RED};
 use super::{Screen, NOTICE_WINDOW};
 use crate::orchestrator::app::{self, app, App, Check, Model, Row, APPS, IF_LIMITED};
 use crate::setup;
-use crate::skills::manifest::{
-    self, job_row, parse_source, Added, Installed, Manifest, JOBS, NONE,
-};
+use crate::skills::manifest::{self, job_row, parse_source, Added, Manifest, JOBS, NONE};
 use crate::tools::{RunError, Tools};
 
 /// One row of config.json: its key, its name, the lead of its settings'
@@ -126,7 +124,7 @@ pub(crate) const SKILLS_PAGE: usize = APPS_PAGE + 1;
 pub(crate) const TYPESAFE_PAGE: usize = APPS_PAGE + 2;
 
 /// What turning TypeSafe off changes, asked first.
-const TYPESAFE_OFF: &str = "Turn TypeSafe off? Every Wake and Plan becomes a Question, and a Finding the Debate still disputes is skipped and listed in the PR.";
+const TYPESAFE_OFF: &str = "Turn TypeSafe off? Every Wake and Plan becomes a Question; disputed Findings are skipped and listed in the PR.";
 
 /// A setting of a row.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -196,11 +194,6 @@ pub(crate) fn short(repo: &str) -> &str {
 /// A commit as the pages show it.
 pub(crate) fn short_commit(commit: &str) -> &str {
     commit.get(..7).unwrap_or(commit)
-}
-
-/// Whether skill was installed from source, as JOBS gives it.
-fn from(skill: &Installed, source: &str) -> bool {
-    parse_source(source).is_ok_and(|s| s.repo == skill.repo && s.path == skill.path)
 }
 
 /// Every skill you have, each with its folder as the pages show it: from the
@@ -291,7 +284,7 @@ pub(crate) enum Confirm {
 /// A clone or an update going on its own thread, said in the foot.
 pub(crate) struct Busy {
     pub(crate) text: String,
-    done: Receiver<Done>,
+    done: Receiver<(Done, Vec<(String, PathBuf)>)>,
 }
 
 /// What a clone came back with.
@@ -687,13 +680,8 @@ impl Settings {
                     .find(|n| n.rsplit(':').next() == Some(name))
                     .unwrap_or(name)
                     .to_string();
-                // One installed from another source is not this one: add refuses it.
-                let other = self
-                    .manifest
-                    .skills
-                    .get(&named)
-                    .is_some_and(|skill| !from(skill, source));
-                match self.have(app, &named).filter(|_| !other) {
+                // One you have is used as it is, from whatever source.
+                match self.have(app, &named) {
                     Some((mark, color, detail)) => {
                         entry(&named, detail, Some((mark, color)), value(&named))
                     }
@@ -914,17 +902,22 @@ pub(crate) fn put(doc: &mut Value, key: &str, fields: &[(Field, String)]) {
 }
 
 impl Screen {
-    /// /config: reads config.json, each App's models and what the summaries
-    /// count. An unreadable config.json, or one not an object, is a notice:
-    /// nothing may save over it.
-    // ponytail: the lists and `which` run on the screen thread (codex's
-    // bundled catalog takes ~10 ms); a thread when an App's listing is slow.
+    /// /config: reads config.json, each App's models, the Skill manifest
+    /// and the skills you have. An unreadable config.json, or one not an
+    /// object, is a notice: nothing may save over it. A garbled manifest
+    /// shows no skills and says why; each change to it reads it afresh and
+    /// refuses.
+    // ponytail: the lists, `which` and claude plugin list run on the screen
+    // thread (codex's bundled catalog takes ~10 ms); a thread when one is slow.
     pub(super) fn open_config(&mut self) {
         let repo = &self.cfg.repo;
-        let read = app::read_object(repo).and_then(|(_, doc)| Ok((doc, Manifest::load(repo)?)));
-        let (doc, manifest) = match read {
-            Ok(read) => read,
+        let doc = match app::read_object(repo) {
+            Ok((_, doc)) => doc,
             Err(err) => return self.notice(&err, NOTICE_WINDOW),
+        };
+        let (manifest, note) = match Manifest::load(repo) {
+            Ok(manifest) => (manifest, None),
+            Err(err) => (Manifest::default(), Some((err, RED))),
         };
         let tools = &*self.cfg.tools;
         let installed = APPS
@@ -957,7 +950,7 @@ impl Screen {
             busy: None,
             listing: None,
             confirm: None,
-            note: None,
+            note,
             saved: None,
         });
     }
@@ -976,17 +969,15 @@ impl Screen {
             }
             return;
         }
+        // ponytail: no key stops waiting on a clone, which saves the manifest
+        // when done and would overwrite a change made meanwhile; a clone that
+        // hangs holds /config until git gives up (Ctrl-C still leaves).
         if st.busy.is_some() {
-            if code == KeyCode::Esc {
-                st.busy = None;
-                let text = "Stopped waiting: it runs on, and /config shows what it did when it opens again.";
-                st.note = Some((text.to_string(), MUTED));
-            }
             return;
         }
         if st.confirm.is_some() {
             match code {
-                KeyCode::Char('y') | KeyCode::Enter => {
+                KeyCode::Char('y') => {
                     let (_, confirm) = st.confirm.take().unwrap();
                     match confirm {
                         Confirm::Remove(name) => self.remove_skill(&name),
@@ -1316,8 +1307,8 @@ impl Screen {
         }
     }
 
-    /// Runs work on its own thread, said in the foot until finished() takes
-    /// its answer.
+    /// Runs work on its own thread, then lists the skills you have there
+    /// too; said in the foot until finished() takes its answer.
     fn off_thread(
         &mut self,
         text: String,
@@ -1327,7 +1318,8 @@ impl Screen {
         let tools = self.cfg.tools.clone();
         let (tx, done) = mpsc::channel();
         thread::spawn(move || {
-            let _ = tx.send(work(&repo, &home, &*tools));
+            let done = work(&repo, &home, &*tools);
+            let _ = tx.send((done, found(&repo, &home, &*tools)));
         });
         self.settings.as_mut().unwrap().busy = Some(Busy { text, done });
     }
@@ -1477,7 +1469,8 @@ impl Screen {
         if let Err(err) = manifest::remove(&self.cfg.repo, &self.cfg.home, name) {
             return self.refused(&err);
         }
-        self.reload_skills();
+        let found = found(&self.cfg.repo, &self.cfg.home, &*self.cfg.tools);
+        self.reload_skills(found);
         let text = match jobs.len() {
             0 => format!("removed {name}"),
             1 => format!("removed {name}; {} is none", jobs[0]),
@@ -1486,14 +1479,14 @@ impl Screen {
         self.done(text);
     }
 
-    /// The Skill manifest and the skills you have, read again after a change.
-    fn reload_skills(&mut self) {
-        let (repo, home) = (&self.cfg.repo, &self.cfg.home);
+    /// The Skill manifest read again after a change, with the skills you
+    /// have found since.
+    fn reload_skills(&mut self, found: Vec<(String, PathBuf)>) {
         let st = self.settings.as_mut().unwrap();
-        if let Ok(manifest) = Manifest::load(repo) {
+        if let Ok(manifest) = Manifest::load(&self.cfg.repo) {
             st.manifest = manifest;
         }
-        st.found = found(repo, home, &*self.cfg.tools);
+        st.found = found;
         if st.section == SKILLS_PAGE {
             st.setting = st.setting.min(st.manifest.skills.len());
         }
@@ -1518,12 +1511,20 @@ impl Screen {
         let Some(st) = &mut self.settings else {
             return;
         };
-        let Some(Ok(done)) = st.busy.as_ref().map(|b| b.done.try_recv()) else {
-            return;
+        let (done, found) = match st.busy.as_ref().map(|b| b.done.try_recv()) {
+            Some(Ok(got)) => got,
+            Some(Err(TryRecvError::Disconnected)) => {
+                st.busy = None;
+                let text =
+                    "The clone's thread died: /config shows what it installed when it opens again.";
+                st.note = Some((text.to_string(), RED));
+                return;
+            }
+            _ => return,
         };
         st.busy = None;
         let before = st.manifest.skills.clone();
-        self.reload_skills();
+        self.reload_skills(found);
         let st = self.settings.as_mut().unwrap();
         match done {
             Done::Added(_, Err(err)) | Done::ForJob(_, Err(err)) => self.refused(&err),
