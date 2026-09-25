@@ -39,9 +39,9 @@ pub(crate) struct Limit {
     /// A reset more than a day away, or Claude's options menu: the run
     /// ends rather than hold.
     pub(crate) long: bool,
-    /// The reset gives its date, so its line is never an old one that
-    /// reads a day or a week on.
-    pub(crate) dated: bool,
+    /// The reset as the App printed it, "" with none: read again at an
+    /// earlier reset, it tells an old line from a new one.
+    pub(crate) said: String,
 }
 
 /// The limit the last lines of `tail` show for `app`: the newest line one
@@ -51,11 +51,12 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
     let last: Vec<&str> = tail.lines().rev().take(LAST_LINES).collect();
     for (i, line) in last.iter().enumerate() {
         for caps in patterns.iter().filter_map(|p| p.captures(line)) {
-            let reset = match caps.name("reset") {
-                Some(text) => parse_reset(text.as_str(), now),
-                None => Some((now + Duration::hours(1), false)), // look again then
+            let said = caps.name("reset").map_or("", |text| text.as_str());
+            let reset = match said {
+                "" => Some(now + Duration::hours(1)), // look again then
+                _ => parse_reset(said, now),
             };
-            let Some((reset, dated)) = reset.filter(|(reset, _)| *reset > now) else {
+            let Some(reset) = reset.filter(|reset| *reset > now) else {
                 continue;
             };
             return Some(Limit {
@@ -69,7 +70,7 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
                 // that line and newer ones (last[..=i]) can hold it.
                 long: reset > now + Duration::hours(24)
                     || last[..=i].iter().any(|l| l.contains(MENU)),
-                dated,
+                said: said.to_string(),
             });
         }
     }
@@ -81,18 +82,17 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
 /// "Sep 24th, 2026 3:05 PM", "on September 28, 2026 at 3:00 PM", or from
 /// now, "in 3h 12m". A time alone is its next occurrence, a weekday its
 /// next such day; a date without a year the one nearest today, in this
-/// year, the last or the next. True with a date.
-fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, bool)> {
+/// year, the last or the next.
+fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
     let text = text.trim();
     let text = text.strip_prefix("on ").unwrap_or(text);
     if let Some(wait) = text.strip_prefix("in ") {
-        return from_now(wait).map(|wait| (now + wait, false));
+        return from_now(wait).map(|wait| now + wait);
     }
     // copilot's monthly credits: 00:00 UTC on the 1st.
     if text == "for the month" {
         let first = now.with_timezone(&Utc).date_naive().with_day(1)? + Months::new(1);
-        let reset = first.and_hms_opt(0, 0, 0)?.and_utc().with_timezone(&Local);
-        return Some((reset, true));
+        return Some(first.and_hms_opt(0, 0, 0)?.and_utc().with_timezone(&Local));
     }
     let re = Regex::new(
         r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?:at\s+)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
@@ -122,7 +122,7 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
                 .filter_map(|n| NaiveDate::from_ymd_opt(now.year() + n, month, day))
                 .min_by_key(|date| (*date - today).num_days().abs())?,
         };
-        return local(date).map(|r| (r, true));
+        return local(date);
     }
     if let Some(wd) = caps.name("wd") {
         let want = wd.as_str().parse::<Weekday>().ok()?;
@@ -130,14 +130,12 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
             .map(|n| today + Duration::days(n))
             .filter(|d| d.weekday() == want)
             .filter_map(local)
-            .find(|reset| *reset > now)
-            .map(|r| (r, false));
+            .find(|reset| *reset > now);
     }
     [today, today + Duration::days(1)]
         .into_iter()
         .filter_map(local)
         .find(|reset| *reset > now)
-        .map(|r| (r, false))
 }
 
 /// A wait as the Apps print it: "~45 min", "12 minutes", "3h 12m", "2
@@ -307,17 +305,18 @@ impl Orchestrator {
     }
 
     /// The usage limit the last lines of `tail`, the Stage's pane's, show
-    /// for the App its session runs on. A time or a weekday alone is its
-    /// next occurrence, so the line of a limit already reset reads a day or
-    /// a week on: one at the time of day of the session's last reset, and
-    /// later, is that old line, no limit. A dated line is never that line.
+    /// for the App its session runs on. A time, a weekday or "for the month"
+    /// alone is its next occurrence, so the line of a limit already reset
+    /// reads a day, a week or a month on: one later than the session's last
+    /// reset that, read just before it, named it, is that old line, no
+    /// limit. A dated line is never that line.
     pub(super) fn limit_shown(&self, ts: &TicketState, st: &Stage, tail: &str) -> Option<Limit> {
         let session = ts.sessions.get(st.name)?;
         let limit = find(app(&session.app)?, tail, (self.cfg.clock)())?;
-        let old = !limit.dated
-            && session
-                .reset
-                .is_some_and(|last| limit.reset > last && limit.reset.time() == last.time());
+        let old = session.reset.is_some_and(|last| {
+            limit.reset > last
+                && parse_reset(&limit.said, last - Duration::seconds(1)) == Some(last)
+        });
         (!old).then_some(limit)
     }
 

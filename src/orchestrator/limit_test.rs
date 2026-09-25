@@ -1,8 +1,8 @@
 use super::app::app;
 use super::judgment::fake::Fake as TypeSafeFake;
 use super::limit::{find, until, Limit};
-use super::stage::{Ask, Orchestrator};
-use super::state::{load_state, Review};
+use super::stage::{Ask, Orchestrator, IMPLEMENT};
+use super::state::{load_state, Review, Session, TicketState};
 use super::world::{
     new_world, restarted, set_clock, spawn_ticket, succeed, wait_until, BdTicket, World,
 };
@@ -609,6 +609,29 @@ fn a_dated_limit_at_yesterdays_reset_time_is_a_new_limit() {
         o.state.lock().unwrap().limits["claude"] == at(25, 15, 45)
     });
     assert!(!w.lines().iter().any(|l| l.contains("stuck")));
+}
+
+#[test]
+fn copilots_month_line_left_in_the_pane_after_its_reset_is_no_new_limit() {
+    let line = "You've run out of your included AI credits for the month.";
+    let (_w, mut o) = new_world(vec![]);
+    let clock = clock(&mut o);
+    let mut ts = TicketState::default();
+    ts.sessions.insert(
+        "implement".to_string(),
+        Session {
+            app: "copilot".to_string(),
+            ..Default::default()
+        },
+    );
+    let oct = chrono::Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let limit = o.limit_shown(&ts, &IMPLEMENT, line).unwrap();
+    assert_eq!(limit.reset, oct.with_timezone(&Local));
+
+    // a day past the reset the same line reads November's: that old line
+    ts.sessions.get_mut("implement").unwrap().reset = Some(limit.reset);
+    *clock.lock().unwrap() = (oct + chrono::Duration::days(1)).with_timezone(&Local);
+    assert!(o.limit_shown(&ts, &IMPLEMENT, line).is_none());
 }
 
 #[test]

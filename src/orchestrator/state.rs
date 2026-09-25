@@ -64,8 +64,8 @@ pub(crate) struct Session {
     pub(crate) app: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) id: String,
-    /// When the last usage limit it hit resets: a later one at that time of
-    /// day in its pane is that old line, read a day or a week on.
+    /// When the last usage limit it hit resets: a later one in its pane
+    /// whose line named it is that old line, read a day, a week or a month on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reset: Option<chrono::DateTime<chrono::Local>>,
 }
