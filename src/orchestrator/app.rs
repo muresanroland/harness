@@ -307,7 +307,17 @@ pub(crate) static APPS: [App; 6] = [
         // No effort flag: a typed slug[effort=high] model carries one.
         effort: &[],
         resume: &["--resume", "{}"],
-        side: &["cursor-agent", "--mode", "ask", "--add-dir", "{}", "-p"],
+        // Headless in an untrusted folder it exits 1, and no trust wait
+        // covers a side: --trust.
+        side: &[
+            "cursor-agent",
+            "--mode",
+            "ask",
+            "--trust",
+            "--add-dir",
+            "{}",
+            "-p",
+        ],
         trust: cursor_records,
         family: "",
         home: "https://cursor.com/cli",

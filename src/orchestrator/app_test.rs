@@ -186,7 +186,7 @@ fn the_experimental_apps_start_panes_and_sides_with_their_args() {
             "opus-5.5[effort=high]",
             "--force --add-dir {run} --model opus-5.5[effort=high]",
             "--force --add-dir {worktree} --model opus-5.5[effort=high]",
-            "'cursor-agent' '--mode' 'ask' '--add-dir' '{run}' '--model' 'opus-5.5[effort=high]' '-p'",
+            "'cursor-agent' '--mode' 'ask' '--trust' '--add-dir' '{run}' '--model' 'opus-5.5[effort=high]' '-p'",
         ),
     ];
     for (name, model, pane, review, side) in cases {

@@ -2,7 +2,13 @@ use super::app::{app, APPS};
 use super::trust::{cursor_slug, trusts};
 use super::write_file;
 use crate::tempdir::TempDir;
+use std::fs;
 use std::path::Path;
+
+/// Gives pi a protected resource in dir, so that it asks there.
+fn pi_protects(dir: &Path) {
+    fs::create_dir_all(dir.join(".agents/skills")).unwrap();
+}
 
 /// The fixtures are the real shapes: ~/.claude.json carries far more than the
 /// projects map, and ~/.codex/config.toml carries tables that are not projects.
@@ -62,6 +68,7 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
     let home = trust_home(repo);
     let home = home.path();
     let worktree = repo.join(".harness/worktrees/hx-1");
+    pi_protects(repo);
 
     // opencode has no trust dialog: it trusts every directory.
     for app in APPS.iter().filter(|a| a.name != "opencode") {
@@ -86,6 +93,7 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
             app.name
         );
         let (a, b) = (TempDir::new(), TempDir::new());
+        pi_protects(a.path());
         assert!(
             !trusts(app, home, a.path(), b.path()),
             "{}: an unknown directory read as trusted",
@@ -130,6 +138,7 @@ fn a_trusted_ancestor_covers_a_worktree_and_opencode_trusts_any() {
     let repo = parent.path().join("repo");
     let worktree = repo.join(".harness/worktrees/hx-1");
     let home = trust_home(parent.path());
+    pi_protects(&repo);
     for name in ["pi", "copilot", "cursor", "opencode"] {
         assert!(
             trusts(app(name).unwrap(), home.path(), &worktree, &repo),
@@ -149,6 +158,40 @@ fn a_trusted_ancestor_covers_a_worktree_and_opencode_trusts_any() {
             "{name}: a home with nothing recorded read as trusted"
         );
     }
+}
+
+/// pi asks, and records, only where a .agents/skills or a .pi holding
+/// anything is in dir or a parent below home; with none it trusts dir.
+#[test]
+fn pi_trusts_a_folder_with_nothing_to_protect() {
+    let pi = app("pi").unwrap();
+    let home = TempDir::new();
+    let home = home.path();
+    let repo = home.join("repo");
+    let worktree = repo.join(".harness/worktrees/hx-1");
+    fs::create_dir_all(&worktree).unwrap();
+    // Skills at the User location are no project's.
+    pi_protects(home);
+    fs::create_dir_all(repo.join(".pi")).unwrap();
+    assert!(
+        trusts(pi, home, &worktree, &repo),
+        "an empty .pi or ~/.agents/skills asked"
+    );
+
+    write_file(&repo.join(".pi/settings.json"), "{}");
+    assert!(
+        !trusts(pi, home, &worktree, &repo),
+        "a .pi holding a file did not ask"
+    );
+
+    // Protected in the worktree alone: its parents, unprotected, do not
+    // answer for it.
+    fs::remove_dir_all(repo.join(".pi")).unwrap();
+    pi_protects(&worktree);
+    assert!(
+        !trusts(pi, home, &worktree, &repo),
+        "a worktree's own skills did not ask"
+    );
 }
 
 /// cursor keeps a project under its path, every other character a dash.

@@ -79,12 +79,25 @@ pub(super) fn codex_records(home: &Path, dir: &Path) -> Option<bool> {
 // Each App lets a trusted ancestor cover dir, above the repo too.
 
 /// Reads ~/.pi/agent/trust.json, a directory to its answer: the nearest one
-/// recorded decides.
+/// recorded decides. pi asks only in a folder with protected resources, a
+/// .agents/skills or a .pi holding anything, there or in a parent below
+/// home: with none it asks nothing, records nothing and is trusted.
+/// Otherwise nothing recorded is untrusted: dir's ancestors were read here.
 pub(super) fn pi_records(home: &Path, dir: &Path) -> Option<bool> {
-    let raw = fs::read(home.join(".pi/agent/trust.json")).ok()?;
-    let doc: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-    dir.ancestors()
-        .find_map(|d| doc.get(d.to_str()?)?.as_bool())
+    let protected = dir.ancestors().take_while(|d| *d != home).any(|d| {
+        d.join(".agents/skills").exists()
+            || fs::read_dir(d.join(".pi")).is_ok_and(|mut entries| entries.next().is_some())
+    });
+    if !protected {
+        return Some(true);
+    }
+    let recorded = || {
+        let raw = fs::read(home.join(".pi/agent/trust.json")).ok()?;
+        let doc: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        dir.ancestors()
+            .find_map(|d| doc.get(d.to_str()?)?.as_bool())
+    };
+    Some(recorded().unwrap_or(false))
 }
 
 /// Reads trustedFolders in ~/.copilot/config.json; it records no untrusted
