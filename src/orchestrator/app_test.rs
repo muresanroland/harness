@@ -652,7 +652,7 @@ fn the_experimental_apps_list_their_models() {
 }
 
 /// A floor is config.json's number from 0 to 1; missing or empty is its
-/// default; anything else refuses, naming the key.
+/// default; anything else, null too, refuses, naming the key.
 #[test]
 fn a_floor_is_a_number_from_0_to_1_and_missing_or_empty_is_the_default() {
     const FLOOR: Floor = Floor {
@@ -663,7 +663,6 @@ fn a_floor_is_a_number_from_0_to_1_and_missing_or_empty_is_the_default() {
     for (doc, want) in [
         (json!(null), Ok(0.65)),
         (json!({}), Ok(0.65)),
-        (json!({"plan_floor": null}), Ok(0.65)),
         (json!({"plan_floor": ""}), Ok(0.65)),
         (json!({"plan_floor": 0.6}), Ok(0.6)),
         (json!({"plan_floor": 0}), Ok(0.0)),
@@ -672,6 +671,7 @@ fn a_floor_is_a_number_from_0_to_1_and_missing_or_empty_is_the_default() {
         (json!({"plan_floor": -0.1}), refused.clone()),
         (json!({"plan_floor": "0.6"}), refused.clone()),
         (json!({"plan_floor": true}), refused.clone()),
+        (json!({"plan_floor": null}), refused.clone()),
     ] {
         assert_eq!(floor_in(&doc, &FLOOR), want, "{doc}");
     }

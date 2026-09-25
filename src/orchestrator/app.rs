@@ -563,12 +563,12 @@ pub(crate) fn floor(repo: &Path, floor: &Floor) -> Result<f64, String> {
     floor_in(&read(repo)?.1, floor)
 }
 
-/// A floor in doc: missing or empty is its default.
+/// A floor in doc: missing or empty is its default; a null is refused.
 pub(crate) fn floor_in(doc: &Value, floor: &Floor) -> Result<f64, String> {
-    match &doc[floor.key] {
-        Value::Null => Ok(floor.default),
-        Value::String(s) if s.is_empty() => Ok(floor.default),
-        value => value
+    match doc.get(floor.key) {
+        None => Ok(floor.default),
+        Some(Value::String(s)) if s.is_empty() => Ok(floor.default),
+        Some(value) => value
             .as_f64()
             .filter(|f| (0.0..=1.0).contains(f))
             .ok_or(format!("{} is not a number from 0 to 1", floor.key)),
