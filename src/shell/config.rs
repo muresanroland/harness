@@ -1096,7 +1096,7 @@ impl Screen {
                 KeyCode::Down => st.setting = 1,
                 KeyCode::Left | KeyCode::Esc => st.open = false,
                 KeyCode::Enter if key.is_empty() => st.typing = Some((Typing::Key, String::new())),
-                KeyCode::Enter if st.setting == 1 => st.note = Some((st.typesafe_note(1), MUTED)),
+                KeyCode::Enter if st.setting == 1 => {}
                 KeyCode::Enter if st.typesafe(&key) => {
                     st.confirm = Some((TYPESAFE_OFF.to_string(), Confirm::TypeSafeOff))
                 }

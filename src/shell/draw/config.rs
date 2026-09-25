@@ -13,8 +13,8 @@ use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
 use crate::setup;
 use crate::shell::config::{
-    distinct, job_name, short, short_commit, Field, Listing, Pick, Settings, Typing, APPS_PAGE,
-    ROWS, SECTIONS, SKILLS_PAGE, TYPESAFE_PAGE,
+    distinct, job_name, job_said, short, short_commit, Field, Listing, Pick, Settings, Typing,
+    APPS_PAGE, ROWS, SECTIONS, SKILLS_PAGE, TYPESAFE_PAGE,
 };
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
@@ -501,7 +501,7 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
         (_, Some(app)) => format!(" · {}", app.name),
     };
     let title = match pick.field {
-        Field::Job(j) => format!("{} {}{on}", SECTIONS[row.section].0, job_name(j)),
+        Field::Job(j) => format!("{}{on}", job_said(j)),
         field => format!("{} {}{on}", row.name, field.name()),
     };
     let mut lines = vec![Line::from(vec![
