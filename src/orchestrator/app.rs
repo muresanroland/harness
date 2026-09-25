@@ -32,14 +32,26 @@ pub(crate) struct App {
     /// What its pane shows at a usage limit: regexes, with the reset in
     /// the group "reset" and which limit in "what" when the App says.
     pub(crate) limits: &'static [&'static str],
-    /// How a Stage skill's "Use the {} skill" names a job's pick.
-    pub(crate) mention: fn(&str) -> String,
+    /// What a Stage skill's "Use the {} skill" puts before a job's pick.
+    pub(crate) mention: &'static str,
     /// The skills built into it: a pick of one needs nothing installed here,
     /// and is not installed on another App.
     pub(crate) built_in: &'static [&'static str],
+    /// Its own skills folder, at the repo and at home; it loads
+    /// .harness/skills too, where the checkout's skills are linked from.
+    pub(crate) skill_dir: &'static str,
+    /// Whether it loads its enabled plugins' skills, named plugin:skill.
+    pub(crate) plugins: bool,
+}
+
+impl App {
     /// Whether it loads a skill manifest::list found: the name list gives
     /// it, and the folder it is in.
-    pub(crate) reads: fn(&str, &Path) -> bool,
+    pub(crate) fn loads(&self, name: &str, dir: &Path) -> bool {
+        (self.plugins && name.contains(':'))
+            || dir.ends_with(self.skill_dir)
+            || dir.ends_with(".harness/skills")
+    }
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -93,16 +105,10 @@ pub(crate) static APPS: [App; 2] = [
             r"Usage limit reached · continuing automatically at (?P<reset>.+?)(?: · |$)",
         ],
         // In words, a plugin's skill plugin-qualified as the pick names it.
-        mention: |pick| pick.to_string(),
+        mention: "",
         built_in: &[],
-        // Its own folders, where the checkout's skills are linked too, and
-        // its enabled plugins', named plugin:skill.
-        reads: |name, dir| {
-            name.contains(':')
-                || [".claude/skills", ".harness/skills"]
-                    .iter()
-                    .any(|own| dir.ends_with(own))
-        },
+        skill_dir: ".claude/skills",
+        plugins: true,
     },
     App {
         name: "codex",
@@ -120,15 +126,11 @@ pub(crate) static APPS: [App; 2] = [
         ],
         // $name, which a skill with implicit invocation off (review-agent)
         // needs.
-        mention: |pick| format!("${pick}"),
+        mention: "$",
         built_in: &["review-agent"],
-        // .agents/skills, where the checkout's skills are linked too; never
-        // Claude's .claude/skills or its plugins.
-        reads: |_, dir| {
-            [".agents/skills", ".harness/skills"]
-                .iter()
-                .any(|own| dir.ends_with(own))
-        },
+        // Never Claude's .claude/skills or its plugins.
+        skill_dir: ".agents/skills",
+        plugins: false,
     },
 ];
 

@@ -242,8 +242,8 @@ impl Manifest {
     }
 
     /// A Stage skill with each job's placeholder filled in with the job's
-    /// pick, as mention names it. A pick of none drops the placeholder's
-    /// line, leaving the Stage skill's own instruction around it, and so
+    /// pick, after the App's mention prefix. A pick of none drops the
+    /// placeholder's line, leaving the Stage skill's own instruction around it, and so
     /// does one lacking from have (list's names) and built_in; those are
     /// given back too, each as "pick (job)".
     pub(crate) fn fill_jobs(
@@ -251,7 +251,7 @@ impl Manifest {
         skill: &str,
         have: &[String],
         built_in: &[&str],
-        mention: fn(&str) -> String,
+        mention: &str,
     ) -> (String, Vec<String>) {
         let mut lacking = Vec::new();
         let lines: Vec<String> = skill
@@ -274,7 +274,7 @@ impl Manifest {
                     if pick == NONE {
                         return None;
                     }
-                    line = line.replace(&held, &mention(pick));
+                    line = line.replace(&held, &format!("{mention}{pick}"));
                 }
                 Some(line)
             })

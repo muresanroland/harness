@@ -741,15 +741,13 @@ pub(crate) fn preflight(
         missing.push("no git remote: add one with 'git remote add origin <url>'".to_string());
     }
     let home = PathBuf::from(env("HOME"));
-    let have: Vec<String> = manifest::list(repo, &home, tools)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    if !have.iter().any(|name| name == "create-pr") {
+    let found = manifest::list(repo, &home, tools);
+    if !found.iter().any(|(name, _)| name == "create-pr") {
         missing
             .push("no create-pr skill: run 'harness init' to install the shipped one".to_string());
     }
-    // Each job's pick, but none and one built into the App its row runs on.
+    // Each job's pick, but none, as the App its row runs on loads or has
+    // built in one.
     match Manifest::load(repo) {
         Ok(manifest) => {
             for (job, suggestions) in JOBS {
@@ -765,6 +763,13 @@ pub(crate) fn preflight(
                 let Ok(row) = app::row(repo, key) else {
                     continue;
                 };
+                let have: Vec<String> = found
+                    .iter()
+                    .filter(|(name, path)| {
+                        path.parent().is_some_and(|dir| row.app.loads(name, dir))
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
                 if manifest::lacks(pick, &have, row.app.built_in) {
                     // init installs only the default
                     let fix = if pick == suggestions[0].0 {

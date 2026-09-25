@@ -443,6 +443,29 @@ fn picks_missing(repo: &Path, home: &Path) -> Vec<String> {
         .collect()
 }
 
+/// A pick counts only where the App running its line loads it: the Review,
+/// on codex by default, never reads .claude/skills.
+#[test]
+fn preflight_counts_a_pick_only_where_its_app_loads_it() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let mut manifest = Manifest::default();
+    for (job, _) in JOBS {
+        manifest.picks.insert(job.to_string(), NONE.to_string());
+    }
+    manifest.picks.insert("review".into(), "rcr".into());
+    manifest.save(repo.path()).unwrap();
+    write_file(&repo.path().join(".claude/skills/rcr/SKILL.md"), "claude's");
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        ["the review skill rcr is missing: /config installs it, or picks another"]
+    );
+    write_file(&repo.path().join(".agents/skills/rcr/SKILL.md"), "codex's");
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
     let (repo, home) = (TempDir::new(), TempDir::new());

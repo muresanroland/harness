@@ -764,7 +764,7 @@ impl Orchestrator {
         };
         let have: Vec<String> = manifest::list(repo, home, &*self.cfg.tools)
             .into_iter()
-            .filter(|(name, path)| path.parent().is_some_and(|dir| (runs.reads)(name, dir)))
+            .filter(|(name, path)| path.parent().is_some_and(|dir| runs.loads(name, dir)))
             .map(|(name, _)| name)
             .collect();
         let (skill, lacking) = manifest.fill_jobs(&skill, &have, runs.built_in, runs.mention);
