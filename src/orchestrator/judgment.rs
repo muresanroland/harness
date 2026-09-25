@@ -12,6 +12,7 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::Serialize;
 use serde_json::Value;
 
+use super::app::typesafe;
 use super::stage::Orchestrator;
 use super::state::TicketState;
 
@@ -336,6 +337,15 @@ fn parse(reply: &Value, offered: &[Action]) -> Option<Judged> {
 }
 
 impl Orchestrator {
+    /// The TypeSafe key, "" when there is none or TypeSafe is off.
+    pub(crate) fn typesafe_key(&self) -> &str {
+        if typesafe(&self.cfg.repo) {
+            &self.cfg.api_key
+        } else {
+            ""
+        }
+    }
+
     /// Puts a Wake to TypeSafe. None without a key, on any error, or for a
     /// reply that chose nothing offered: the Wake is then a Question.
     pub(crate) fn judge(
@@ -347,11 +357,12 @@ impl Orchestrator {
         tail: &str,
         offered: &[Action],
     ) -> Option<Judged> {
-        if self.cfg.api_key.is_empty() {
+        let key = self.typesafe_key();
+        if key.is_empty() {
             return None;
         }
         let body = request(&self.wake_state(ticket, ts, reason, file, tail), offered);
-        self.ask_typesafe(ticket, &body, |reply| {
+        self.ask_typesafe(ticket, key, &body, |reply| {
             parse(reply, offered).ok_or("no choice in the reply")
         })
     }
@@ -359,7 +370,8 @@ impl Orchestrator {
     /// Puts a plan to TypeSafe: its score for yes. None without a key, on
     /// any error, or for a reply with no score: the plan is then a Question.
     pub(crate) fn judge_plan(&self, ticket: &str, plan: &str) -> Option<f64> {
-        if self.cfg.api_key.is_empty() {
+        let key = self.typesafe_key();
+        if key.is_empty() {
             return None;
         }
         let feedback = self.ticket(ticket).feedback;
@@ -373,7 +385,7 @@ impl Orchestrator {
             },
             prior_feedback: (!feedback.is_empty()).then_some(feedback),
         };
-        self.ask_typesafe(ticket, &plan_request(&state), |reply| {
+        self.ask_typesafe(ticket, key, &plan_request(&state), |reply| {
             reply["answers"]["follows"]["noul"]
                 .as_f64()
                 .filter(|score| (0.0..=1.0).contains(score))
@@ -386,10 +398,10 @@ impl Orchestrator {
     fn ask_typesafe<T>(
         &self,
         ticket: &str,
+        key: &str,
         body: &str,
         read: impl FnOnce(&Value) -> Result<T, &'static str>,
     ) -> Option<T> {
-        let key = self.cfg.api_key.as_str();
         let reply = self.cfg.typesafe.systemone(key, body);
         match reply.and_then(|reply| read(&reply).map_err(str::to_string)) {
             Ok(answer) => Some(answer),

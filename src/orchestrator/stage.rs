@@ -152,7 +152,8 @@ pub(crate) struct Config {
     pub(crate) repo: PathBuf,
     /// HERDR_WORKSPACE_ID.
     pub(crate) workspace: String,
-    /// TYPESAFE_API_KEY, handed to the Debate pane and the Judgment.
+    /// TYPESAFE_API_KEY, handed to the Debate pane and the Judgment while
+    /// TypeSafe is on (typesafe_key).
     pub(crate) api_key: String,
     /// The harness binary, which Implement's plan hook runs: resolved once
     /// when the Shell opens, since after a self-update a fresh lookup can
@@ -1198,9 +1199,10 @@ impl Orchestrator {
             }
         }
         let cwd = self.stage_cwd(ticket, st).display().to_string();
-        let env = format!("TYPESAFE_API_KEY={}", self.cfg.api_key);
+        let key = self.typesafe_key();
+        let env = format!("TYPESAFE_API_KEY={key}");
         let mut placement = vec!["--cwd", cwd.as_str(), "--no-focus"];
-        if st.name == "debate" && !self.cfg.api_key.is_empty() {
+        if st.name == "debate" && !key.is_empty() {
             placement.extend(["--env", env.as_str()]);
         }
 

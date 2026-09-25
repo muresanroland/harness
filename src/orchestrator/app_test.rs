@@ -148,6 +148,32 @@ fn the_moderators_inputs_carry_each_sides_command() {
     }
 }
 
+/// TypeSafe off: the Moderator is told so under Inputs, and its pane gets no
+/// key; on, neither changes.
+#[test]
+fn with_typesafe_off_the_moderator_gets_the_input_and_no_key() {
+    for (body, off) in [("", false), (r#"{"typesafe": false}"#, true)] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        if !body.is_empty() {
+            config(&w, body);
+        }
+        o.run_ticket("hx-1");
+
+        let prompt = w
+            .called("herdr agent prompt")
+            .into_iter()
+            .find(|call| call.contains("verdict-1.md"))
+            .unwrap();
+        let inputs = prompt.split_once("## Inputs").unwrap().1;
+        assert_eq!(inputs.contains("- TypeSafe: off\n"), off, "{inputs}");
+        let keyed = w
+            .called("herdr")
+            .iter()
+            .any(|c| c.contains("TYPESAFE_API_KEY=sk-test"));
+        assert_eq!(keyed, !off, "off {off}: the key reached a pane or not");
+    }
+}
+
 /// Running Stages keep theirs; the Stages that start after a change use it.
 #[test]
 fn config_changed_between_two_stages_reaches_the_second() {
