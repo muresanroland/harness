@@ -314,9 +314,7 @@ pub(crate) fn typesafe(repo: &Path) -> bool {
 pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
     let (path, mut doc) = read_object(repo)?;
     doc["typesafe"] = Value::Bool(on);
-    fs::create_dir_all(path.parent().unwrap())
-        .and_then(|()| fs::write(&path, format!("{doc:#}\n")))
-        .map_err(|err| format!("{}: {err}", path.display()))
+    write(&path, &doc)
 }
 
 /// The key of every row of config.json.
