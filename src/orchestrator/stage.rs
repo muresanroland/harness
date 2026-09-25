@@ -172,7 +172,8 @@ pub(crate) struct Config {
     pub(crate) exe: PathBuf,
     /// The seam to TypeSafe, which the Wake Judgment asks.
     pub(crate) typesafe: Arc<dyn TypeSafe>,
-    /// Where the agents record which directories they trust.
+    /// Where the agents record which directories they trust, and the
+    /// user-level skills are.
     pub(crate) home: PathBuf,
     /// How often holds, commands and bd are polled.
     pub(crate) tick: Duration,
@@ -724,18 +725,25 @@ impl Orchestrator {
         };
         let mut inputs = inputs.to_vec();
         inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
-        let skill_path = self
-            .cfg
-            .repo
-            .join(".agents")
-            .join("skills")
-            .join(st.skill)
-            .join("SKILL.md");
-        let skill = match fs::read_to_string(&skill_path) {
-            Ok(skill) => skill,
-            Err(err) => {
-                return Held::Woke(format!("has no Stage skill (run 'harness init'): {err}"))
+        // Wherever init put it: a copy committed in the repo first, then the
+        // checkout's, then the user's.
+        let (repo, home) = (&self.cfg.repo, &self.cfg.home);
+        let mut dirs = vec![repo.join(".agents/skills"), repo.join(".harness/skills")];
+        if !home.as_os_str().is_empty() {
+            dirs.push(home.join(".agents/skills"));
+        }
+        // Only an absent copy falls through: an unreadable one is said.
+        let found = dirs.iter().find_map(|dir| {
+            let path = dir.join(st.skill).join("SKILL.md");
+            match fs::read_to_string(&path) {
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                read => Some(read.map_err(|err| format!("cannot read {}: {err}", path.display()))),
             }
+        });
+        let skill = match found {
+            Some(Ok(skill)) => skill,
+            Some(Err(err)) => return Held::Woke(err),
+            None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
         };
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());

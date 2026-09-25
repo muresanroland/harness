@@ -860,6 +860,7 @@ fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
         [
             "gh auth status",
             "git remote",
+            "claude plugin list --json",
             "bd list --json --brief --all"
         ],
         "the preflight, then the bd cache"
@@ -2800,20 +2801,20 @@ fn dump() {
     }
 }
 
-/// A plan Question: the judged line, then the Question, the Judgment's
-/// answer and score above the plan, which PageDown and PageUp scroll by
-/// rows, while the feedback is typed too. Feedback goes back to the session
-/// and its revised plan asks again; approve approves it; each answer logs
-/// two lines.
+/// A plan Question over the fake world docks in the modal with its judged
+/// badge; PageDown moves a page; feedback of your own is typed inside the
+/// modal while PageUp still scrolls, and Enter sends it to the session as
+/// its prompt; the revised plan asks again from its top; approve approves
+/// it; each answer logs two lines.
 #[test]
-fn a_plan_question_scrolls_its_plan_by_rows_and_sends_feedback_then_approval() {
+fn a_plan_question_takes_feedback_typed_in_the_modal_then_approval() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     w.lock().merged = true;
     let run = w.repo.join(".harness/runs/hx-1");
-    let words = vec!["word"; 60].join(" "); // three rows at 116 columns
-    let steps: String = (1..=40).map(|n| format!("- step {n}\n")).collect();
+    let words = vec!["word"; 60].join(" "); // four rows at 88 columns
+    let steps: String = (1..=80).map(|n| format!("- step {n}\n")).collect();
     let plan = format!("{words}\n{steps}");
-    let revised = format!("{plan}- step 41\n");
+    let revised = format!("{plan}- step 81\n");
     w.session(move |p| match (p.stage.as_str(), p.approved) {
         ("implement", false) => at_dialog(&run, &plan),
         ("", _) if p.text == "cover y too" => at_dialog(&run, &revised),
@@ -2830,71 +2831,70 @@ fn a_plan_question_scrolls_its_plan_by_rows_and_sends_feedback_then_approval() {
         s.options(),
         ["approve", "feedback of your own", "park", "open the pane"]
     );
-    let body = |s: &Screen| -> Vec<String> {
-        let buf = render(s, 120, 40);
-        let (_, y) = find(&buf, " QUESTION ").unwrap();
-        (y + 1..39)
-            .map(|y| {
-                row(&buf, y)
-                    .trim_matches(|c| c == '│' || c == ' ')
-                    .to_string()
-            })
-            .collect()
-    };
-    let shown = body(&s);
-    assert_eq!(
-        shown[..3],
-        [
-            "hx-1 Ticket hx-1  plan ready in implement (pane 1-1)",
-            "judged: plan strays from the Ticket 0.70",
-            "",
-        ],
-        "{shown:#?}"
+    let buf = render(&s, 160, 45);
+    let (x, _) = find(&buf, "┏").unwrap();
+    let inner = |y: u16| cols(&buf, y, x as usize + 2, 158).trim_end().to_string();
+    assert!(
+        row(&buf, 0).contains(" PLAN · hx-1 Ticket hx-1 "),
+        "{:?}",
+        row(&buf, 0)
     );
-    assert!(shown[3].starts_with("word word") && shown[5].starts_with("word"));
-    assert_eq!(shown[6], "- step 1", "{shown:#?}");
-    assert!(shown
-        .iter()
-        .any(|l| l.contains("PgUp PgDn scroll the plan")));
-    // The last plan row sits just above the options.
-    let last_row = |s: &Screen| {
-        let shown = body(s);
-        let at = shown
-            .iter()
-            .position(|l| l.starts_with("› 1. approve"))
-            .unwrap();
-        shown[at - 1].clone()
-    };
+    assert_eq!(
+        [inner(1), inner(2)],
+        [
+            "judged: plan strays from the Ticket 0.70",
+            "plan ready in implement (pane 1-1)"
+        ]
+    );
+    let top = plan_body(&s);
+    assert!(top[0].starts_with("word word") && top[3].starts_with("word"));
+    assert_eq!(top[4], "• step 1", "{top:#?}");
     s.key(key(KeyCode::PageDown));
     assert_eq!(
-        body(&s)[3],
-        "- step 8",
-        "PageDown is ten rows, not ten lines"
+        plan_body(&s)[0],
+        top[top.len() - 2],
+        "PageDown is not a page"
     );
-    for _ in 0..6 {
+    for _ in 0..3 {
         s.key(key(KeyCode::PageDown));
-        body(&s);
+        plan_body(&s);
     }
-    assert_eq!(last_row(&s), "- step 40", "PageDown ran past the plan");
-    let bottom = body(&s)[3].clone();
+    assert_eq!(
+        plan_body(&s).last().unwrap(),
+        "• step 80",
+        "PageDown ran past the plan"
+    );
+    let bottom = plan_body(&s)[0].clone();
     s.key(key(KeyCode::PageUp));
-    let up = body(&s)[3].clone();
+    let up = plan_body(&s)[0].clone();
     assert_ne!(up, bottom, "PageUp after the end did not move");
 
+    // Feedback of your own: its option's row becomes the input.
     pick(&mut s, 2);
     assert!(s.composing);
     s.key(key(KeyCode::PageUp));
     assert_ne!(
-        body(&s)[3],
+        plan_body(&s)[0],
         up,
         "PageUp does not scroll while typing feedback"
     );
-    type_line(&mut s, "cover y too");
+    type_in(&mut s, "cover y too");
+    let buf = render(&s, 160, 45);
+    let inner = |y: u16| cols(&buf, y, x as usize + 2, 158).trim_end().to_string();
+    assert_eq!(
+        [inner(40), inner(41), inner(42)],
+        ["  1. approve", "feedback › cover y too▌", "  3. park"],
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row(&buf, 44).contains("Enter sends the feedback, Esc goes back"));
+    assert_eq!(cols(&buf, 44, 0, x as usize).trim_end(), "›");
+    s.key(key(KeyCode::Enter));
     await_line(&mut s, "hx-1 plan sent back with your feedback");
     await_questions(&mut s, 1);
     assert_eq!(
-        body(&s)[6],
-        "- step 1",
+        plan_body(&s)[4],
+        "• step 1",
         "the revised plan kept the old scroll"
     );
     pick(&mut s, 1);
@@ -3135,4 +3135,505 @@ fn continue_at_ticket_in_a_live_run_unparks_it_and_puts_its_question_first() {
     );
     s.command("/stop-work");
     await_end(&mut s);
+}
+
+/// Every markdown element the modal styles, and a Tests section long
+/// enough that the plan overflows the box at 160x45.
+fn sample_plan() -> String {
+    let tests: String = (1..=60).map(|n| format!("- test {n}\n")).collect();
+    format!(
+        "# Plan: the docked modal
+
+A lead with `inline code` and **bold words** in it.
+
+## The changes
+
+1. **src/shell.rs**: a numbered item long enough to wrap onto a second row, under its own text and not under its number, at any width here.
+- a bullet
+  - a nested bullet
+
+### The keys
+
+> Risk: a quoted line.
+
+```diff
+@@ fn draw @@
+-    old line
++    new line
+ same line
+```
+
+```yaml
+- not a removed line
+```
+
+## Tests
+
+{tests}"
+    )
+}
+
+/// The screen with a plan Question for 11, judged 0.62, and a Wake of 10
+/// queued behind it.
+fn plan_screen(repo: &Path) -> Screen {
+    let mut s = screen_at(Fake::quiet(), repo);
+    s.push(asking(
+        "harness-kqe.11",
+        "plan ready in implement (pane 2-1)",
+        Ask::Plan {
+            pane: "w1:p7".to_string(),
+            plan: sample_plan(),
+            judged: Some(0.62),
+            feedback: None,
+        },
+    ));
+    s.push(asking(
+        "harness-kqe.10",
+        "stuck in fix 1: went idle without a result (pane 3-1)",
+        Ask::Wake {
+            pane: "w1:p9".to_string(),
+            tail: "Ran the tests.\n".to_string(),
+            file: PathBuf::from("/r/.harness/runs/harness-kqe.10/fix-1.md"),
+            actions: Action::ALL[..4].to_vec(),
+            judged: None,
+        },
+    ));
+    s
+}
+
+/// The screen with plans for 11 and 12, 11's drawn and a line said since.
+fn two_plans(repo: &Path) -> Screen {
+    let mut s = screen_at(Fake::quiet(), repo);
+    for id in ["harness-kqe.11", "harness-kqe.12"] {
+        s.push(asking(
+            id,
+            "plan ready in implement (pane 2-1)",
+            Ask::Plan {
+                pane: format!("w1:{id}"),
+                plan: "# a plan\n".to_string(),
+                judged: None,
+                feedback: None,
+            },
+        ));
+    }
+    render(&s, 160, 45);
+    s.say("a line after it opened");
+    s
+}
+
+/// The docked plan's body rows at 160x45, between its lead and the rule
+/// over the options, the box's border and scrollbar trimmed.
+fn plan_body(s: &Screen) -> Vec<String> {
+    let buf = render(s, 160, 45);
+    let (x, _) = find(&buf, "┏").expect("the plan is not docked");
+    (4..44)
+        .map(|y| {
+            cols(&buf, y, x as usize + 2, 160)
+                .trim_end_matches(['┃', '║', '█', ' '])
+                .to_string()
+        })
+        .take_while(|l| !l.starts_with("───"))
+        .collect()
+}
+
+/// The plan leaves the Question box: it docks in the right 58% as a thick
+/// box, the live Shell in the left 42%, its markdown styled, a scrollbar
+/// when it overflows, and the options listed at its foot.
+#[test]
+fn a_plan_docks_beside_the_live_shell_with_its_markdown_styled() {
+    let repo = TempDir::new();
+    let mut s = plan_screen(repo.path());
+    render(&s, 160, 45); // it opens
+    s.say("a line after it opened");
+    let buf = render(&s, 160, 45);
+    let (x, top) = find(&buf, "┏").unwrap();
+    assert_eq!(top, 0, "{:#?}", rows(&buf));
+    assert_eq!(buf[(x, 0)].fg, PURPLE);
+    for text in [
+        "━━ ▾ harness-k",
+        "── RECENT",
+        "a line after it opened",
+        "› ▌",
+    ] {
+        let (at, _) = find(&buf, text).unwrap_or_else(|| panic!("{text:?}: {:#?}", rows(&buf)));
+        assert!(at < x, "{text:?} is not in the Shell's left part");
+    }
+    assert!(find(&buf, " QUESTION").is_none(), "{:#?}", rows(&buf));
+    assert!(
+        row(&buf, 0).contains(" PLAN · 11 Questions "),
+        "{:?}",
+        row(&buf, 0)
+    );
+    let inner = |y: u16| cols(&buf, y, x as usize + 2, 158).trim_end().to_string();
+    assert_eq!(
+        [inner(1), inner(2), inner(3)],
+        [
+            "judged: plan follows the Ticket 0.62 · 1 more waiting · 1 new on RECENT",
+            "plan ready in implement (pane 2-1)",
+            "",
+        ]
+    );
+    let at = |text: &str| find(&buf, text).unwrap_or_else(|| panic!("{text:?}: {:#?}", rows(&buf)));
+    let cell = |text: &str| {
+        let (x, y) = at(text);
+        buf[(x, y)].clone()
+    };
+    assert_eq!(at("Plan: the docked modal"), (x + 2, 4));
+    let h1 = cell("Plan: the docked modal");
+    assert_eq!(h1.fg, PURPLE);
+    assert!(h1.modifier.contains(Modifier::BOLD | Modifier::UNDERLINED));
+    let h2 = cell("The changes");
+    assert!(h2.fg == CYAN && h2.modifier.contains(Modifier::BOLD));
+    let h3 = cell("The keys");
+    assert!(h3.fg == TEXT && h3.modifier.contains(Modifier::BOLD));
+    let code = cell("inline code");
+    assert!(code.fg == ORANGE && code.bg != Color::Reset);
+    let strong = cell("bold words");
+    assert!(strong.fg == TEXT && strong.modifier.contains(Modifier::BOLD));
+    assert!(!cell("A lead with").modifier.contains(Modifier::BOLD));
+    // A numbered item hangs its second row under its text.
+    let (n, y) = at("1. src/shell.rs: a numbered item");
+    let next = row(&buf, y + 1);
+    let indent = next
+        .chars()
+        .skip(n as usize)
+        .take_while(|c| *c == ' ')
+        .count();
+    assert_eq!(indent, 3, "{next:?}");
+    let (b, _) = at("• a bullet");
+    let (nb, _) = at("◦ a nested bullet");
+    assert!(nb > b);
+    assert_eq!(cell("│ Risk").fg, ORANGE);
+    let quote = cell("Risk: a quoted line.");
+    assert!(quote.fg == MUTED && quote.modifier.contains(Modifier::ITALIC));
+    for (text, c) in [
+        ("@@ fn draw @@", CYAN),
+        ("-    old line", RED),
+        ("+    new line", GREEN),
+        (" same line", TEXT),
+    ] {
+        let cell = cell(text);
+        assert!(
+            cell.fg == c && cell.bg != Color::Reset,
+            "{text:?}: {cell:?}"
+        );
+    }
+    assert_eq!(
+        cell("- not a removed line").fg,
+        TEXT,
+        "a yaml list read as a diff"
+    );
+    // A scrollbar in the body's last column, the options at the foot.
+    let (right, _) = find(&buf, "┓").unwrap();
+    assert!(
+        (4..40).any(|y| buf[(right - 2, y)].symbol() == "█"),
+        "no scrollbar: {:#?}",
+        rows(&buf)
+    );
+    assert_eq!(
+        [inner(40), inner(41), inner(42), inner(43)],
+        [
+            "› 1. approve",
+            "  2. feedback of your own",
+            "  3. park",
+            "  4. open the pane",
+        ]
+    );
+    assert!(inner(39).starts_with("───"));
+    assert_eq!(cell("› 1. approve").fg, PURPLE);
+    assert!(
+        row(&buf, 44).contains("Enter answers"),
+        "{:?}",
+        row(&buf, 44)
+    );
+}
+
+/// Under 110 columns the plan folds to a rounded box over the dimmed
+/// Shell, leaving it the input line, with margins from 100x30 up; the
+/// options go in one row.
+#[test]
+fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
+    let repo = TempDir::new();
+    let mut s = plan_screen(repo.path());
+    s.hidden = true;
+    let plain = render(&s, 100, 30);
+    s.hidden = false;
+    render(&s, 100, 30); // it opens
+    s.say("a line after it opened");
+    let buf = render(&s, 100, 30);
+    assert_eq!(find(&buf, "╭"), Some((8, 2)), "{:#?}", rows(&buf));
+    assert_eq!(find(&buf, "╯"), Some((91, 27)), "{:#?}", rows(&buf));
+    assert!(row(&buf, 2).contains(" PLAN · 11 Questions "));
+    assert!(row(&buf, 3)
+        .contains("judged: plan follows the Ticket 0.62 · 1 more waiting · 1 new on RECENT"));
+    assert!(
+        row(&buf, 26).contains(" 1 approve   2 feedback of your own   3 park   4 open the pane "),
+        "{:#?}",
+        rows(&buf)
+    );
+    let (x, y) = find(&buf, " 1 approve ").unwrap();
+    assert_eq!(buf[(x, y)].bg, PURPLE, "the cursor's option is not marked");
+    assert!(row(&buf, 29).starts_with("› ▌"), "{:#?}", rows(&buf));
+    // The Shell behind the box is dimmed, the input line not.
+    let (tx, ty) = find(&plain, "├─").unwrap();
+    assert_eq!(buf[(tx, ty)].symbol(), "├");
+    assert_ne!(
+        buf[(tx, ty)].fg,
+        plain[(tx, ty)].fg,
+        "the Shell is not dimmed"
+    );
+    assert_eq!(buf[(0, 29)].fg, plain[(0, 29)].fg);
+
+    let buf = render(&s, 80, 24);
+    assert_eq!(find(&buf, "╭"), Some((0, 0)), "{:#?}", rows(&buf));
+    assert!(row(&buf, 22).starts_with("╰"), "{:#?}", rows(&buf));
+    assert!(row(&buf, 23).starts_with("› ▌"));
+    assert!(
+        row(&buf, 21).contains(" 4 open the pane "),
+        "{:#?}",
+        rows(&buf)
+    );
+    // Feedback of your own takes the options' row.
+    pick(&mut s, 2);
+    type_in(&mut s, "cover y");
+    let buf = render(&s, 80, 24);
+    assert!(
+        row(&buf, 21).starts_with("│ feedback › cover y▌"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert_eq!(row(&buf, 23).trim_end(), "›");
+    s.key(key(KeyCode::Esc));
+
+    // A notice, or the / list of a command being typed, stays in view:
+    // the box ends above them.
+    s.notice("refused: a run is stopping", Duration::from_secs(5));
+    let buf = render(&s, 80, 24);
+    assert_eq!(
+        row(&buf, 22).trim_end(),
+        " refused: a run is stopping",
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(row(&buf, 21).starts_with("╰"), "{:#?}", rows(&buf));
+    s.notice = None;
+    type_in(&mut s, "/st");
+    let buf = render(&s, 100, 30);
+    let (_, y) = find(&buf, "› /start-epic").expect("the / list is under the box");
+    assert_eq!(
+        find(&buf, "╯").map(|(_, r)| r),
+        Some(y - 1),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// The badges shorten, and the folded options to their first words,
+/// wherever the long ones do not fit.
+#[test]
+fn badges_and_options_shorten_where_they_do_not_fit() {
+    let repo = TempDir::new();
+    let mut s = plan_screen(repo.path());
+    render(&s, 110, 40); // it opens
+    s.say("a line after it opened");
+    let buf = render(&s, 110, 40);
+    assert!(find(&buf, "┏").is_some(), "{:#?}", rows(&buf));
+    assert!(
+        find(&buf, "┃ judged 0.62 · 1 more waiting · 1 new ").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    let About::Asked(Ask::Plan { feedback, .. }) = &mut s.questions[0].about else {
+        unreachable!()
+    };
+    *feedback = Some("cover y and the fold at every size, then the docked layout".to_string());
+    let buf = render(&s, 100, 30);
+    assert!(
+        row(&buf, 26).contains(" 1 approve   2 feedback   3 resend   4 park   5 open "),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// The plan reads like a pager: ↑↓ a line, PgUp PgDn and Space a page,
+/// Home and End, Tab and Shift-Tab heading to heading; ←→ or a number pick
+/// an option; Esc hides it and Esc on an empty input line shows it again.
+#[test]
+fn the_plan_reads_with_a_pagers_keys_and_esc_hides_it() {
+    let repo = TempDir::new();
+    let mut s = plan_screen(repo.path());
+    let top = plan_body(&s);
+    assert_eq!(top[0], "Plan: the docked modal");
+    s.key(key(KeyCode::Down));
+    s.key(key(KeyCode::Down));
+    assert_eq!(plan_body(&s)[0], top[2]);
+    s.key(key(KeyCode::Up));
+    assert_eq!(plan_body(&s)[0], top[1]);
+    s.key(key(KeyCode::Home));
+    for heading in ["The changes", "The keys", "Tests"] {
+        s.key(key(KeyCode::Tab));
+        assert_eq!(plan_body(&s)[0], heading);
+    }
+    s.key(key(KeyCode::BackTab));
+    assert_eq!(plan_body(&s)[0], "The keys");
+    s.key(key(KeyCode::BackTab));
+    s.key(key(KeyCode::BackTab));
+    assert_eq!(plan_body(&s)[0], top[0]);
+    // A page keeps its last two rows in view.
+    let h = top.len();
+    s.key(key(KeyCode::PageDown));
+    assert_eq!(plan_body(&s)[0], top[h - 2]);
+    s.key(key(KeyCode::PageUp));
+    assert_eq!(plan_body(&s)[0], top[0]);
+    s.key(key(KeyCode::Char(' ')));
+    assert_eq!(plan_body(&s)[0], top[h - 2]);
+    s.key(key(KeyCode::End));
+    assert_eq!(plan_body(&s).last().unwrap(), "• test 60");
+    s.key(key(KeyCode::End));
+    s.key(key(KeyCode::Down));
+    assert_eq!(
+        plan_body(&s).last().unwrap(),
+        "• test 60",
+        "Down ran past the plan"
+    );
+
+    // ←→ or a number pick.
+    s.key(key(KeyCode::Right));
+    s.key(key(KeyCode::Right));
+    assert_eq!(s.questions[0].cursor, 2);
+    s.key(key(KeyCode::Left));
+    assert_eq!(s.questions[0].cursor, 1);
+    s.key(key(KeyCode::Char('4')));
+    s.key(key(KeyCode::Right));
+    assert_eq!(s.questions[0].cursor, 3);
+    assert!(find(&render(&s, 160, 45), "› 4. open the pane").is_some());
+
+    // Esc hides it: the Shell takes the screen and the status row counts
+    // the Questions; Esc on an empty input line shows it again.
+    s.key(key(KeyCode::Esc));
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "┏").is_none() && find(&buf, " QUESTION").is_none());
+    assert!(
+        find(&buf, "2 questions waiting").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Esc));
+    assert!(find(&render(&s, 160, 45), " PLAN · 11 Questions ").is_some());
+    // A slash starts a command, as at any Question.
+    s.key(key(KeyCode::Char('/')));
+    assert_eq!(s.input, "/");
+}
+
+/// Other Questions queue behind the plan, counted on its badge line;
+/// answering the plan shows the next, a Wake in the Shell's Question box.
+#[test]
+fn answering_the_plan_shows_the_wake_queued_behind_in_the_question_box() {
+    let repo = TempDir::new();
+    let mut s = plan_screen(repo.path());
+    assert!(find(&render(&s, 160, 45), "1 more waiting").is_some());
+    pick(&mut s, 3);
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "┏").is_none(), "{:#?}", rows(&buf));
+    let (_, y) = find(&buf, " QUESTION ").unwrap();
+    assert!(
+        row(&buf, y + 1).contains("10 The Shell runs the Orchestrator  stuck in fix 1: went idle"),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(s
+        .events
+        .iter()
+        .any(|e| line(e) == "harness-kqe.11 you answered: park"));
+}
+
+/// Another plan behind the plan shows in the modal next, counting the
+/// lines since it opened, not since the first did.
+#[test]
+fn a_plan_behind_the_plan_counts_its_own_new_lines() {
+    let repo = TempDir::new();
+    let mut s = two_plans(repo.path());
+    assert!(row(&render(&s, 160, 45), 1).contains("┃ 1 more waiting · 1 new on RECENT "));
+    pick(&mut s, 1);
+    let buf = render(&s, 160, 45);
+    assert!(
+        row(&buf, 0).contains(" PLAN · 12 Judgment "),
+        "{:?}",
+        row(&buf, 0)
+    );
+    assert!(!row(&buf, 1).contains("new"), "{:?}", row(&buf, 1));
+}
+
+/// Typing feedback or opening the pane keeps the same plan on screen, and
+/// its count; feedback sent shows the plan behind, which counts afresh.
+#[test]
+fn the_new_lines_count_follows_the_plan_on_screen() {
+    let repo = TempDir::new();
+    let mut s = two_plans(repo.path());
+    pick(&mut s, 4); // open the pane
+    assert!(row(&render(&s, 160, 45), 1).contains("1 new on RECENT"));
+    pick(&mut s, 2); // feedback of your own
+    assert!(row(&render(&s, 160, 45), 1).contains("1 new on RECENT"));
+    type_line(&mut s, "cover y too");
+    let buf = render(&s, 160, 45);
+    assert!(row(&buf, 0).contains(" PLAN · 12 "), "{:?}", row(&buf, 0));
+    assert!(!row(&buf, 1).contains("new"), "{:?}", row(&buf, 1));
+}
+
+/// A Question's option with a word wider than the box, a nudge's path,
+/// goes on under itself instead of running off the edge.
+#[test]
+fn a_word_wider_than_the_question_wraps() {
+    let repo = TempDir::new();
+    let mut s = screen_at(Fake::quiet(), repo.path());
+    let file = PathBuf::from(format!("/r/{}fix-1.md", "deep/".repeat(30)));
+    s.push(asking(
+        "harness-kqe.11",
+        "stuck in fix 1: went idle without a result (pane 2-1)",
+        Ask::Wake {
+            pane: "w1:p7".to_string(),
+            tail: String::new(),
+            file: file.clone(),
+            actions: Action::ALL[..1].to_vec(),
+            judged: None,
+        },
+    ));
+    let buf = render(&s, 80, 40);
+    let (_, y) = find(&buf, "› 1. nudge").unwrap();
+    let text: String = (y..40)
+        .map(|y| {
+            row(&buf, y)
+                .trim_matches(|c| c == '│' || c == ' ')
+                .to_string()
+        })
+        .collect();
+    assert!(
+        text.contains(&file.display().to_string()),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
+/// A word wider than the plan, a path or a URL, goes on under itself
+/// instead of running off the edge.
+#[test]
+fn a_word_wider_than_the_plan_wraps() {
+    let repo = TempDir::new();
+    let mut s = screen_at(Fake::quiet(), repo.path());
+    let path = format!("src/{}.rs", "deep/".repeat(40));
+    s.push(asking(
+        "harness-kqe.11",
+        "plan ready in implement (pane 2-1)",
+        Ask::Plan {
+            pane: "w1:p7".to_string(),
+            plan: format!("- change `{path}` and more\n"),
+            judged: None,
+            feedback: None,
+        },
+    ));
+    let body = plan_body(&s);
+    assert_eq!(body[0], "• change", "{body:#?}");
+    assert!(body[1].starts_with("  src/deep/"), "{body:#?}");
+    let text: String = body.iter().map(|l| l.trim_start()).collect();
+    assert!(text.contains(&path), "{body:#?}");
 }

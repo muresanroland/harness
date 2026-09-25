@@ -23,7 +23,7 @@ pub(crate) const SKILLS: &[(&str, &str)] = &[
     ),
 ];
 
-// Nothing outside the tests calls it until init (Ticket 18) and /config (Ticket 21).
+// Nothing outside the tests calls update and remove until /config (Ticket 21).
 #[allow(dead_code)]
 pub(crate) mod manifest;
 

@@ -12,6 +12,7 @@ use super::stage::{
     IMPLEMENT, REVIEW,
 };
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
+use crate::skills::manifest::link_checkout_skills;
 
 const MAX_ROUNDS: usize = 3;
 
@@ -302,34 +303,40 @@ impl Orchestrator {
 
     /// Creates the Ticket's worktree and branch once, brings the new branch
     /// up to the remote's default branch so a dependent Ticket builds on what
-    /// was just merged (ADR 0002), and marks the Ticket in progress.
+    /// was just merged (ADR 0002), and marks the Ticket in progress. Then,
+    /// each time, links the skills init put in the checkout into it and the
+    /// Run directory, so a resumed Ticket gets those put there since.
     fn prepare_worktree(&self, ticket: &str) -> Result<(), StageError> {
         let worktree = self.worktree(ticket);
-        if worktree.exists() {
-            return Ok(());
-        }
         let tools = &self.cfg.tools;
         let repo = &self.cfg.repo;
-        let path = worktree.display().to_string();
-        tools
-            .run(
-                repo,
-                &["bd", "worktree", "create", &path, "--branch", ticket],
-            )
-            .map_err(|err| StageError::Parked(format!("worktree not created: {err}")))?;
-        if let Err(err) = tools.run(&worktree, &["git", "pull", "--ff-only", "origin", "HEAD"]) {
-            // Building on a stale main is what ADR 0002 exists to prevent;
-            // leave nothing behind so a retry prepares the worktree again.
-            let _ = tools.run(repo, &["bd", "worktree", "remove", &path]);
-            let _ = tools.run(repo, &["git", "branch", "-D", ticket]);
-            return Err(StageError::Parked(format!(
-                "new branch not brought up to origin's default branch: {err}"
-            )));
+        if !worktree.exists() {
+            let path = worktree.display().to_string();
+            tools
+                .run(
+                    repo,
+                    &["bd", "worktree", "create", &path, "--branch", ticket],
+                )
+                .map_err(|err| StageError::Parked(format!("worktree not created: {err}")))?;
+            if let Err(err) = tools.run(&worktree, &["git", "pull", "--ff-only", "origin", "HEAD"])
+            {
+                // Building on a stale main is what ADR 0002 exists to prevent;
+                // leave nothing behind so a retry prepares the worktree again.
+                let _ = tools.run(repo, &["bd", "worktree", "remove", &path]);
+                let _ = tools.run(repo, &["git", "branch", "-D", ticket]);
+                return Err(StageError::Parked(format!(
+                    "new branch not brought up to origin's default branch: {err}"
+                )));
+            }
+            if let Err(err) = tools.run(repo, &["bd", "update", ticket, "--status", "in_progress"])
+            {
+                self.log(ticket, &format!("not marked in_progress: {err}"));
+            }
+            self.report(ticket, &format!("branch {ticket} created"));
         }
-        if let Err(err) = tools.run(repo, &["bd", "update", ticket, "--status", "in_progress"]) {
-            self.log(ticket, &format!("not marked in_progress: {err}"));
+        if let Err(err) = link_checkout_skills(repo, &[&worktree, &self.run_dir(ticket)]) {
+            self.log(ticket, &format!("skills not linked: {err}"));
         }
-        self.report(ticket, &format!("branch {ticket} created"));
         Ok(())
     }
 }

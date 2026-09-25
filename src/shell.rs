@@ -7,7 +7,7 @@
 //! session) becomes a Question, whose answer goes back to the Orchestrator
 //! for that session; the Orchestrator knows no Shell type.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -135,9 +135,11 @@ pub(crate) struct Question {
     pub(crate) about: About,
     /// The option the cursor is on.
     pub(crate) cursor: usize,
-    /// The first row of a plan shown, which PageUp and PageDown move; the
-    /// draw, which knows the width, keeps it inside the plan.
+    /// The first row of a plan shown, which the modal's reading keys move;
+    /// the draw, which knows the width, keeps it inside the plan.
     pub(crate) scroll: Cell<usize>,
+    /// When a plan's modal first drew it, for its count of the lines since.
+    pub(crate) opened: OnceCell<chrono::DateTime<chrono::Local>>,
 }
 
 /// What the screen shows, with no terminal in it.
@@ -191,6 +193,12 @@ pub(crate) struct Screen {
     /// The Ticket /continue @ticket unparked: its next Question goes ahead
     /// of every other Ticket's.
     first: Option<String>,
+    /// The docked plan's page at the last draw, which PageUp, PageDown
+    /// and Space move by.
+    pub(crate) page: Cell<usize>,
+    /// The rows the docked plan's headings start on at the last draw, for
+    /// Tab and Shift-Tab.
+    pub(crate) heads: RefCell<Vec<usize>>,
     /// The updater thread's checks, applied between commands in poll().
     update_sender: Sender<Checked>,
     update_receiver: Receiver<Checked>,
@@ -238,6 +246,8 @@ impl Screen {
             hidden: false,
             composing: false,
             first: None,
+            page: Cell::new(0),
+            heads: RefCell::new(Vec::new()),
             update_sender,
             update_receiver,
             update: None,
@@ -526,6 +536,7 @@ impl Screen {
                 about: About::Asked(ask),
                 cursor: 0,
                 scroll: Cell::new(0),
+                opened: OnceCell::new(),
             },
         );
         self.tell(Some(&id), &asking);
@@ -612,6 +623,11 @@ impl Screen {
     /// Whether the front Question shows above the input line.
     pub(crate) fn showing(&self) -> bool {
         !self.questions.is_empty() && !self.hidden
+    }
+
+    /// Whether the front Question is a plan, which docks in the modal.
+    pub(crate) fn modal(&self) -> bool {
+        self.showing() && matches!(self.questions[0].about, About::Asked(Ask::Plan { .. }))
     }
 
     /// The front Question's options, numbered in this order.
@@ -772,15 +788,31 @@ impl Screen {
         }
         // With a Question showing and the input line empty the keys are
         // its: arrows or a number pick, Enter answers, Esc hides or cancels,
-        // Space toggles a /continue row, y and n answer a confirmation,
-        // PageUp and PageDown scroll a plan; a slash starts a command.
+        // Space toggles a /continue row, y and n answer a confirmation; a
+        // plan reads like a pager, ↑↓ a line, PageUp, PageDown and Space a
+        // page, Home and End, Tab and Shift-Tab heading to heading, and ←→
+        // pick. A slash starts a command.
         if self.showing() && self.input.is_empty() && !self.composing {
             let n = self.options().len();
             let confirm = matches!(self.questions[0].about, About::Confirm(_));
+            let plan = self.modal();
             let q = &mut self.questions[0];
             match key.code {
-                KeyCode::Up => q.cursor = q.cursor.saturating_sub(1),
-                KeyCode::Down => q.cursor = (q.cursor + 1).min(n - 1),
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Char(' ')
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                    if plan =>
+                {
+                    self.scroll_plan(key.code)
+                }
+                KeyCode::Up | KeyCode::Left => q.cursor = q.cursor.saturating_sub(1),
+                KeyCode::Down | KeyCode::Right => q.cursor = (q.cursor + 1).min(n - 1),
                 KeyCode::Char(c @ '0'..='9') => {
                     if let Some(i) = (c as usize).checked_sub('1' as usize).filter(|i| *i < n) {
                         q.cursor = i;
@@ -791,7 +823,6 @@ impl Screen {
                         rows[q.cursor].1 ^= true;
                     }
                 }
-                KeyCode::PageDown | KeyCode::PageUp => scroll_plan(q, key.code),
                 KeyCode::Char('y') if confirm => self.answer(0),
                 KeyCode::Char('n') if confirm => self.answer(1),
                 KeyCode::Enter => {
@@ -842,8 +873,8 @@ impl Screen {
             KeyCode::Tab if picked.is_some() => self.fill(&picked.unwrap()),
             KeyCode::Enter if picked.is_some() && !whole => self.fill(&picked.unwrap()),
             KeyCode::PageDown | KeyCode::PageUp if self.composing => {
-                if let Some(q) = self.questions.first() {
-                    scroll_plan(q, key.code);
+                if self.modal() {
+                    self.scroll_plan(key.code);
                 }
             }
             KeyCode::Down if self.input.is_empty() => scroll(&self.recent, -1),
@@ -878,6 +909,24 @@ impl Screen {
             }
             _ => {}
         }
+    }
+
+    /// The plan modal's reading keys: a line, a page, either end, the next
+    /// or previous heading. The draw keeps the row inside the plan.
+    fn scroll_plan(&self, code: KeyCode) {
+        let scroll = &self.questions[0].scroll;
+        let (row, page) = (scroll.get(), self.page.get());
+        let heads = self.heads.borrow();
+        scroll.set(match code {
+            KeyCode::Up => row.saturating_sub(1),
+            KeyCode::Down => row.saturating_add(1),
+            KeyCode::PageUp => row.saturating_sub(page),
+            KeyCode::Home => 0,
+            KeyCode::End => usize::MAX,
+            KeyCode::Tab => heads.iter().copied().find(|&h| h > row).unwrap_or(row),
+            KeyCode::BackTab => heads.iter().copied().rfind(|&h| h < row).unwrap_or(0),
+            _ => row.saturating_add(page), // PageDown, Space
+        });
     }
 
     /// The user picked option `choice` of the front Question.
@@ -999,6 +1048,7 @@ impl Screen {
             about: About::Confirm(pending),
             cursor: 1,
             scroll: Cell::new(0),
+            opened: OnceCell::new(),
         });
     }
 
@@ -1092,6 +1142,7 @@ impl Screen {
                         about: About::Continue { rows },
                         cursor: 0,
                         scroll: Cell::new(0),
+                        opened: OnceCell::new(),
                     });
                 }
             }
@@ -1341,17 +1392,6 @@ impl Screen {
             .flat_map(|e| &e.tickets)
             .find(|t| t.id == id)
             .map(|t| t.title.as_str())
-    }
-}
-
-/// PageDown and PageUp move a plan Question ten rows.
-fn scroll_plan(q: &Question, code: KeyCode) {
-    if matches!(q.about, About::Asked(Ask::Plan { .. })) {
-        let row = q.scroll.get();
-        q.scroll.set(match code {
-            KeyCode::PageDown => row + 10,
-            _ => row.saturating_sub(10),
-        });
     }
 }
 
