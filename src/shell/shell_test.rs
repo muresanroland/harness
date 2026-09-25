@@ -1570,7 +1570,7 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
 /// .harness/config.json is read when a run starts: one no Pipeline Stage can
 /// start on refuses the run, naming the file.
 #[test]
-fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
+fn an_unreadable_config_or_a_stage_codex_cannot_run_refuses_the_run() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     let file = w.repo.join(".harness/config.json");
     let mut s = shell(&w);
@@ -1585,18 +1585,18 @@ fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
 
     write_file(&file, r#"{"moderator": {"app": "codex"}}"#);
     s.command("/start-epic hx");
-    assert_eq!(notice(&s), "moderator runs on claude only");
+    assert_eq!(notice(&s), "moderator does not run on codex");
     assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
 
     write_file(&file, r#"{"fix": {"app": "codex"}}"#);
     s.command("/start-epic hx");
-    assert_eq!(notice(&s), "fix runs on claude only");
+    assert_eq!(notice(&s), "fix does not run on codex");
     assert!(s.run.is_none());
 
     // The Review's fallback is read too, not found broken at a limit.
-    write_file(&file, r#"{"review_if_limited": {"app": "pi"}}"#);
+    write_file(&file, r#"{"review_if_limited": {"app": "gemini"}}"#);
     s.command("/start-epic hx");
-    assert!(notice(&s).ends_with(r#"no App named "pi" for review_if_limited"#));
+    assert!(notice(&s).ends_with(r#"no App named "gemini" for review_if_limited"#));
     assert!(s.run.is_none());
 
     // Address runs on demand: its row does not hold up the Pipeline.

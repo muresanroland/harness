@@ -11,7 +11,7 @@ use ratatui::Frame;
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
-use crate::shell::config::{distinct, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
+use crate::shell::config::{distinct, family, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 
@@ -60,7 +60,7 @@ pub(super) fn config(f: &mut Frame, s: &Screen) {
 }
 
 /// The Apps page: each App of the table, installed with its version or
-/// greyed with its homepage.
+/// greyed with its homepage; the experimental ones under their own heading.
 fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let mut lines = vec![Line::from(vec![
         Span::styled("Apps", bold(TEXT)),
@@ -77,6 +77,11 @@ fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     lines.push(Line::default());
     let mut at = 0;
     for (i, app) in APPS.iter().enumerate() {
+        if i > 0 && app.experimental && !APPS[i - 1].experimental {
+            lines.push(Line::default());
+            let heading = "  experimental, unverified: from their docs, never run here";
+            lines.push(Line::from(Span::styled(cut(heading, width), fg(ORANGE))));
+        }
         let selected = st.open && i == st.setting;
         let on = st.installed[i].is_some();
         let name = match (on, selected) {
@@ -246,7 +251,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
             vec![shown, muted("  no fallback".into())]
         }
         Field::Model | Field::Plan => match app {
-            Some(app) => vec![shown, muted(format!("  {}", app.family))],
+            Some(app) => vec![shown, muted(format!("  {}", family(app, &v)))],
             None => vec![shown],
         },
         Field::Effort => match app {

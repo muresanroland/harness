@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
-use super::trust::{claude_records, codex_records};
+use super::trust::{claude_records, codex_records, copilot_records, cursor_records, pi_records};
 use crate::tools::Tools;
 
 /// The Review's fallback row, for when the Review's App is Limited; its
@@ -24,6 +24,8 @@ pub(crate) type Model = (String, Vec<String>);
 pub(crate) struct App {
     /// Its name in config.json, and herdr's agent kind.
     pub(crate) name: &'static str,
+    /// The binary herdr starts for that kind, found on PATH.
+    pub(crate) bin: &'static str,
     /// The unattended args of the Review, in the Run directory, given the
     /// worktree.
     pub(crate) run_dir_args: fn(&str) -> Vec<String>,
@@ -31,18 +33,21 @@ pub(crate) struct App {
     /// directory.
     pub(crate) worktree_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
+    /// A pane's; ON_MODEL goes on the end of the model's value.
     pub(crate) effort: &'static [&'static str],
+    /// The Debate side's, where it differs from a pane's.
+    pub(crate) side_effort: &'static [&'static str],
     pub(crate) resume: &'static [&'static str],
-    /// The headless read-only command a Debate side and the audit run,
-    /// before the model and effort args; the brief follows. "{}" is the Run
-    /// directory, where the diff is.
+    /// The headless read-only command a Debate side and the audit run: the
+    /// model and effort args go before a closing -p, which the brief
+    /// follows, and after anything else. "{}" is the Run directory, where
+    /// the diff is.
     pub(crate) side: &'static [&'static str],
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
-    /// Its models' family.
-    // ponytail: one family per App; a family per model, told from its name,
-    // when an App that runs several (pi) joins APPS.
+    /// Its models' family; "" for an App that runs several, told from each
+    /// model's name (family_of).
     pub(crate) family: &'static str,
     /// Where to get it, for /config on an App not installed.
     pub(crate) home: &'static str,
@@ -61,7 +66,16 @@ pub(crate) struct App {
     pub(crate) skill_dir: &'static str,
     /// Whether it loads its enabled plugins' skills, named plugin:skill.
     pub(crate) plugins: bool,
+    /// Its row is from its docs, never run here: /config says so.
+    pub(crate) experimental: bool,
 }
+
+/// cursor's effort form: no flag of its own, it goes on the end of the
+/// model's value, --model 'slug[effort=high]'.
+const ON_MODEL: &str = "[effort={}]";
+
+/// pi's --thinking levels, the same on every model.
+const PI_THINKING: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 impl App {
     /// Whether it loads a skill manifest::list found: the name list gives
@@ -73,9 +87,10 @@ impl App {
     }
 }
 
-pub(crate) static APPS: [App; 2] = [
+pub(crate) static APPS: [App; 6] = [
     App {
         name: "claude",
+        bin: "claude",
         // --add-dir lets it read the worktree but also write there: the Edit
         // deny rule stops the file tools and, merged into the strict Bash
         // sandbox, every command.
@@ -106,6 +121,7 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
+        side_effort: &["--effort", "{}"],
         resume: &["--resume", "{}"],
         // Only the read-only tools, named, so a tool added later is out too:
         // a shell or other code-running tool runs unsandboxed here and can
@@ -141,9 +157,11 @@ pub(crate) static APPS: [App; 2] = [
         built_in: &[],
         skill_dir: ".claude/skills",
         plugins: true,
+        experimental: false,
     },
     App {
         name: "codex",
+        bin: "codex",
         // The sandbox writes only where the pane starts: the result file
         // there, nothing in the worktree.
         run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
@@ -160,6 +178,7 @@ pub(crate) static APPS: [App; 2] = [
         },
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
+        side_effort: &["-c", "model_reasoning_effort={}"],
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
@@ -177,6 +196,143 @@ pub(crate) static APPS: [App; 2] = [
         // Never Claude's .claude/skills or its plugins.
         skill_dir: ".agents/skills",
         plugins: false,
+        experimental: false,
+    },
+    // The four below are from docs/research/agent-clis.md (research/agent-clis
+    // branch): none was run here. Each names its skills in words, loads
+    // .agents/skills and has none built in.
+    App {
+        name: "pi",
+        bin: "pi",
+        // No permission prompts and no sandbox, by design: the Review's
+        // guard is all that keeps the worktree as it was.
+        run_dir_args: |_| Vec::new(),
+        worktree_args: |_| Vec::new(),
+        model: &["--model", "{}"],
+        effort: &["--thinking", "{}"],
+        side_effort: &["--thinking", "{}"],
+        resume: &["--session", "{}"],
+        side: &["pi", "--tools", "read,grep,find,ls", "-p"],
+        trust: pi_records,
+        family: "",
+        home: "https://pi.dev",
+        models: pi_models,
+        limits: &[
+            r"You have hit your (?P<what>.*?usage limit)(?: \([^)]*\))?\. Try again (?P<reset>in ~?\d+ min)",
+        ],
+        mention: "",
+        built_in: &[],
+        skill_dir: ".agents/skills",
+        plugins: false,
+        experimental: true,
+    },
+    App {
+        name: "opencode",
+        bin: "opencode",
+        // --auto answers every ask, a directory outside the start one's too.
+        // No sandbox.
+        run_dir_args: |_| vec!["--auto".to_string()],
+        worktree_args: |_| vec!["--auto".to_string()],
+        model: &["-m", "{}"],
+        // Its TUI takes an effort only through config; run takes --variant.
+        effort: &[],
+        side_effort: &["--variant", "{}"],
+        resume: &["--session", "{}"],
+        // A quoted VAR=value is no assignment to the shell: env sets it. The
+        // diff is in the Run directory, outside the worktree it starts in.
+        side: &[
+            "env",
+            r#"OPENCODE_PERMISSION={"edit":"deny","bash":"deny","external_directory":"allow"}"#,
+            "opencode",
+            "run",
+        ],
+        trust: |_, _| Some(true), // no trust dialog
+        family: "",
+        home: "https://opencode.ai",
+        models: opencode_models,
+        // It waits out a retry-after inside its turn, looking working, with
+        // no bound of its own: the check before a timeout Wake reads it, and
+        // on a Debate side the Moderator's timeout. Seconds alone are no
+        // limit.
+        limits: &[
+            r"(?P<what>[\w-]+ usage limit) reached\. It will reset (?P<reset>in [^.]+)\.",
+            r"\[retrying (?P<reset>in [^\]]+?) attempt #\d+\]",
+        ],
+        mention: "",
+        built_in: &[],
+        skill_dir: ".agents/skills",
+        plugins: false,
+        experimental: true,
+    },
+    App {
+        name: "copilot",
+        bin: "copilot",
+        run_dir_args: |worktree| {
+            ["--allow-all", "--add-dir", worktree]
+                .map(String::from)
+                .to_vec()
+        },
+        worktree_args: |run_dir| {
+            ["--allow-all", "--add-dir", run_dir]
+                .map(String::from)
+                .to_vec()
+        },
+        model: &["--model", "{}"],
+        effort: &["--effort", "{}"],
+        side_effort: &["--effort", "{}"],
+        resume: &["--resume={}"],
+        side: &[
+            "copilot",
+            "--deny-tool=write",
+            "--deny-tool=shell",
+            "--add-dir",
+            "{}",
+            "-p",
+        ],
+        trust: copilot_records,
+        family: "",
+        home: "https://github.com/features/copilot/cli",
+        // No listing but in a live session: default and 'type an id…'.
+        models: |_, _| Ok(Vec::new()),
+        // ponytail: its monthly credits reset at 00:00 UTC on the 1st but
+        // say no reset, so they are looked at again every hour; compute the
+        // 1st when a run that long bites.
+        limits: &[
+            r"(?:You['’]ve (?:hit|reached) (?:your|the) (?P<what>(?:\w+ )?rate limit).*?)?Please wait for your limit to reset (?P<reset>in \d+ minutes?|on .+?) or switch",
+            r"You['’]ve run out of your included (?P<what>AI credits)",
+        ],
+        mention: "",
+        built_in: &[],
+        skill_dir: ".agents/skills",
+        plugins: false,
+        experimental: true,
+    },
+    App {
+        name: "cursor",
+        // herdr starts and resumes cursor-agent, not agent.
+        bin: "cursor-agent",
+        run_dir_args: |worktree| {
+            ["--force", "--add-dir", worktree]
+                .map(String::from)
+                .to_vec()
+        },
+        worktree_args: |run_dir| ["--force", "--add-dir", run_dir].map(String::from).to_vec(),
+        model: &["--model", "{}"],
+        effort: &[ON_MODEL],
+        side_effort: &[ON_MODEL],
+        resume: &["--resume", "{}"],
+        side: &["cursor-agent", "--mode", "ask", "--add-dir", "{}", "-p"],
+        trust: cursor_records,
+        family: "",
+        home: "https://cursor.com/cli",
+        models: cursor_models,
+        // The server's text, seen only second hand; no reset in it.
+        limits: &[r"You['’]re out of usage"],
+        mention: "",
+        built_in: &[],
+        skill_dir: ".agents/skills",
+        plugins: false,
+        experimental: true,
     },
 ];
 
@@ -206,6 +362,53 @@ fn codex_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
         .collect())
 }
 
+// ponytail: the three listings below read shapes no one here has seen
+// printed; a shape they miss lists nothing, and 'type an id…' still works.
+
+/// pi's models with working auth: a table under a "provider model …"
+/// header, each picked as provider/model, with pi's thinking levels.
+fn pi_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
+    let out = tools
+        .run(dir, &["pi", "--list-models"])
+        .map_err(|err| err.to_string())?;
+    Ok(out
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with("provider"))
+        .skip(1)
+        .filter_map(|line| {
+            let mut cols = line.split_whitespace();
+            let id = format!("{}/{}", cols.next()?, cols.next()?);
+            Some((id, PI_THINKING.map(String::from).to_vec()))
+        })
+        .collect())
+}
+
+/// opencode's models, one provider/model a line; no effort in a pane.
+fn opencode_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
+    let out = tools
+        .run(dir, &["opencode", "models"])
+        .map_err(|err| err.to_string())?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|id| id.contains('/') && !id.contains(' '))
+        .map(|id| (id.to_string(), Vec::new()))
+        .collect())
+}
+
+/// cursor's models, "<id> - <name>" a line; its efforts are not listed.
+fn cursor_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
+    let out = tools
+        .run(dir, &["cursor-agent", "models"])
+        .map_err(|err| err.to_string())?;
+    Ok(out
+        .lines()
+        .filter_map(|line| Some(line.split_once(" - ")?.0.trim()))
+        .filter(|id| !id.is_empty() && !id.contains(' '))
+        .map(|id| (id.to_string(), Vec::new()))
+        .collect())
+}
+
 /// The App config.json names.
 pub(crate) fn app(name: &str) -> Option<&'static App> {
     APPS.iter().find(|a| a.name == name)
@@ -222,17 +425,27 @@ pub(crate) struct Row {
 }
 
 impl Row {
-    /// The model and effort args.
+    /// The model and effort args of a pane.
     pub(crate) fn flags(&self) -> Vec<String> {
-        let model = match self.plan_model {
-            Some(_) => "opusplan",
-            None => &self.model,
+        self.args(self.app.effort)
+    }
+
+    /// The model arg and the effort's in the given form.
+    fn args(&self, effort: &[&str]) -> Vec<String> {
+        let mut model = match self.plan_model {
+            Some(_) => "opusplan".to_string(),
+            None => self.model.clone(),
         };
+        let on_model = effort == [ON_MODEL];
+        if on_model && self.effort != "default" {
+            model += &ON_MODEL.replace("{}", &self.effort);
+        }
         let mut out = Vec::new();
-        for (form, value) in [(self.app.model, model), (self.app.effort, &self.effort)] {
-            if value != "default" {
-                out.extend(fill(form, value));
-            }
+        if model != "default" {
+            out.extend(fill(self.app.model, &model));
+        }
+        if !on_model && self.effort != "default" {
+            out.extend(fill(effort, &self.effort));
         }
         out
     }
@@ -246,9 +459,8 @@ impl Row {
     /// quoted, since a model id like claude-opus-5-5[1m] is a glob to the
     /// shell.
     pub(crate) fn side_command(&self, run_dir: &str) -> String {
-        fill(self.app.side, run_dir)
+        side_argv(self.app.side, run_dir, self.args(self.app.side_effort))
             .into_iter()
-            .chain(self.flags())
             .map(|arg| quoted(&arg))
             .collect::<Vec<_>>()
             .join(" ")
@@ -274,6 +486,16 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
 }
 
+/// A side command with the Run directory put in and `args` before its
+/// closing -p, so the brief put last follows it: copilot's -p takes the
+/// brief as its value.
+fn side_argv(form: &[&str], run_dir: &str, args: Vec<String>) -> Vec<String> {
+    let mut argv = fill(form, run_dir);
+    let at = argv.len() - usize::from(argv.last().is_some_and(|arg| arg == "-p"));
+    argv.splice(at..at, args);
+    argv
+}
+
 /// Inputs as (name, value).
 type Inputs = Vec<(&'static str, String)>;
 
@@ -288,7 +510,7 @@ pub(crate) fn debate_inputs(
     limited: impl Fn(&str) -> Option<String>,
 ) -> Result<(Inputs, &'static App), String> {
     let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
-    let sides = debate(a.app, b.app);
+    let sides = debate(family_of(a.app, &a.model), family_of(b.app, &b.model));
     if !sides.holds {
         return Err(sides.text);
     }
@@ -410,18 +632,19 @@ pub(crate) fn field(doc: &Value, key: &str, name: &str) -> Result<String, String
     }
 }
 
-/// Off claude only Implement (the two-step Plan, plan.rs), the Review, its
-/// fallback and the Debate's sides run, until codex has the network the
+/// On codex only Implement (the two-step Plan, plan.rs), the Review, its
+/// fallback and the Debate's sides run, until it has the network the
 /// Moderator's side commands and TypeSafe calls need, and a Git write path
-/// for Fix and Address: its sandbox keeps Git metadata read-only.
+/// for Fix and Address: its sandbox keeps Git metadata read-only. Every
+/// other App runs every Stage.
 pub(crate) fn runs_on(key: &str, app: &App) -> Result<(), String> {
-    match app.name == "claude"
+    match app.name != "codex"
         || matches!(
             key,
             "implement" | "review" | IF_LIMITED | "side_a" | "side_b"
         ) {
         true => Ok(()),
-        false => Err(format!("{key} runs on claude only")),
+        false => Err(format!("{key} does not run on codex")),
     }
 }
 
@@ -493,10 +716,15 @@ pub(crate) fn full_id(model: &str) -> String {
 }
 
 /// One name per model whichever App runs it: opus, opus-5.5,
-/// anthropic/claude-opus-5-5 and claude-opus-5-5[1m] are claude-opus-5-5.
+/// anthropic/claude-opus-5-5, claude-opus-5-5[1m] and pi's
+/// claude-opus-5-5:high are claude-opus-5-5.
 pub(crate) fn canonical(model: &str) -> String {
     let m = model.rsplit('/').next().unwrap_or(model).to_lowercase();
-    let m = m.split('[').next().unwrap_or_default().replace('.', "-");
+    let m = m
+        .split(['[', ':'])
+        .next()
+        .unwrap_or_default()
+        .replace('.', "-");
     let m = match m.rsplit_once('-') {
         Some((head, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => head,
         _ => &m,
@@ -510,13 +738,38 @@ pub(crate) fn canonical(model: &str) -> String {
     }
 }
 
-/// A model as the rules compare it: its one name, or the App's default.
+/// The family each model name starts with, as its one name gives it.
+// ponytail: the families a Debate side is likely to name; any other reads
+// as unknown, which the rules refuse, until it is added here.
+const FAMILIES: [(&str, &str); 4] = [
+    ("claude-", "Anthropic"),
+    ("gpt-", "OpenAI"),
+    ("gemini-", "Google"),
+    ("grok-", "xAI"),
+];
+
+/// The family of model on app: the App's own, else told from the model's
+/// name; None when it cannot be told, as of such an App's default.
+pub(crate) fn family_of(app: &App, model: &str) -> Option<&'static str> {
+    if !app.family.is_empty() {
+        return Some(app.family);
+    }
+    let m = canonical(model);
+    FAMILIES
+        .iter()
+        .find(|(prefix, _)| m.starts_with(prefix))
+        .map(|(_, family)| *family)
+}
+
+/// A model as the rules compare it: its one name, or the App's default;
+/// None for the default of an App that runs several, which could be any.
 // ponytail: an App's default counts as a model of its own, though
 // claude's may be opus; resolve it with the probe when that bites.
-fn model_id(app: &App, model: &str) -> String {
+fn model_id(app: &App, model: &str) -> Option<String> {
     match model {
-        "default" => format!("{}'s default", app.name),
-        _ => canonical(model),
+        "default" if app.family.is_empty() => None,
+        "default" => Some(format!("{}'s default", app.name)),
+        _ => Some(canonical(model)),
     }
 }
 
@@ -528,14 +781,22 @@ pub(crate) struct Check {
     pub(crate) text: String,
 }
 
-/// The Debate's rule: its sides from two families.
-fn debate(a: &App, b: &App) -> Check {
-    let (x, y) = (a.family, b.family);
-    let holds = x != y;
-    let text = if holds {
-        format!("The sides come from two families: {x} and {y}")
-    } else {
-        format!("Both sides would be {x}: the Debate needs two families")
+/// The Debate's rule: its sides from two families, each told.
+fn debate(a: Option<&str>, b: Option<&str>) -> Check {
+    let (holds, text) = match (a, b) {
+        (Some(x), Some(y)) if x != y => (
+            true,
+            format!("The sides come from two families: {x} and {y}"),
+        ),
+        (Some(x), Some(_)) => (
+            false,
+            format!("Both sides would be {x}: the Debate needs two families"),
+        ),
+        _ => {
+            let side = if a.is_none() { "Side A" } else { "Side B" };
+            let text = format!("{side}'s family cannot be told from its model: name one");
+            (false, text)
+        }
     };
     Check {
         rows: &["side_a", "side_b"],
@@ -567,17 +828,28 @@ pub(crate) fn checks(doc: &Value) -> Vec<Check> {
         if model == "none" {
             continue;
         }
-        let (i, r) = (model_id(ia, im), model_id(app, &model));
-        let holds = i != r;
-        let text = if holds {
-            format!("{who} runs on {r}, not Implement's {i}")
-        } else {
-            format!("{who} would run on Implement's model, {i}: it must not review its own work")
+        let (holds, text) = match (model_id(ia, im), model_id(app, &model)) {
+            (Some(i), Some(r)) if i != r => {
+                (true, format!("{who} runs on {r}, not Implement's {i}"))
+            }
+            (Some(i), Some(_)) => (
+                false,
+                format!(
+                    "{who} would run on Implement's model, {i}: it must not review its own work"
+                ),
+            ),
+            (i, _) => {
+                let on = if i.is_none() { ia.name } else { app.name };
+                (
+                    false,
+                    format!("{who} cannot be checked: {on}'s default model is unknown, name one"),
+                )
+            }
         };
         out.push(Check { rows, holds, text });
     }
     if let (Some(a), Some(b)) = (row("side_a"), row("side_b")) {
-        out.push(debate(a.0, b.0));
+        out.push(debate(family_of(a.0, &a.1), family_of(b.0, &b.1)));
     }
     out
 }
@@ -595,8 +867,7 @@ pub(crate) fn check(repo: &Path) -> Result<(), String> {
 /// The one-line prompt that tries model on app, before /config saves it:
 /// the App's headless read-only command, in dir.
 pub(crate) fn probe(app: &App, dir: &Path, model: &str) -> Vec<String> {
-    let mut argv = fill(app.side, &dir.display().to_string());
-    argv.extend(fill(app.model, model));
+    let mut argv = side_argv(app.side, &dir.display().to_string(), fill(app.model, model));
     argv.push("Reply with ok".to_string());
     argv
 }

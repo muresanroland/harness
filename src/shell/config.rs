@@ -248,6 +248,11 @@ fn said(doc: &Value, row: usize) -> String {
     }
 }
 
+/// The family of model on app as /config shows it.
+pub(crate) fn family(app: &App, model: &str) -> &'static str {
+    app::family_of(app, model).unwrap_or("family unknown")
+}
+
 /// The note on an App not on PATH: where to get it.
 fn not_on_path(app: &App) -> String {
     format!("{} is not on PATH: get it at {}", app.name, app.home)
@@ -415,9 +420,10 @@ impl Settings {
         match (pick.field, self.pick_app(pick)) {
             (Field::App, _) => {
                 for a in &APPS {
-                    let detail = match self.is_installed(a) {
-                        true => a.family,
-                        false => "not installed",
+                    let detail = match (self.is_installed(a), a.experimental) {
+                        (false, _) => "not installed",
+                        (true, true) => "experimental, unverified",
+                        (true, false) => a.family,
                     };
                     entry(a.name, detail.into(), Some(Picked::App(a)));
                 }
@@ -425,7 +431,7 @@ impl Settings {
             (_, None) | (Field::Same, _) => {}
             (Field::Plan, Some(app)) => {
                 for (id, _) in self.listed(app) {
-                    entry(id, app.family.into(), Some(Picked::Value(id.clone())));
+                    entry(id, family(app, id).into(), Some(Picked::Value(id.clone())));
                 }
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
@@ -438,14 +444,14 @@ impl Settings {
                 }
                 // A split needs a named model for each half.
                 if pick.row != 0 || pick.app.is_some() || self.split().is_none() {
-                    let detail = format!("{}'s own · {}", app.name, app.family);
+                    let detail = format!("{}'s own · {}", app.name, family(app, "default"));
                     entry("default", detail, value("default"));
                 }
                 if let Err(err) = self.catalog(app) {
                     entry(err, String::new(), None);
                 }
                 for (id, _) in self.listed(app) {
-                    entry(id, app.family.into(), value(id));
+                    entry(id, family(app, id).into(), value(id));
                 }
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
@@ -477,7 +483,11 @@ impl Settings {
         let mut doc = self.doc.clone();
         put(&mut doc, key, &fields);
         let broken = broken_by(&self.doc, &doc)?;
+        let unknown = self
+            .pick_app(pick)
+            .is_some_and(|app| app::family_of(app, model).is_none());
         let mark = match (broken.rows, key) {
+            _ if unknown => "? family unknown",
             ([_, "review"], "implement") => "✗ the Review's model",
             ([_, _], "implement") => "✗ the fallback's model",
             (["implement", _], _) => "✗ Implement's model",
@@ -634,8 +644,8 @@ impl Screen {
         let installed = APPS
             .iter()
             .map(|a| {
-                tools.run(repo, &["which", a.name]).ok()?;
-                let version = tools.run(repo, &[a.name, "--version"]).unwrap_or_default();
+                tools.run(repo, &["which", a.bin]).ok()?;
+                let version = tools.run(repo, &[a.bin, "--version"]).unwrap_or_default();
                 Some(
                     version
                         .lines()

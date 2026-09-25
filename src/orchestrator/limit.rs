@@ -75,15 +75,21 @@ pub(crate) fn find(app: &'static App, tail: &str, now: DateTime<Local>) -> Optio
 
 /// A reset as the Apps print it, in the machine's own zone (Claude's
 /// "(Zone)" is ignored): "3:45pm", "Mon 12:00am", "Sep 25, 3pm",
-/// "Sep 24th, 2026 3:05 PM". A time alone is its next occurrence, a
-/// weekday its next such day; a date without a year the one nearest
-/// today, in this year, the last or the next. True with a date.
+/// "Sep 24th, 2026 3:05 PM", "on September 28, 2026 at 3:00 PM", or from
+/// now, "in 3h 12m". A time alone is its next occurrence, a weekday its
+/// next such day; a date without a year the one nearest today, in this
+/// year, the last or the next. True with a date.
 fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, bool)> {
+    let text = text.trim();
+    let text = text.strip_prefix("on ").unwrap_or(text);
+    if let Some(wait) = text.strip_prefix("in ") {
+        return from_now(wait).map(|wait| (now + wait, false));
+    }
     let re = Regex::new(
-        r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
+        r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?:at\s+)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
     )
     .unwrap();
-    let caps = re.captures(text.trim())?;
+    let caps = re.captures(text)?;
     let num = |name: &str| caps.name(name).and_then(|m| m.as_str().parse::<u32>().ok());
     let pm = caps["ap"].eq_ignore_ascii_case("pm");
     let time = NaiveTime::from_hms_opt(
@@ -123,6 +129,21 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
         .filter_map(local)
         .find(|reset| *reset > now)
         .map(|r| (r, false))
+}
+
+/// A wait as the Apps print it: "~45 min", "12 minutes", "3h 12m", "3
+/// hours 12 minutes"; seconds alone are none.
+// ponytail: counted from when it is read, so an old line still in the last
+// lines holds again rather than Wakes, as a reset-less one does; the pane's
+// own timestamps if that bites.
+fn from_now(text: &str) -> Option<Duration> {
+    let re = Regex::new(r"(?i)^~?(?:(?P<h>\d+)\s*h[a-z]*\s*)?(?:(?P<m>\d+)\s*m[a-z]*)?").unwrap();
+    let caps = re.captures(text)?;
+    let num = |name: &str| caps.name(name).and_then(|m| m.as_str().parse::<i64>().ok());
+    match (num("h"), num("m")) {
+        (None, None) => None,
+        (h, m) => Some(Duration::hours(h.unwrap_or(0)) + Duration::minutes(m.unwrap_or(0))),
+    }
 }
 
 /// A reset as the screen and the events say it: "3:45pm" today, "Mon

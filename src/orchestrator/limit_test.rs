@@ -32,7 +32,7 @@ fn found(app_name: &str, tail: &str) -> Option<Limit> {
 }
 
 #[test]
-fn claude_and_codex_limit_text_is_a_limit_until_its_reset() {
+fn each_apps_limit_text_is_a_limit_until_its_reset() {
     // (App, pane tail, reset, long, what)
     let cases = [
         (
@@ -93,6 +93,73 @@ fn claude_and_codex_limit_text_is_a_limit_until_its_reset() {
             false,
             "usage limit",
         ),
+        // The experimental Apps, their text as the research quotes it; a
+        // reset "in" a while is from now.
+        (
+            "pi",
+            "Error: You have hit your ChatGPT usage limit (plus plan). Try again in ~45 min.",
+            at(25, 14, 45),
+            false,
+            "ChatGPT usage limit",
+        ),
+        (
+            "opencode",
+            "5-hour usage limit reached. It will reset in 3 hours 12 minutes. Upgrade to continue.",
+            at(25, 17, 12),
+            false,
+            "5-hour usage limit",
+        ),
+        // It waits inside its turn, looking working.
+        (
+            "opencode",
+            "Rate limit exceeded [retrying in 3h 12m attempt #2]",
+            at(25, 17, 12),
+            false,
+            "usage limit",
+        ),
+        (
+            "copilot",
+            "You've hit your session rate limit. Please wait for your limit to reset in 12 minutes or switch to auto model to continue.",
+            at(25, 14, 12),
+            false,
+            "session rate limit",
+        ),
+        (
+            "copilot",
+            "You've reached your weekly rate limit. Please wait for your limit to reset on September 28, 2026 at 3:00 PM or switch to auto model to continue.",
+            at(28, 15, 0),
+            true,
+            "weekly rate limit",
+        ),
+        (
+            "copilot",
+            "You've hit the rate limit for this model. Please wait for your limit to reset in 5 minutes or switch to auto model to continue.",
+            at(25, 14, 5),
+            false,
+            "rate limit",
+        ),
+        // The second sentence on a line of its own.
+        (
+            "copilot",
+            "Please wait for your limit to reset in 5 minutes or switch to auto model to continue.",
+            at(25, 14, 5),
+            false,
+            "usage limit",
+        ),
+        (
+            "copilot",
+            "You've run out of your included AI credits for the month. Upgrade or wait for next month.",
+            at(25, 15, 0),
+            false,
+            "AI credits",
+        ),
+        (
+            "cursor",
+            "Increase limits for faster responses — You're out of usage. Switch to Auto, or ask your admin to increase your limit.",
+            at(25, 15, 0),
+            false,
+            "usage limit",
+        ),
     ];
     for (name, tail, reset, long, what) in cases {
         let limit = found(name, tail).unwrap_or_else(|| panic!("{name}: no limit in {tail:?}"));
@@ -146,6 +213,35 @@ fn a_past_reset_an_old_line_or_another_apps_text_is_no_limit() {
         (
             "codex",
             "You've hit your session limit · resets 3:45pm".to_string(),
+        ),
+        (
+            "pi",
+            format!("You have hit your ChatGPT usage limit (plus plan). Try again in ~45 min.\n{newer}"),
+        ),
+        (
+            "opencode",
+            format!("5-hour usage limit reached. It will reset in 3 hours 12 minutes.\n{newer}"),
+        ),
+        // A retry in seconds is no limit's.
+        (
+            "opencode",
+            "Server overloaded [retrying in 45s attempt #1]".to_string(),
+        ),
+        (
+            "copilot",
+            format!("You've hit your session rate limit. Please wait for your limit to reset in 12 minutes or switch to auto model to continue.\n{newer}"),
+        ),
+        (
+            "copilot",
+            "You've reached your weekly rate limit. Please wait for your limit to reset on September 24, 2026 at 3:00 PM or switch to auto model to continue.".to_string(),
+        ),
+        (
+            "cursor",
+            format!("You're out of usage. Switch to Auto.\n{newer}"),
+        ),
+        (
+            "cursor",
+            "You have hit your ChatGPT usage limit (plus plan). Try again in ~45 min.".to_string(),
         ),
     ] {
         assert!(found(name, &tail).is_none(), "{name}: {tail:?}");

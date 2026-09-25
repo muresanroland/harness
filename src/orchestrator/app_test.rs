@@ -113,18 +113,18 @@ fn the_moderators_inputs_carry_each_sides_command() {
         assert!(!skill.contains(own), "stage-moderate still runs {own:?}");
     }
     // Started in the worktree, a claude side is granted the Run directory,
-    // its sibling, which holds the diff.
-    let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '--add-dir' '{run}' '-p'";
+    // its sibling, which holds the diff; the model and effort go before -p.
+    let claude = "'claude' '--tools' 'Read,Grep,Glob,Skill' '--add-dir' '{run}'";
     let codex = "'codex' 'exec' '--sandbox' 'read-only'";
     for (body, side_a, side_b) in [
-        ("", claude.to_string(), codex.to_string()),
+        ("", format!("{claude} '-p'"), codex.to_string()),
         (
             r#"{
   "side_a": {"app": "codex", "model": "gpt-6-sol", "effort": "low"},
   "side_b": {"app": "claude", "model": "claude-opus-5-5[1m]", "effort": "high"}
 }"#,
             format!("{codex} '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=low'"),
-            format!("{claude} '--model' 'claude-opus-5-5[1m]' '--effort' 'high'"),
+            format!("{claude} '--model' 'claude-opus-5-5[1m]' '--effort' 'high' '-p'"),
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -147,6 +147,69 @@ fn the_moderators_inputs_carry_each_sides_command() {
         ] {
             assert!(inputs.contains(&want), "{want:?} not in:{inputs}");
         }
+    }
+}
+
+/// Each experimental App on every Stage it can take: a worktree Stage (Fix)
+/// and the Review start with its unattended args and the row's model and
+/// effort, under its herdr kind; its Debate side runs read-only with them,
+/// before a closing -p, which copilot's takes the brief as its value.
+/// opencode's panes have no effort flag, its side --variant; cursor puts the
+/// effort on the model.
+#[test]
+fn the_experimental_apps_start_panes_and_sides_with_their_args() {
+    // (App, model, a pane in the worktree, the Review, side A's command)
+    let cases = [
+        (
+            "pi",
+            "anthropic/claude-opus-5-5",
+            "--model anthropic/claude-opus-5-5 --thinking high",
+            "--model anthropic/claude-opus-5-5 --thinking high",
+            "'pi' '--tools' 'read,grep,find,ls' '--model' 'anthropic/claude-opus-5-5' '--thinking' 'high' '-p'",
+        ),
+        (
+            "opencode",
+            "anthropic/claude-opus-5-5",
+            "--auto -m anthropic/claude-opus-5-5",
+            "--auto -m anthropic/claude-opus-5-5",
+            r#"'env' 'OPENCODE_PERMISSION={"edit":"deny","bash":"deny","external_directory":"allow"}' 'opencode' 'run' '-m' 'anthropic/claude-opus-5-5' '--variant' 'high'"#,
+        ),
+        (
+            "copilot",
+            "claude-opus-5.5",
+            "--allow-all --add-dir {run} --model claude-opus-5.5 --effort high",
+            "--allow-all --add-dir {worktree} --model claude-opus-5.5 --effort high",
+            "'copilot' '--deny-tool=write' '--deny-tool=shell' '--add-dir' '{run}' '--model' 'claude-opus-5.5' '--effort' 'high' '-p'",
+        ),
+        (
+            "cursor",
+            "opus-5.5",
+            "--force --add-dir {run} --model opus-5.5[effort=high]",
+            "--force --add-dir {worktree} --model opus-5.5[effort=high]",
+            "'cursor-agent' '--mode' 'ask' '--add-dir' '{run}' '--model' 'opus-5.5[effort=high]' '-p'",
+        ),
+    ];
+    for (name, model, pane, review, side) in cases {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        let row = json!({"app": name, "model": model, "effort": "high"});
+        let doc = json!({"fix": row, "review": row, "side_a": row, "moderator": {"app": name}});
+        config(&w, &doc.to_string());
+        o.run_ticket("hx-1");
+
+        let (run, worktree) = (o.run_dir("hx-1"), o.worktree("hx-1"));
+        let put = |s: &str| {
+            s.replace("{run}", &run.display().to_string())
+                .replace("{worktree}", &worktree.display().to_string())
+        };
+        assert_eq!(argv(&w, "fix"), put(pane), "{name}");
+        assert_eq!(argv(&w, "review"), put(review), "{name}");
+        for stage in ["fix", "review", "debate"] {
+            let start = &w.called(&format!("herdr agent start h-hx-1-{stage}"))[0];
+            assert!(start.contains(&format!(" --kind {name} ")), "{start}");
+        }
+        let inputs = prompt(&w, "verdict-1.md");
+        let want = format!("- Side A command: {}\n", put(side));
+        assert!(inputs.contains(&want), "{want:?} not in:{inputs}");
     }
 }
 
@@ -195,12 +258,13 @@ fn config_changed_between_two_stages_reaches_the_second() {
 
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
 /// before its session starts: unreadable, naming the file, a field not a
-/// string, a Stage other than Implement, the Review or a Debate side off
-/// claude, a plan model split from Implement's model where either is not a
-/// full claude- id, a split off claude, none off the Review's fallback, or
-/// both Debate sides on one family.
+/// string, a Stage other than Implement, the Review or a Debate side on
+/// codex, a plan model split from Implement's model where either is not a
+/// full claude- id, a split off claude, an App the table does not have,
+/// none off the Review's fallback, both Debate sides on one family, or a
+/// side whose family cannot be told.
 #[test]
-fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
+fn an_unreadable_config_or_a_stage_codex_cannot_run_wakes_the_stage_that_reads_it() {
     const SPLIT_NOT_FULL: &str = "{file}: implement plan_model splits from model: \
          the split needs a full claude- model id for each half";
     for (body, label, reason) in [
@@ -213,7 +277,7 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
         (
             r#"{"moderator": {"app": "codex"}}"#,
             "debate 1",
-            "moderator runs on claude only",
+            "moderator does not run on codex",
         ),
         (
             r#"{"implement": {"plan_model": "claude-fable-5-1"}}"#,
@@ -236,9 +300,9 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             "{file}: implement plan_model splits from model: the split runs on claude only",
         ),
         (
-            r#"{"side_b": {"app": "pi"}}"#,
+            r#"{"side_b": {"app": "gemini"}}"#,
             "debate 1",
-            r#"{file}: no App named "pi" for side_b"#,
+            r#"{file}: no App named "gemini" for side_b"#,
         ),
         (
             r#"{"implement": {"model": "none"}}"#,
@@ -249,6 +313,11 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             r#"{"side_b": {"app": "claude"}}"#,
             "debate 1",
             "Both sides would be Anthropic: the Debate needs two families",
+        ),
+        (
+            r#"{"side_b": {"app": "pi"}}"#,
+            "debate 1",
+            "Side B's family cannot be told from its model: name one",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -450,6 +519,7 @@ fn a_model_has_one_name_across_apps() {
         ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
         ("haiku", "claude-haiku-4-5"),
         ("openai/gpt-5.5", "gpt-5-5"),
+        ("anthropic/claude-opus-5-5:high", "claude-opus-5-5"),
         ("gpt-6-sol", "gpt-6-sol"),
     ] {
         assert_eq!(canonical(model), want, "{model}");
@@ -505,4 +575,76 @@ fn the_rules_over_config_json() {
         }))[1],
         holds("The sides come from two families: OpenAI and Anthropic")
     );
+    // An App that runs several: the family is its model's, and its default
+    // could be any model, so a row a rule reads names one.
+    assert_eq!(
+        checks_of(json!({
+            "side_a": {"app": "pi", "model": "anthropic/claude-opus-5-5"},
+            "side_b": {"app": "opencode", "model": "google/gemini-3-pro"},
+        }))[1],
+        holds("The sides come from two families: Anthropic and Google")
+    );
+    assert_eq!(
+        checks_of(json!({"side_a": {"app": "cursor", "model": "gpt-6"}}))[1],
+        broken("Both sides would be OpenAI: the Debate needs two families")
+    );
+    assert_eq!(
+        checks_of(json!({"side_a": {"app": "pi", "model": "moonshot/kimi-k3"}}))[1],
+        broken("Side A's family cannot be told from its model: name one")
+    );
+    assert_eq!(
+        checks_of(json!({"review": {"app": "copilot"}}))[0],
+        broken("The Review cannot be checked: copilot's default model is unknown, name one")
+    );
+    assert_eq!(
+        checks_of(json!({"implement": {"app": "pi"}}))[0],
+        broken("The Review cannot be checked: pi's default model is unknown, name one")
+    );
+    assert_eq!(
+        checks_of(json!({"review": {"app": "pi", "model": "openai/gpt-6"}}))[0],
+        holds("The Review runs on gpt-6, not Implement's claude's default")
+    );
+}
+
+/// The model lists /config offers on the experimental Apps, from each one's
+/// listing as the research describes it (shapes unverified): pi's table with
+/// its thinking levels, opencode's provider/model lines, cursor's "<id> -
+/// <name>" lines; copilot lists none, so default and 'type an id…' stay.
+#[test]
+fn the_experimental_apps_list_their_models() {
+    let tools = crate::tools::fake::Fake::new(|_, argv| match argv.join(" ").as_str() {
+        "pi --list-models" => Ok(
+            "provider   model            context  max-out  thinking  images\n\
+             anthropic  claude-opus-5-5  200K     32K      yes       yes\n\
+             openai     gpt-6            400K     128K     yes       yes\n"
+                .to_string(),
+        ),
+        "opencode models" => Ok("anthropic/claude-opus-5-5\nopenai/gpt-6\n".to_string()),
+        "cursor-agent models" => Ok(
+            "Available models\n\nauto - Auto\nopus-5.5 - Claude Opus 5.5\n\
+             Tip: use --model <id> to switch.\n"
+                .to_string(),
+        ),
+        _ => Ok(String::new()),
+    });
+    let dir = std::path::Path::new("/repo");
+    let ids = |name: &str| -> Vec<String> {
+        (app(name).unwrap().models)(&*tools, dir)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    };
+    assert_eq!(ids("pi"), ["anthropic/claude-opus-5-5", "openai/gpt-6"]);
+    let (_, levels) = &(app("pi").unwrap().models)(&*tools, dir).unwrap()[0];
+    assert_eq!(
+        levels,
+        &["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    );
+    assert_eq!(
+        ids("opencode"),
+        ["anthropic/claude-opus-5-5", "openai/gpt-6"]
+    );
+    assert_eq!(ids("cursor"), ["auto", "opus-5.5"]);
+    assert!(ids("copilot").is_empty());
 }
