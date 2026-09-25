@@ -207,6 +207,51 @@ fn a_typed_id_whose_probe_fails_keeps_the_old_value_and_shows_the_error() {
     assert!(find(&buf, "opus").is_some(), "the old model is not shown");
 }
 
+/// A model probed once saves unprobed the next time it is picked, till
+/// /config closes: opened anew, it is probed again.
+#[test]
+fn a_model_is_probed_once_while_config_is_open() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"implement": {"model": "opus"}}"#,
+    );
+    let tools = apps("");
+    let mut s = screen_at(tools.clone(), repo.path());
+    let pick = |s: &mut Screen, id: &str| {
+        s.key(key(KeyCode::Enter));
+        type_in(s, "type");
+        s.key(key(KeyCode::Enter));
+        type_in(s, id);
+        s.key(key(KeyCode::Enter));
+        await_probe(s);
+        assert_eq!(
+            config_json(repo.path())["implement"]["model"],
+            json!(id),
+            "{:#?}",
+            tools.calls()
+        );
+    };
+    let probes = |id: &str| {
+        let tail = format!(" --model {id} -p Reply with ok");
+        tools.calls().iter().filter(|c| c.ends_with(&tail)).count()
+    };
+    let to_model = [KeyCode::Enter, KeyCode::Down, KeyCode::Down];
+    type_line(&mut s, "/config");
+    keys(&mut s, &to_model);
+    pick(&mut s, "claude-a");
+    pick(&mut s, "claude-b");
+    pick(&mut s, "claude-a");
+    assert_eq!((probes("claude-a"), probes("claude-b")), (1, 1));
+    while s.settings.is_some() {
+        s.key(key(KeyCode::Esc));
+    }
+    type_line(&mut s, "/config");
+    keys(&mut s, &to_model);
+    pick(&mut s, "claude-b");
+    assert_eq!(probes("claude-b"), 2);
+}
+
 /// none, typed for a row other than the Review's fallback, is refused
 /// before any probe: it would run as a model.
 #[test]
