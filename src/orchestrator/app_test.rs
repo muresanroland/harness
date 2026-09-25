@@ -274,7 +274,7 @@ fn prompt(w: &World, file: &str) -> String {
 #[test]
 fn a_jobs_line_names_its_pick_in_the_apps_mention_form_or_is_dropped() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    write_file(&w.repo.join(".agents/skills/tdd/SKILL.md"), "tdd");
+    write_file(&w.repo.join(".claude/skills/tdd/SKILL.md"), "tdd");
     let plugin = TempDir::new();
     write_file(&plugin.path().join("skills/ponytail/SKILL.md"), "lazy");
     let plugins = serde_json::json!([
@@ -320,12 +320,44 @@ fn a_jobs_line_names_its_pick_in_the_apps_mention_form_or_is_dropped() {
     assert!(!review.contains("Not installed"), "{review}");
 }
 
+/// A pick counts as installed only where the App running its line loads
+/// it: codex, the Review's default, reads .agents/skills, never Claude's
+/// .claude/skills or its plugins.
+#[test]
+fn a_pick_only_another_app_loads_is_not_installed() {
+    for (dir, picked, installed) in [
+        (".agents/skills", "requesting-code-review", true),
+        (".claude/skills", "requesting-code-review", false),
+        ("plugin/skills", "sp:requesting-code-review", false),
+    ] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        write_file(
+            &w.repo.join(dir).join("requesting-code-review/SKILL.md"),
+            "review",
+        );
+        let plugins = serde_json::json!([
+            {"id": "sp@market", "enabled": true, "installPath": w.repo.join("plugin")},
+        ])
+        .to_string();
+        w.hook(move |_, argv| {
+            (argv.join(" ") == "claude plugin list --json").then(|| Ok(plugins.clone()))
+        });
+        pick(&w, &[("review", picked)]);
+        o.run_ticket("hx-1");
+
+        let review = prompt(&w, "review-1.md");
+        let line = review.contains("Use the $requesting-code-review skill");
+        let noted = review.contains(&format!("- Not installed: {picked} (review)"));
+        assert_eq!((line, noted), (installed, !installed), "{dir}:\n{review}");
+    }
+}
+
 /// The audit at none: no audit line, so the Moderator skips it and notes it.
 #[test]
 fn the_audit_at_none_is_skipped_and_noted() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
     write_file(
-        &w.repo.join(".agents/skills/ponytail-review/SKILL.md"),
+        &w.repo.join(".claude/skills/ponytail-review/SKILL.md"),
         "cut",
     );
     o.run_ticket("hx-1");

@@ -756,14 +756,14 @@ impl Orchestrator {
             Some(Err(err)) => return Held::Woke(err),
             None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
         };
-        // Each job's Delegate skill, named as the App that runs its line
+        // Each job's Delegate skill, as the App that runs its line loads and
         // names one: the audit, the Debate's job, runs on side A's command.
-        let mention = match st.name == DEBATE.name {
+        let runs = match st.name == DEBATE.name {
             true => match super::app::row(repo, "side_a") {
-                Ok(side) => side.app.mention,
+                Ok(side) => side.app,
                 Err(err) => return Held::Woke(err),
             },
-            false => row.app.mention,
+            false => row.app,
         };
         let manifest = match Manifest::load(repo) {
             Ok(manifest) => manifest,
@@ -771,9 +771,10 @@ impl Orchestrator {
         };
         let have: Vec<String> = manifest::list(repo, home, &*self.cfg.tools)
             .into_iter()
+            .filter(|(name, path)| path.parent().is_some_and(|dir| (runs.reads)(name, dir)))
             .map(|(name, _)| name)
             .collect();
-        let (skill, lacking) = manifest.fill_jobs(&skill, &have, mention);
+        let (skill, lacking) = manifest.fill_jobs(&skill, &have, runs.mention);
         let lacking = (!lacking.is_empty()).then(|| {
             format!(
                 "{}: their lines are left out; say so in the result file",

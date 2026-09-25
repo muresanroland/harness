@@ -34,6 +34,9 @@ pub(crate) struct App {
     pub(crate) limits: &'static [&'static str],
     /// How a Stage skill's "Use the {} skill" names a job's pick.
     pub(crate) mention: fn(&str) -> String,
+    /// Whether it loads a skill manifest::list found: the name list gives
+    /// it, and the folder it is in.
+    pub(crate) reads: fn(&str, &Path) -> bool,
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -88,6 +91,14 @@ pub(crate) static APPS: [App; 2] = [
         ],
         // In words, a plugin's skill plugin-qualified as the pick names it.
         mention: |pick| pick.to_string(),
+        // Its own folders, where the checkout's skills are linked too, and
+        // its enabled plugins', named plugin:skill.
+        reads: |name, dir| {
+            name.contains(':')
+                || [".claude/skills", ".harness/skills"]
+                    .iter()
+                    .any(|own| dir.ends_with(own))
+        },
     },
     App {
         name: "codex",
@@ -106,6 +117,13 @@ pub(crate) static APPS: [App; 2] = [
         // $name, which a skill with implicit invocation off (review-agent)
         // needs; codex has no Claude Code plugins to qualify it by.
         mention: |pick| format!("${}", pick.split_once(':').map_or(pick, |(_, name)| name)),
+        // .agents/skills, where the checkout's skills are linked too; never
+        // Claude's .claude/skills or its plugins.
+        reads: |_, dir| {
+            [".agents/skills", ".harness/skills"]
+                .iter()
+                .any(|own| dir.ends_with(own))
+        },
     },
 ];
 
