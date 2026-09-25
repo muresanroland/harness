@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{debate_inputs, fallback_row, stage_row, App, Row};
+use super::app::{check, debate_inputs, fallback_row, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::limit::{until, Limit, LAST_LINES};
@@ -250,14 +250,16 @@ pub(crate) struct Orchestrator {
 
 impl Orchestrator {
     /// Loads the Target repo's state file, so a restarted Orchestrator
-    /// resumes; a config.json no Pipeline Stage can start on refuses the
-    /// run. Address runs on demand, so its row Wakes it alone (attempt).
+    /// resumes; a config.json no Pipeline Stage can start on, or one that
+    /// breaks a rule /config keeps, refuses the run. Address runs on
+    /// demand, so its row Wakes it alone (attempt).
     pub(crate) fn new(cfg: Config) -> io::Result<Arc<Self>> {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
         debate_inputs(&cfg.repo, "", |_| None).map_err(io::Error::other)?;
         fallback_row(&cfg.repo).map_err(io::Error::other)?;
+        check(&cfg.repo).map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }

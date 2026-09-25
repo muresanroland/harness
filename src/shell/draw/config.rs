@@ -11,8 +11,8 @@ use ratatui::Frame;
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
-use crate::shell::config::{distinct, Field, Pick, Settings, ROWS, SECTIONS};
-use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
+use crate::shell::config::{distinct, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
+use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 
 /// The ground of the row under the cursor, and of the section whose page has it.
@@ -51,11 +51,57 @@ pub(super) fn config(f: &mut Frame, s: &Screen) {
     let width = right.width as usize;
     let (lines, at) = match &st.pick {
         Some(pick) => pick_lines(st, pick, width),
+        None if st.section == APPS_PAGE => apps_page(st, width),
         None => page(st, width),
     };
     // the cursor's line in view
     let top = (at + 2).saturating_sub(right.height as usize);
     f.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), right);
+}
+
+/// The Apps page: each App of the table, installed with its version or
+/// greyed with its homepage.
+fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Apps", bold(TEXT)),
+        Span::styled(format!("  {}", st.apps_summary()), fg(MUTED)),
+    ])];
+    let about = "The agent CLIs a Stage runs on, found on PATH when /config opened; harness init installs herdr's integration for each.";
+    lines.extend(wrap_spans(
+        vec![(about.to_string(), fg(MUTED))],
+        width,
+        "",
+        "",
+        fg(MUTED),
+    ));
+    lines.push(Line::default());
+    let mut at = 0;
+    for (i, app) in APPS.iter().enumerate() {
+        let selected = st.open && i == st.setting;
+        let on = st.installed[i].is_some();
+        let name = match (on, selected) {
+            (false, _) => fg(MUTED),
+            (true, true) => bold(TEXT),
+            (true, false) => fg(TEXT),
+        };
+        let (state, color, detail) = match &st.installed[i] {
+            Some(version) => ("installed", GREEN, version.clone()),
+            None => ("not installed", MUTED, app.home.to_string()),
+        };
+        let spans = vec![
+            Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
+            Span::styled(pad(app.name, 12), name),
+            Span::styled(pad(state, 15), fg(color)),
+            Span::styled(cut(&detail, width.saturating_sub(29)), fg(MUTED)),
+        ];
+        if selected {
+            at = lines.len();
+            lines.push(filled(spans, width, SEL_BG));
+        } else {
+            lines.push(Line::from(spans));
+        }
+    }
+    (lines, at)
 }
 
 /// `text` cut and padded to `width`.
@@ -74,6 +120,11 @@ fn filled(mut spans: Vec<Span<'static>>, width: usize, bg: Color) -> Line<'stati
 /// last save.
 fn badges(s: &Screen, st: &Settings) -> Vec<Span<'static>> {
     let mut badges = Vec::new();
+    let broken = st.checks(None).iter().filter(|c| !c.holds).count();
+    if broken > 0 {
+        let s = if broken == 1 { "" } else { "s" };
+        badges.push(Span::styled(format!("✗ {broken} check{s}"), bold(RED)));
+    }
     if !s.questions.is_empty() {
         badges.push(Span::styled(
             format!("{} waiting", s.questions.len()),
@@ -100,6 +151,10 @@ fn hint(st: &Settings) -> &'static str {
         _ if st.probe.is_some() => "probing… · Esc drops it",
         _ if st.typing.is_some() => "Enter probes and saves · Esc cancels",
         _ if st.pick.is_some() => "↑↓ move · type to filter · Enter picks · Esc back",
+        _ if st.open && st.section == APPS_PAGE => "↑↓ App · ← or Esc back",
+        _ if st.open && st.section == 0 => {
+            "↑↓ setting · Enter changes · Space toggles · ← or Esc back"
+        }
         _ if st.open => "↑↓ setting · Enter changes · ← or Esc back",
         _ => "↑↓ Stage · Enter or → opens · Esc closes",
     }
@@ -108,17 +163,21 @@ fn hint(st: &Settings) -> &'static str {
 /// The left: PIPELINE, each section with its summary joined by │ where
 /// there is room, a rule, then the lines whose pages come later.
 fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'static>> {
-    let row = |name: &str, summary: String, selected: bool| {
+    let row = |name: &str, summary: String, mark: bool, selected: bool| {
         let (name_style, bg) = match (selected, st.open) {
             (true, false) => (bold(PURPLE), Some(SEL_BG)),
             (true, true) => (bold(TEXT), Some(REST_BG)),
             (false, _) => (fg(TEXT), None),
         };
-        let spans = vec![
+        let room = width.saturating_sub(if mark { 14 } else { 12 });
+        let mut spans = vec![
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
             Span::styled(pad(name, 10), name_style),
-            Span::styled(cut(&summary, width.saturating_sub(12)), fg(MUTED)),
+            Span::styled(cut(&summary, room), fg(MUTED)),
         ];
+        if mark {
+            spans.push(Span::styled(" ✗", bold(RED)));
+        }
         match bg {
             Some(bg) => filled(spans, width, bg),
             None => Line::from(spans),
@@ -129,7 +188,12 @@ fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'s
         if i > 0 && height >= 17 {
             lines.push(Line::from(Span::styled("  │", fg(BORDER))));
         }
-        lines.push(row(short, st.summary(i), i == st.section));
+        lines.push(row(
+            short,
+            st.summary(i),
+            st.checks(Some(i)).iter().any(|c| !c.holds),
+            i == st.section,
+        ));
     }
     lines.push(divider(width));
     let typesafe = if s.cfg.api_key.is_empty() || st.doc["typesafe"] == false {
@@ -139,19 +203,31 @@ fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'s
     };
     lines.push(row(
         "Apps",
-        format!("{} of {} installed", st.installed, APPS.len()),
+        st.apps_summary(),
+        false,
+        st.section == APPS_PAGE,
+    ));
+    lines.push(row(
+        "Skills",
+        format!("{} installed", st.skills),
+        false,
         false,
     ));
-    lines.push(row("Skills", format!("{} installed", st.skills), false));
-    lines.push(row("TypeSafe", typesafe.to_string(), false));
+    lines.push(row("TypeSafe", typesafe.to_string(), false, false));
     lines
 }
 
-/// A setting's label on its section's page.
-fn label(row: usize, field: Field) -> String {
-    match ROWS[row].lead {
-        "" => field.name().to_string(),
-        lead => format!("{lead} {}", field.name()),
+/// A setting's label on its section's page, padded; the toggle a checkbox.
+fn label(st: &Settings, row: usize, field: Field) -> String {
+    let split = st.split().is_some();
+    match (field, ROWS[row].lead) {
+        (Field::Same, _) => {
+            let tick = if split { ' ' } else { 'x' };
+            format!("[{tick}] Same model for plan and implementation")
+        }
+        (Field::Model, _) if row == 0 && split => pad("implement model", 22),
+        (_, "") => pad(field.name(), 22),
+        (_, lead) => pad(&format!("{lead} {}", field.name()), 22),
     }
 }
 
@@ -169,7 +245,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
         Field::Model if v == "none" => {
             vec![shown, muted("  no fallback".into())]
         }
-        Field::Model => match app {
+        Field::Model | Field::Plan => match app {
             Some(app) => vec![shown, muted(format!("  {}", app.family))],
             None => vec![shown],
         },
@@ -180,6 +256,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
             _ => vec![shown],
         },
         Field::App => vec![shown],
+        Field::Same => vec![],
     }
 }
 
@@ -187,7 +264,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
 /// settings a blank line apart; and the cursor's line.
 fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let (title, _, about) = SECTIONS[st.section];
-    let items = Settings::items(st.section);
+    let items = st.items();
     let apps = distinct(items.iter().map(|&(row, _)| st.value(row, Field::App)));
     let mut lines = vec![Line::from(vec![
         Span::styled(title, bold(TEXT)),
@@ -209,7 +286,7 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         let mut spans = vec![
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
             Span::styled(
-                pad(&label(row, field), 22),
+                label(st, row, field),
                 if selected { bold(TEXT) } else { fg(TEXT) },
             ),
         ];
@@ -220,6 +297,21 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         } else {
             lines.push(Line::from(spans));
         }
+    }
+    let checks = st.checks(Some(st.section));
+    if !checks.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled("CHECKS", bold(MUTED))));
+    }
+    for check in checks {
+        let (mark, color, text) = if check.holds {
+            ("✓", GREEN, MUTED)
+        } else {
+            ("✗", RED, RED)
+        };
+        let text = vec![(format!("{}.", check.text), fg(text))];
+        let mark = format!("  {mark} ");
+        lines.extend(wrap_spans(text, width, &mark, "    ", bold(color)));
     }
     (lines, at)
 }
@@ -242,10 +334,13 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
         Span::styled(pick.filter.clone(), fg(TEXT)),
         Span::styled("▏", fg(PURPLE)),
     ])];
+    let entries = st.entries(pick);
     let name_w = if pick.field == Field::App { 12 } else { 18 };
-    let detail_w = width.saturating_sub(2 + name_w + 10).min(44);
+    let marks = entries.iter().filter_map(|e| e.mark);
+    let mark_w = marks.map(|m| m.chars().count() + 1).max().unwrap_or(0);
+    let detail_w = width.saturating_sub(2 + name_w + mark_w.max(10)).min(44);
     let (mut at, mut n) = (0, 0);
-    for e in st.entries(pick) {
+    for e in entries {
         if e.picks.is_none() {
             lines.push(Line::from(Span::styled(
                 format!("  {}", e.name),
@@ -259,10 +354,18 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
             Span::styled(
                 pad(&e.name, name_w),
-                if selected { bold(TEXT) } else { fg(TEXT) },
+                match (e.dim, selected) {
+                    (true, _) => fg(MUTED),
+                    (false, true) => bold(TEXT),
+                    (false, false) => fg(TEXT),
+                },
             ),
             Span::styled(pad(&e.detail, detail_w), fg(MUTED)),
-            Span::styled(if e.current { "✓ current" } else { "" }, fg(GREEN)),
+            match e.mark {
+                Some(mark) => Span::styled(mark, fg(RED)),
+                None if e.current => Span::styled("✓ current", fg(GREEN)),
+                None => Span::raw(""),
+            },
         ];
         if selected {
             at = lines.len();
@@ -308,10 +411,11 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
     }
     let (text, color) = match (&st.note, &st.pick) {
         (Some((note, color)), _) => (note.clone(), *color),
-        (None, Some(pick)) => (Settings::note_of(pick.row, pick.field), MUTED),
+        (None, Some(pick)) => (st.note_of(pick.row, pick.field), MUTED),
+        (None, None) if st.open && st.section == APPS_PAGE => (st.app_note(st.setting), MUTED),
         (None, None) if st.open => {
-            let (row, field) = Settings::items(st.section)[st.setting];
-            (Settings::note_of(row, field), MUTED)
+            let (row, field) = st.items()[st.setting];
+            (st.note_of(row, field), MUTED)
         }
         (None, None) => (
             "↑↓ picks a Stage; Enter opens it. Every change saves at once to .harness/config.json."

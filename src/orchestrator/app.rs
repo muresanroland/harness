@@ -40,8 +40,12 @@ pub(crate) struct App {
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
-    /// Its models' family, which /config labels each with.
+    /// Its models' family.
+    // ponytail: one family per App; a family per model, told from its name,
+    // when an App that runs several (pi) joins APPS.
     pub(crate) family: &'static str,
+    /// Where to get it, for /config on an App not installed.
+    pub(crate) home: &'static str,
     /// The models /config offers besides default, run in the given dir.
     pub(crate) models: fn(&dyn Tools, &Path) -> Result<Vec<Model>, String>,
     /// What its pane shows at a usage limit: regexes, with the reset in
@@ -121,10 +125,11 @@ pub(crate) static APPS: [App; 2] = [
         ],
         trust: claude_records,
         family: "Anthropic",
+        home: "https://claude.com/product/claude-code",
         models: |_, _| {
             let efforts = ["low", "medium", "high", "xhigh", "max"].map(String::from);
-            Ok(["fable", "opus", "sonnet", "haiku"]
-                .map(|m| (m.to_string(), efforts.to_vec()))
+            Ok(ALIASES
+                .map(|(alias, _)| (alias.to_string(), efforts.to_vec()))
                 .to_vec())
         },
         limits: &[
@@ -159,6 +164,7 @@ pub(crate) static APPS: [App; 2] = [
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
         family: "OpenAI",
+        home: "https://developers.openai.com/codex",
         models: codex_models,
         // U+2019 in You’ve; "Try again later." gives no reset
         limits: &[
@@ -282,11 +288,9 @@ pub(crate) fn debate_inputs(
     limited: impl Fn(&str) -> Option<String>,
 ) -> Result<(Inputs, &'static App), String> {
     let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
-    if a.app.family == b.app.family {
-        return Err(format!(
-            "side_a and side_b both run {} models: the Debate needs two families",
-            a.app.family
-        ));
+    let sides = debate(a.app, b.app);
+    if !sides.holds {
+        return Err(sides.text);
     }
     let mut inputs = vec![
         ("Side A command", a.side_command(run_dir)),
@@ -468,6 +472,124 @@ pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String>
         effort: field("effort")?,
         plan_model,
     })
+}
+
+/// claude's aliases and the full ids they name.
+// ponytail: pinned to today's models; add a row as Claude ships one.
+const ALIASES: [(&str, &str); 4] = [
+    ("fable", "claude-fable-5-1"),
+    ("opus", "claude-opus-5-5"),
+    ("sonnet", "claude-sonnet-5"),
+    ("haiku", "claude-haiku-4-5"),
+];
+
+/// The full id a claude alias names; any other model as it is.
+pub(crate) fn full_id(model: &str) -> String {
+    ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == model)
+        .map_or(model, |(_, id)| id)
+        .to_string()
+}
+
+/// One name per model whichever App runs it: opus, opus-5.5,
+/// anthropic/claude-opus-5-5 and claude-opus-5-5[1m] are claude-opus-5-5.
+pub(crate) fn canonical(model: &str) -> String {
+    let m = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    let m = m.split('[').next().unwrap_or_default().replace('.', "-");
+    let m = match m.rsplit_once('-') {
+        Some((head, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => head,
+        _ => &m,
+    };
+    match ALIASES
+        .iter()
+        .find(|(alias, _)| m.starts_with(&format!("{alias}-")))
+    {
+        Some(_) => format!("claude-{m}"),
+        None => full_id(m),
+    }
+}
+
+/// A model as the rules compare it: its one name, or the App's default.
+// ponytail: an App's default counts as a model of its own, though
+// claude's may be opus; resolve it with the probe when that bites.
+fn model_id(app: &App, model: &str) -> String {
+    match model {
+        "default" => format!("{}'s default", app.name),
+        _ => canonical(model),
+    }
+}
+
+/// A rule config.json's rows keep: the rows it reads, whether it holds,
+/// and what it says.
+pub(crate) struct Check {
+    pub(crate) rows: &'static [&'static str],
+    pub(crate) holds: bool,
+    pub(crate) text: String,
+}
+
+/// The Debate's rule: its sides from two families.
+fn debate(a: &App, b: &App) -> Check {
+    let (x, y) = (a.family, b.family);
+    let holds = x != y;
+    let text = if holds {
+        format!("The sides come from two families: {x} and {y}")
+    } else {
+        format!("Both sides would be {x}: the Debate needs two families")
+    };
+    Check {
+        rows: &["side_a", "side_b"],
+        holds,
+        text,
+    }
+}
+
+/// The rules over config.json: the Review and its fallback never run on
+/// Implement's model; the Debate's sides come from two families. A row that
+/// cannot be read is left out, as reading it refuses on its own.
+pub(crate) fn checks(doc: &Value) -> Vec<Check> {
+    let row = |key: &str| {
+        Some((
+            app(&field(doc, key, "app").ok()?)?,
+            field(doc, key, "model").ok()?,
+        ))
+    };
+    let mut out = Vec::new();
+    let imp = row("implement");
+    let reviews: [(&'static [&str], &str); 2] = [
+        (&["implement", "review"], "The Review"),
+        (&["implement", IF_LIMITED], "The Review if limited"),
+    ];
+    for (rows, who) in reviews {
+        let (Some((ia, im)), Some((app, model))) = (&imp, row(rows[1])) else {
+            continue;
+        };
+        if model == "none" {
+            continue;
+        }
+        let (i, r) = (model_id(ia, im), model_id(app, &model));
+        let holds = i != r;
+        let text = if holds {
+            format!("{who} runs on {r}, not Implement's {i}")
+        } else {
+            format!("{who} would run on Implement's model, {i}: it must not review its own work")
+        };
+        out.push(Check { rows, holds, text });
+    }
+    if let (Some(a), Some(b)) = (row("side_a"), row("side_b")) {
+        out.push(debate(a.0, b.0));
+    }
+    out
+}
+
+/// config.json keeps every rule: the first broken one refuses, as a run
+/// starts on a config.json edited by hand.
+pub(crate) fn check(repo: &Path) -> Result<(), String> {
+    let (_, doc) = read(repo)?;
+    match checks(&doc).into_iter().find(|c| !c.holds) {
+        Some(broken) => Err(broken.text),
+        None => Ok(()),
+    }
 }
 
 /// The one-line prompt that tries model on app, before /config saves it:

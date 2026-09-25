@@ -1,12 +1,13 @@
 //! The App table and .harness/config.json: each Stage's App, model and
 //! effort, read when the Stage starts.
 
-use super::app::app;
+use super::app::{app, canonical, checks, IF_LIMITED};
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, World};
 use super::write_file;
 use crate::skills::manifest::{Manifest, NONE};
 use crate::skills::SKILLS;
 use crate::tempdir::TempDir;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn config(w: &World, body: &str) {
@@ -247,7 +248,7 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
         (
             r#"{"side_b": {"app": "claude"}}"#,
             "debate 1",
-            "side_a and side_b both run Anthropic models: the Debate needs two families",
+            "Both sides would be Anthropic: the Debate needs two families",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
@@ -433,4 +434,75 @@ fn the_fallback_is_unset_at_none_and_runs_a_row_with_no_model() {
     assert_eq!(fallback(), None);
     config(&w, r#"{"review_if_limited": {"app": "claude"}}"#);
     assert_eq!(fallback().as_deref(), Some("claude"));
+}
+
+/// One name per model whichever App runs it: an alias, a dotted version, a
+/// provider prefix, a [1m] suffix and a dated id all name one model.
+#[test]
+fn a_model_has_one_name_across_apps() {
+    for (model, want) in [
+        ("opus", "claude-opus-5-5"),
+        ("opus-5.5", "claude-opus-5-5"),
+        ("anthropic/claude-opus-5-5", "claude-opus-5-5"),
+        ("claude-opus-5-5[1m]", "claude-opus-5-5"),
+        ("fable", "claude-fable-5-1"),
+        ("sonnet-5", "claude-sonnet-5"),
+        ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
+        ("haiku", "claude-haiku-4-5"),
+        ("openai/gpt-5.5", "gpt-5-5"),
+        ("gpt-6-sol", "gpt-6-sol"),
+    ] {
+        assert_eq!(canonical(model), want, "{model}");
+    }
+}
+
+/// Each rule over a config.json: whether it holds, and what it says.
+fn checks_of(doc: Value) -> Vec<(bool, String)> {
+    checks(&doc)
+        .into_iter()
+        .map(|c| (c.holds, c.text))
+        .collect()
+}
+
+#[test]
+fn the_rules_over_config_json() {
+    let holds = |text: &str| (true, text.to_string());
+    let broken = |text: &str| (false, text.to_string());
+    // The defaults hold; the fallback at none is not checked.
+    assert_eq!(
+        checks_of(json!({})),
+        [
+            holds("The Review runs on codex's default, not Implement's claude's default"),
+            holds("The sides come from two families: Anthropic and OpenAI"),
+        ]
+    );
+    // One model across Apps and spellings.
+    assert_eq!(
+        checks_of(json!({
+            "implement": {"model": "opus"},
+            "review": {"model": "anthropic/claude-opus-5-5"},
+            IF_LIMITED: {"model": "opus-5.5"},
+        }))[..2],
+        [
+            broken("The Review would run on Implement's model, claude-opus-5-5: it must not review its own work"),
+            broken("The Review if limited would run on Implement's model, claude-opus-5-5: it must not review its own work"),
+        ]
+    );
+    // One App's default is one model.
+    assert_eq!(
+        checks_of(json!({"review": {"app": "claude"}}))[0],
+        broken("The Review would run on Implement's model, claude's default: it must not review its own work")
+    );
+    // The Debate: two families, each its App's.
+    assert_eq!(
+        checks_of(json!({"side_b": {"app": "claude", "model": "sonnet"}}))[1],
+        broken("Both sides would be Anthropic: the Debate needs two families")
+    );
+    assert_eq!(
+        checks_of(json!({
+            "side_a": {"app": "codex", "model": "gpt-6-sol"},
+            "side_b": {"app": "claude", "model": "opus"},
+        }))[1],
+        holds("The sides come from two families: OpenAI and Anthropic")
+    );
 }
