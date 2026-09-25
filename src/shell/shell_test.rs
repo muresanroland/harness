@@ -3633,6 +3633,27 @@ fn badges_and_options_shorten_where_they_do_not_fit() {
     );
 }
 
+/// At 55 columns even the short scores do not fit one line: they wrap at a
+/// score, the head grows for them, and asks stays in view.
+#[test]
+fn at_55_columns_the_judged_scores_wrap_and_asks_stays_in_view() {
+    let repo = TempDir::new();
+    let s = plan_screen(repo.path());
+    let buf = render(&s, 55, 24);
+    let inner = |y: u16| cols(&buf, y, 2, 53).trim_end().to_string();
+    assert_eq!(
+        [inner(3), inner(4)],
+        ["judged: covers 0.62 < 0.65, in scope 0.90", "asks 0.05"],
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        row(&buf, 5).contains("Plan: the docked modal"),
+        "{:#?}",
+        rows(&buf)
+    );
+}
+
 /// The plan reads like a pager: ↑↓ a line, PgUp PgDn and Space a page,
 /// Home and End, Tab and Shift-Tab heading to heading; ←→ or a number pick
 /// an option; Esc hides it and Esc on an empty input line shows it again.

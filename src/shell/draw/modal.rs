@@ -122,15 +122,27 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     let opened = *q.opened.get_or_init(chrono::Local::now);
     let new = s.events.iter().filter(|e| e.time >= opened).count();
     // The badges shorten where the long ones do not fit; the Judgment has
-    // the line under the text, each score named, shortened where it does
-    // not fit.
-    let judged = judged.map(|judged| {
-        let text = match format!("judged: {}", judged.said()) {
-            text if text.chars().count() <= inner.width as usize => text,
-            _ => format!("judged: {}", judged.short()),
-        };
-        Line::from(Span::styled(text, fg(TEXT)))
-    });
+    // the lines under the text, each score named, shortened where it does
+    // not fit and wrapped at a score where that does not either.
+    let w = inner.width as usize;
+    let judged: Vec<Line> = judged
+        .map(|judged| match format!("judged: {}", judged.said()) {
+            text if text.chars().count() <= w => vec![text],
+            _ => judged.short().split(", ").fold(vec![], |mut rows, score| {
+                match rows.last_mut() {
+                    None => rows.push(format!("judged: {score}")),
+                    Some(row) if row.len() + 2 + score.len() <= w => {
+                        *row = format!("{row}, {score}")
+                    }
+                    Some(_) => rows.push(score.to_string()),
+                }
+                rows
+            }),
+        })
+        .into_iter()
+        .flatten()
+        .map(|text| Line::from(Span::styled(text, fg(TEXT))))
+        .collect();
     let badges = |short: bool| {
         let mut badges = Vec::new();
         if s.questions.len() > 1 {
@@ -154,7 +166,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     let folded = width < FOLD;
     let foot = if folded { 1 } else { n as u16 };
     let [head, body, rule, foot] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(2 + judged.len().max(1) as u16),
         Constraint::Min(0),
         Constraint::Length(1),
         Constraint::Length(foot),
