@@ -33,10 +33,7 @@ pub(crate) struct App {
     /// directory.
     pub(crate) worktree_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
-    /// A pane's; ON_MODEL goes on the end of the model's value.
     pub(crate) effort: &'static [&'static str],
-    /// The Debate side's, where it differs from a pane's.
-    pub(crate) side_effort: &'static [&'static str],
     pub(crate) resume: &'static [&'static str],
     /// The headless read-only command a Debate side and the audit run: the
     /// model and effort args go before a closing -p, which the brief
@@ -69,10 +66,6 @@ pub(crate) struct App {
     /// Its row is from its docs, never run here: /config says so.
     pub(crate) experimental: bool,
 }
-
-/// cursor's effort form: no flag of its own, it goes on the end of the
-/// model's value, --model 'slug[effort=high]'.
-const ON_MODEL: &str = "[effort={}]";
 
 /// pi's --thinking levels, the same on every model.
 const PI_THINKING: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -121,7 +114,6 @@ pub(crate) static APPS: [App; 6] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
-        side_effort: &["--effort", "{}"],
         resume: &["--resume", "{}"],
         // Only the read-only tools, named, so a tool added later is out too:
         // a shell or other code-running tool runs unsandboxed here and can
@@ -178,7 +170,6 @@ pub(crate) static APPS: [App; 6] = [
         },
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
-        side_effort: &["-c", "model_reasoning_effort={}"],
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
@@ -210,7 +201,6 @@ pub(crate) static APPS: [App; 6] = [
         worktree_args: |_| Vec::new(),
         model: &["--model", "{}"],
         effort: &["--thinking", "{}"],
-        side_effort: &["--thinking", "{}"],
         resume: &["--session", "{}"],
         side: &["pi", "--tools", "read,grep,find,ls", "-p"],
         trust: pi_records,
@@ -234,9 +224,8 @@ pub(crate) static APPS: [App; 6] = [
         run_dir_args: |_| vec!["--auto".to_string()],
         worktree_args: |_| vec!["--auto".to_string()],
         model: &["-m", "{}"],
-        // Its TUI takes an effort only through config; run takes --variant.
+        // Its TUI takes an effort only through config.
         effort: &[],
-        side_effort: &["--variant", "{}"],
         resume: &["--session", "{}"],
         // A quoted VAR=value is no assignment to the shell: env sets it. The
         // diff is in the Run directory, outside the worktree it starts in.
@@ -279,7 +268,6 @@ pub(crate) static APPS: [App; 6] = [
         },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
-        side_effort: &["--effort", "{}"],
         resume: &["--resume={}"],
         side: &[
             "copilot",
@@ -316,8 +304,8 @@ pub(crate) static APPS: [App; 6] = [
         },
         worktree_args: |run_dir| ["--force", "--add-dir", run_dir].map(String::from).to_vec(),
         model: &["--model", "{}"],
-        effort: &[ON_MODEL],
-        side_effort: &[ON_MODEL],
+        // No effort flag: a typed slug[effort=high] model carries one.
+        effort: &[],
         resume: &["--resume", "{}"],
         side: &["cursor-agent", "--mode", "ask", "--add-dir", "{}", "-p"],
         trust: cursor_records,
@@ -423,27 +411,18 @@ pub(crate) struct Row {
 }
 
 impl Row {
-    /// The model and effort args of a pane.
+    /// The model and effort args of a pane and a Debate side.
     pub(crate) fn flags(&self) -> Vec<String> {
-        self.args(self.app.effort)
-    }
-
-    /// The model arg and the effort's in the given form.
-    fn args(&self, effort: &[&str]) -> Vec<String> {
-        let mut model = match self.plan_model {
-            Some(_) => "opusplan".to_string(),
-            None => self.model.clone(),
+        let model = match self.plan_model {
+            Some(_) => "opusplan",
+            None => &self.model,
         };
-        let on_model = effort == [ON_MODEL];
-        if on_model && self.effort != "default" {
-            model += &ON_MODEL.replace("{}", &self.effort);
-        }
         let mut out = Vec::new();
         if model != "default" {
-            out.extend(fill(self.app.model, &model));
+            out.extend(fill(self.app.model, model));
         }
-        if !on_model && self.effort != "default" {
-            out.extend(fill(effort, &self.effort));
+        if self.effort != "default" {
+            out.extend(fill(self.app.effort, &self.effort));
         }
         out
     }
@@ -457,7 +436,7 @@ impl Row {
     /// quoted, since a model id like claude-opus-5-5[1m] is a glob to the
     /// shell.
     pub(crate) fn side_command(&self, run_dir: &str) -> String {
-        side_argv(self.app.side, run_dir, self.args(self.app.side_effort))
+        side_argv(self.app.side, run_dir, self.flags())
             .into_iter()
             .map(|arg| quoted(&arg))
             .collect::<Vec<_>>()
@@ -687,19 +666,10 @@ pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String>
             path.display()
         ));
     }
-    let effort = field("effort")?;
-    if app.effort == [ON_MODEL] && effort != "default" && model == "default" {
-        return Err(format!(
-            "{}: {key} effort {effort} on {}'s default model: {} puts its effort on a named model",
-            path.display(),
-            app.name,
-            app.name
-        ));
-    }
     Ok(Row {
         app,
         model,
-        effort,
+        effort: field("effort")?,
         plan_model,
     })
 }

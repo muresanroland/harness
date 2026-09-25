@@ -154,8 +154,8 @@ fn the_moderators_inputs_carry_each_sides_command() {
 /// and the Review start with its unattended args and the row's model and
 /// effort, under its herdr kind; its Debate side runs read-only with them,
 /// before a closing -p, which copilot's takes the brief as its value.
-/// opencode's panes have no effort flag, its side --variant; cursor puts the
-/// effort on the model.
+/// opencode and cursor have no effort flag: cursor's comes typed on the
+/// model.
 #[test]
 fn the_experimental_apps_start_panes_and_sides_with_their_args() {
     // (App, model, a pane in the worktree, the Review, side A's command)
@@ -172,7 +172,7 @@ fn the_experimental_apps_start_panes_and_sides_with_their_args() {
             "anthropic/claude-opus-5-5",
             "--auto -m anthropic/claude-opus-5-5",
             "--auto -m anthropic/claude-opus-5-5",
-            r#"'env' 'OPENCODE_PERMISSION={"edit":"deny","bash":"deny","external_directory":"allow"}' 'opencode' 'run' '-m' 'anthropic/claude-opus-5-5' '--variant' 'high'"#,
+            r#"'env' 'OPENCODE_PERMISSION={"edit":"deny","bash":"deny","external_directory":"allow"}' 'opencode' 'run' '-m' 'anthropic/claude-opus-5-5'"#,
         ),
         (
             "copilot",
@@ -183,7 +183,7 @@ fn the_experimental_apps_start_panes_and_sides_with_their_args() {
         ),
         (
             "cursor",
-            "opus-5.5",
+            "opus-5.5[effort=high]",
             "--force --add-dir {run} --model opus-5.5[effort=high]",
             "--force --add-dir {worktree} --model opus-5.5[effort=high]",
             "'cursor-agent' '--mode' 'ask' '--add-dir' '{run}' '--model' 'opus-5.5[effort=high]' '-p'",
@@ -318,11 +318,6 @@ fn an_unreadable_config_or_a_stage_codex_cannot_run_wakes_the_stage_that_reads_i
             r#"{"side_b": {"app": "pi"}}"#,
             "debate 1",
             "Side B's family cannot be told from its model: name one",
-        ),
-        (
-            r#"{"implement": {"app": "cursor", "effort": "high"}}"#,
-            "implement",
-            "{file}: implement effort high on cursor's default model: cursor puts its effort on a named model",
         ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
