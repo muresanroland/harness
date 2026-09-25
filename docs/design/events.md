@@ -52,9 +52,21 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
 | errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
 
+## Limited
+
+Decided on the map tickets "Limited" (harness-0sx.8) and "Apps per Stage" (harness-0sx.14). Before any Wake and any blocked Question, the pane's last 20 lines are matched against the App's limit patterns (the App table's `limits`); a match whose reset is still ahead is a usage limit, never a Wake or a Judgment. The App holds until the reset + 2 minutes: no Stage starts on it, and its panes are left alone.
+
+| Moment | Wording |
+|---|---|
+| a Stage's session hits a limit | claude session limit until 3:45pm: implement holds (pane 2-1) · codex usage limit until 3:05pm: review 1 holds (pane 2-2) |
+| a Stage about to start on an App at its limit | *log only:* review 1 holds: codex limited until 3:05pm |
+| the reset + 2 minutes | claude session limit over: implement carries on (pane 2-1) *(a pane still idle with no result is sent `continue` first)* |
+| a long limit (a reset more than a day away, or Claude's options menu) | *(harness)* claude weekly limit until Mon 12:00am: sessions saved, panes closed, /continue after the reset *(the run ends; no "stopped" line follows)* |
+| a session that would not take the continue | Wake reason: never took the continue |
+
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · never took your answer · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · never took the continue · never took your answer · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
 
 The last five are plan failures: a Question for the user, no Judgment asked.
 

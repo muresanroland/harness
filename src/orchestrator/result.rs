@@ -10,7 +10,7 @@ use std::path::Path;
 pub(crate) struct StageResult {
     pub(crate) findings: usize,
     pub(crate) fixes: Vec<String>,
-    pub(crate) skips: usize,
+    pub(crate) skips: Vec<String>,
     pub(crate) pr: String,
 }
 
@@ -63,7 +63,7 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         if lower.starts_with("- [fix]") {
             result.fixes.push(line.trim().to_string());
         } else if lower.starts_with("- [skip]") {
-            result.skips += 1;
+            result.skips.push(line.trim().to_string());
         }
         // As ^PR:\s*(\S+): the whitespace may cross blank lines.
         if let Some(rest) = line.strip_prefix("PR:").filter(|_| result.pr.is_empty()) {
@@ -74,7 +74,7 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         }
     }
     // The Moderator can add audit Findings, so more settled items are valid.
-    let settled = result.fixes.len() + result.skips;
+    let settled = result.fixes.len() + result.skips.len();
     if settled < want.review_findings {
         return rejected(&format!(
             "Verdict settles {settled} of the Review's {} Findings",

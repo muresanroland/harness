@@ -37,7 +37,8 @@ Give each side the other side's latest answer in full and ask it to answer again
 ## 4. Settle
 
 - Both sides say fix: **fix**, settled `consensus`. Both say skip: **skip**, settled `consensus`.
-- Still disputed: ask TypeSafe, once per Finding. You pass the arguments through unchanged; you do not weigh them.
+- Still disputed, and Inputs has **TypeSafe** `off`: **skip**, settled `disputed, no TypeSafe`. Do not call TypeSafe at all.
+- Still disputed otherwise: ask TypeSafe, once per Finding. You pass the arguments through unchanged; you do not weigh them.
 
 ```
 curl -sS --max-time 60 https://api.typesafe.ai/v1/systemone \

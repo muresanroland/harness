@@ -168,6 +168,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -507,6 +508,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "ureq",

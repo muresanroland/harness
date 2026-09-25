@@ -14,7 +14,7 @@ use super::stage::{
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 use crate::skills::manifest::link_checkout_skills;
 
-const MAX_ROUNDS: usize = 3;
+pub(crate) const MAX_ROUNDS: usize = 3;
 
 /// What a run keeps for whoever reads it later: the Stages' result files,
 /// diffs and debate transcripts, all flat text.
@@ -28,7 +28,8 @@ impl Orchestrator {
     /// stopped.
     pub(crate) fn run_ticket(&self, ticket: &str) {
         match self.pipeline(ticket) {
-            Ok(()) | Err(StageError::Stopped) => {}
+            Ok(()) => {}
+            Err(StageError::Stopped) => self.close_on_limit(ticket),
             Err(StageError::Parked(reason)) => {
                 self.update(ticket, |ts| {
                     ts.status = STATUS_PARKED.to_string();
@@ -77,7 +78,7 @@ impl Orchestrator {
                 &format!(
                     "debate {round} settled: {} to fix, {} skipped",
                     fixes.len(),
-                    verdict.skips
+                    verdict.skips.len()
                 ),
             );
             verdicts.push(

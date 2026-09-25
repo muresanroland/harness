@@ -29,6 +29,9 @@ pub(crate) struct App {
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
+    /// What its pane shows at a usage limit: regexes, with the reset in
+    /// the group "reset" and which limit in "what" when the App says.
+    pub(crate) limits: &'static [&'static str],
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -77,6 +80,10 @@ pub(crate) static APPS: [App; 2] = [
             "-p",
         ],
         trust: claude_records,
+        limits: &[
+            r"You['’]ve hit your (?P<what>.*?limit) · resets (?P<reset>.+)",
+            r"Usage limit reached · continuing automatically at (?P<reset>.+?)(?: · |$)",
+        ],
     },
     App {
         name: "codex",
@@ -88,6 +95,10 @@ pub(crate) static APPS: [App; 2] = [
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
+        // U+2019 in You’ve; "Try again later." gives no reset
+        limits: &[
+            r"You['’]ve hit your (?P<what>usage limit)\..*?[Tt]ry again (?:at (?P<reset>.+?)|later)\.",
+        ],
     },
 ];
 
@@ -160,15 +171,19 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
 }
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row. The audit runs on side A's.
+/// from its row, the audit running on side A's, and TypeSafe when off.
 pub(crate) fn debate_inputs(
     repo: &Path,
     run_dir: &str,
 ) -> Result<Vec<(&'static str, String)>, String> {
-    Ok(vec![
+    let mut inputs = vec![
         ("Side A command", row(repo, "side_a")?.side_command(run_dir)),
         ("Side B command", row(repo, "side_b")?.side_command(run_dir)),
-    ])
+    ];
+    if !typesafe(repo) {
+        inputs.push(("TypeSafe", "off".to_string()));
+    }
+    Ok(inputs)
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
@@ -183,16 +198,55 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     row(repo, key)
 }
 
-/// The row under key: a Stage's, or a Debate side's (side_a, side_b).
-fn row(repo: &Path, key: &str) -> Result<Row, String> {
+/// Whether TypeSafe is on: config.json's "typesafe", read at each use so a
+/// change reaches the next Judgment and Debate. Unset, or a config.json that
+/// cannot be read, is on: the key alone decides, as before init asked.
+pub(crate) fn typesafe(repo: &Path) -> bool {
+    config(repo).map_or(true, |doc| doc["typesafe"] != false)
+}
+
+/// Keeps TypeSafe on or off in config.json, the rows as they were; a
+/// config.json that is not an object is refused, not overwritten.
+pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
     let path = repo.join(".harness").join("config.json");
-    let doc: Value = match fs::read(&path) {
-        Ok(raw) => {
-            serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display()))?
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Value::Null,
-        Err(err) => return Err(format!("{}: {err}", path.display())),
+    let mut doc = config(repo)?;
+    if doc.is_null() {
+        doc = json!({});
+    }
+    let Some(fields) = doc.as_object_mut() else {
+        return Err(format!("{}: not a JSON object", path.display()));
     };
+    fields.insert("typesafe".to_string(), Value::Bool(on));
+    fs::create_dir_all(path.parent().unwrap())
+        .and_then(|()| fs::write(&path, format!("{doc:#}\n")))
+        .map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// config.json, Null when there is none.
+fn config(repo: &Path) -> Result<Value, String> {
+    let path = repo.join(".harness").join("config.json");
+    match fs::read(&path) {
+        Ok(raw) => serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Value::Null),
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
+/// The key of every row of config.json.
+pub(crate) const ROWS: [&str; 7] = [
+    "implement",
+    "review",
+    "moderator",
+    "side_a",
+    "side_b",
+    "fix",
+    "address",
+];
+
+/// The row under key: a Stage's, or a Debate side's (side_a, side_b).
+pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
+    let path = repo.join(".harness").join("config.json");
+    let doc = config(repo)?;
     let default = if matches!(key, "review" | "side_b") {
         "codex"
     } else {

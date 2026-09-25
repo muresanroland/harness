@@ -188,7 +188,10 @@ Not a finding: - [fix] inside prose is ignored only when it does not start the l
                     "- [fix] (high) orders.go:41 — nil map write | reason: both sides agree | settled: consensus".to_string(),
                     "- [FIX] (medium) api.go:7 — missing validation | reason: score 0.81 | settled: typesafe".to_string(),
                 ],
-                skips: 2,
+                skips: vec![
+                    "- [skip] (low) orders.go:12 — naming | reason: style only | settled: consensus".to_string(),
+                    "- [skip] (medium) api.go:90 — cache | reason: TypeSafe unreachable | settled: flagged".to_string(),
+                ],
                 ..Default::default()
             },
         ),
