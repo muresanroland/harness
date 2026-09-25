@@ -273,7 +273,7 @@ fn install_integrations(
             if !state.starts_with("not installed") && !state.starts_with("outdated") {
                 return None;
             }
-            tools.run(repo, &["which", app.name]).ok()?;
+            tools.run(repo, &["which", app.bin]).ok()?;
             Some((app.name, state.trim_end()))
         })
         .collect();
@@ -794,7 +794,7 @@ pub(crate) fn preflight(
         let Some(row) = row else {
             continue;
         };
-        let name = row.app.name;
+        let name = row.app.bin;
         if tools.run(repo, &["which", name]).is_err() {
             missing.push(format!("{key} runs on {name}, which is not on PATH"));
         }

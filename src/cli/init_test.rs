@@ -575,6 +575,8 @@ codex: outdated (v7) (/h/.codex/herdr-agent-state.sh)
         Fake::new(move |dir, argv| match argv.join(" ").as_str() {
             "herdr integration status" => Ok(STATUS.to_string()),
             "which codex" if !codex_on_path => Err("codex not found".to_string()),
+            // pi, in the App table, is not on PATH: not offered.
+            "which pi" => Err("pi not found".to_string()),
             _ => ok(dir, argv),
         })
     };

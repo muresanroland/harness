@@ -1,7 +1,8 @@
 //! An App started in a directory it does not trust yet opens a trust dialog
-//! instead of working. herdr reads either App's dialog, Claude's or Codex's,
-//! as a blocked pane. Neither dialog can be answered by the Orchestrator, so
-//! it reads what the Apps themselves record and waits rather than prompting
+//! instead of working. herdr reads claude's and codex's dialogs as a blocked
+//! pane; how it reads pi's, copilot's and cursor's is unverified, and
+//! opencode has none. No dialog can be answered by the Orchestrator, so it
+//! reads what the Apps themselves record and waits rather than prompting
 //! into a dialog.
 //!
 //! A Ticket's worktree is a fresh directory every time, so this is the normal
@@ -12,11 +13,11 @@ use std::path::{Path, PathBuf};
 
 use super::app::App;
 
-/// Whether the App already trusts dir. Both Apps record trust against the
-/// project root they resolved, which for a worktree or a run directory is an
-/// ancestor, so dir's ancestors up to repo answer for it. The nearest recorded
-/// directory decides: a subdirectory recorded as untrusted is untrusted
-/// however its repo is recorded.
+/// Whether the App already trusts dir. claude and codex record trust against
+/// the project root they resolved, which for a worktree or a run directory
+/// is an ancestor, so dir's ancestors up to repo answer for it. The nearest
+/// recorded directory decides: a subdirectory recorded as untrusted is
+/// untrusted however its repo is recorded.
 pub(crate) fn trusts(app: &App, home: &Path, dir: &Path, repo: &Path) -> bool {
     std::iter::once(dir.to_path_buf())
         .chain(ancestors(dir, repo))
@@ -72,4 +73,65 @@ pub(super) fn codex_records(home: &Path, dir: &Path) -> Option<bool> {
         }
     }
     None
+}
+
+// The three below are from the research/agent-clis notes, never run here.
+// Each App lets a trusted ancestor cover dir, above the repo too.
+
+/// Reads ~/.pi/agent/trust.json, a directory to its answer: the nearest one
+/// recorded decides. pi asks only in a folder with protected resources, a
+/// .agents/skills or a .pi holding anything, there or in a parent below
+/// home: with none it asks nothing, records nothing and is trusted.
+/// Otherwise nothing recorded is untrusted: dir's ancestors were read here.
+pub(super) fn pi_records(home: &Path, dir: &Path) -> Option<bool> {
+    let protected = dir.ancestors().take_while(|d| *d != home).any(|d| {
+        d.join(".agents/skills").exists()
+            || fs::read_dir(d.join(".pi")).is_ok_and(|mut entries| entries.next().is_some())
+    });
+    if !protected {
+        return Some(true);
+    }
+    let recorded = || {
+        let raw = fs::read(home.join(".pi/agent/trust.json")).ok()?;
+        let doc: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        dir.ancestors()
+            .find_map(|d| doc.get(d.to_str()?)?.as_bool())
+    };
+    Some(recorded().unwrap_or(false))
+}
+
+/// Reads trustedFolders in ~/.copilot/config.json; it records no untrusted
+/// ones.
+pub(super) fn copilot_records(home: &Path, dir: &Path) -> Option<bool> {
+    let raw = fs::read(home.join(".copilot/config.json")).ok()?;
+    let doc: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let folders = doc.get("trustedFolders")?.as_array()?;
+    let listed = |d: &Path| folders.iter().any(|f| f.as_str().map(Path::new) == Some(d));
+    dir.ancestors().any(listed).then_some(true)
+}
+
+/// Reads cursor's marker, ~/.cursor/projects/<slug>/.workspace-trusted; it
+/// records no untrusted ones.
+pub(super) fn cursor_records(home: &Path, dir: &Path) -> Option<bool> {
+    let projects = home.join(".cursor/projects");
+    dir.ancestors()
+        .any(|d| {
+            projects
+                .join(cursor_slug(d))
+                .join(".workspace-trusted")
+                .exists()
+        })
+        .then_some(true)
+}
+
+/// The name cursor keeps a directory's project under.
+// ponytail: the research names <slug> without its rule; this is claude's
+// (every other character a dash) without the leading one, unverified.
+pub(super) fn cursor_slug(dir: &Path) -> String {
+    let slug: String = dir
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    slug.trim_start_matches('-').to_string()
 }

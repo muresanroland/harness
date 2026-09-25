@@ -979,8 +979,8 @@ impl Orchestrator {
         } else if st.name == REVIEW.name {
             (row.app.run_dir_args)(&self.worktree(ticket).display().to_string())
         } else {
-            // Implement off claude plans in two steps (plan.rs); Debate, Fix
-            // and Address run on claude alone (stage_row).
+            // Implement off claude plans in two steps (plan.rs); codex runs
+            // no Debate, Fix or Address (runs_on).
             (row.app.worktree_args)(&run_dir)
         };
         args.extend(row.flags());

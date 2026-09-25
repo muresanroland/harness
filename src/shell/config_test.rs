@@ -196,7 +196,7 @@ fn a_typed_id_whose_probe_fails_keeps_the_old_value_and_shows_the_error() {
         .unwrap();
     assert!(
         probe.starts_with("claude --tools Read,Grep,Glob,Skill --add-dir ")
-            && probe.ends_with(" -p --model claude-nope Reply with ok"),
+            && probe.ends_with(" --model claude-nope -p Reply with ok"),
         "{probe}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
@@ -323,7 +323,7 @@ fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
             "  │",
             "  Address   claude",
             "────────────────────────────",
-            "  Apps      2 of 2 installed",
+            "  Apps      6 of 6 installed",
             "  Skills    0 installed",
             "  TypeSafe  on",
             "",
@@ -758,7 +758,7 @@ fn the_toggle_splits_on_a_plan_model_and_joins_again() {
         tools
             .calls()
             .iter()
-            .any(|c| c.ends_with("-p --model claude-fable-5-1 Reply with ok")),
+            .any(|c| c.ends_with("--model claude-fable-5-1 -p Reply with ok")),
         "{:#?}",
         tools.calls()
     );
@@ -893,14 +893,16 @@ fn a_pick_list_marks_each_model_that_would_break_a_rule() {
 /// Fake Tools where codex is not on PATH and claude says its version.
 fn codex_missing() -> Arc<Fake> {
     Fake::new(|_, argv| match argv.join(" ").as_str() {
-        "which codex" => Err("codex not found".to_string()),
+        "which codex" | "which cursor-agent" => Err(format!("{} not found", argv[1])),
         "claude --version" => Ok("2.1.282 (Claude Code)\n".to_string()),
+        "pi --version" => Ok("0.87.1\n".to_string()),
         _ => Ok(String::new()),
     })
 }
 
 /// The Apps page: each App of the table installed with its version, or
-/// greyed not installed with its homepage.
+/// greyed not installed with its homepage, found by its binary (cursor's is
+/// cursor-agent); the four from their docs under experimental, unverified.
 #[test]
 fn the_apps_page_renders_each_app_installed_or_not() {
     let repo = TempDir::new();
@@ -910,19 +912,26 @@ fn the_apps_page_renders_each_app_installed_or_not() {
     let text =
         |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
     let buf = render(&s, 160, 45);
-    assert_eq!(text(&buf, 12, 69, 97), "▸ Apps      1 of 2 installed");
+    assert_eq!(text(&buf, 12, 69, 97), "▸ Apps      4 of 6 installed");
     s.key(key(KeyCode::Enter));
     let buf = render(&s, 160, 45);
-    let right: Vec<String> = (1..8).map(|y| text(&buf, y, 99, 158)).collect();
+    let right: Vec<String> = (1..15).map(|y| text(&buf, y, 99, 158)).collect();
     assert_eq!(
         right,
         [
-            "Apps  1 of 2 installed",
+            "Apps  4 of 6 installed",
             "The agent CLIs a Stage runs on, found on PATH when /config",
             "opened; harness init installs herdr's integration for each.",
             "",
             "▸ claude      installed      2.1.282 (Claude Code)",
             "  codex       not installed  https://developers.openai.com…",
+            "",
+            "  experimental, unverified: from their docs, never run here",
+            "  pi          installed      0.87.1",
+            "  opencode    installed",
+            "  copilot     installed",
+            "  cursor      not installed  https://cursor.com/cli",
+            "",
             "",
         ]
     );
@@ -1009,6 +1018,50 @@ fn a_config_broken_on_two_rules_mends_one_at_a_time() {
     s.key(key(KeyCode::Enter));
     assert!(note(&s).starts_with("Refused: The Review would run on Implement's model"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
+}
+
+/// An experimental App is marked so in an App list. On an App that runs
+/// several, each model shows its own family, and its default, whose family
+/// cannot be told, is marked where a rule reads the row.
+#[test]
+fn a_side_on_pi_shows_each_models_family_and_its_default_unknown() {
+    let repo = TempDir::new();
+    let tools = Fake::new(|_, argv| match argv.join(" ").as_str() {
+        "pi --list-models" => Ok("provider   model            context\n\
+             anthropic  claude-opus-5-5  200K\n\
+             openai     gpt-6            400K\n"
+            .to_string()),
+        _ => Ok(String::new()),
+    });
+    let mut s = screen_at(tools, repo.path());
+    type_line(&mut s, "/config");
+    // The Debate, side A's App.
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    keys(&mut s, &[KeyCode::Down; 3]);
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    let (_, y) = find(&buf, "▸ claude").unwrap();
+    assert!(
+        cols(&buf, y + 2, 99, 158).contains("pi          experimental, unverified"),
+        "{:#?}",
+        rows(&buf)
+    );
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    for (model, family) in [
+        ("default", "pi's own · family u… ? family unknown"),
+        ("anthropic/claude", "Anthropic"),
+        ("openai/gpt-6", "OpenAI"),
+    ] {
+        let (_, y) = find(&buf, model).unwrap();
+        assert!(
+            cols(&buf, y, 99, 158).contains(family),
+            "{model}: {:#?}",
+            rows(&buf)
+        );
+    }
+    let (_, y) = find(&buf, "openai/gpt-6").unwrap();
+    assert!(cols(&buf, y, 99, 158).contains("✗ side B's family"));
 }
 
 const TDD: &str = "---\nname: tdd\n---\ntest first\n";
