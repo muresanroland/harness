@@ -28,7 +28,7 @@ Run `bd show <id>`.
 
 Used by `/wayfinder`. The **map** is an epic with **child** beads as tickets.
 
-- **Map**: an epic labelled `wayfinder:map` (`bd create --type=epic --labels=wayfinder:map`), its description holding the Notes / Decisions so far / Fog sections, as on harness-7bj.
+- **Map**: an epic labelled `wayfinder:map` (`bd create --type=epic --labels=wayfinder:map`), its description holding the Notes / Decisions so far / Fog sections.
 - **Child ticket**: `bd create --parent <map> --labels=wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`); child ids read `<map>.<n>`.
 - **Blocking**: `bd dep add <child> <blocker>`; `bd show` lists the blockers under DEPENDS ON. A ticket is unblocked when every blocker is closed.
 - **Frontier query**: `bd ready --parent <map> --unassigned --json`; first in map order wins.

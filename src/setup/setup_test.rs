@@ -1,4 +1,4 @@
-use super::{ask_typesafe_key, install_skills, preflight, typesafe_key, warnings};
+use super::{ask_typesafe, install_skills, preflight, typesafe_key, warnings};
 use crate::orchestrator::write_file;
 use crate::skills::manifest::{Installed, Location, Manifest, JOBS, NONE};
 use crate::tempdir::TempDir;
@@ -352,7 +352,8 @@ fn install_skills_cancel_and_a_closed_stdin_touch_nothing() {
 
 fn ask_key(repo: &Path, env: &str, typed: &str) -> String {
     let mut out = Vec::new();
-    ask_typesafe_key(repo, env, &mut out, &mut typed.as_bytes(), false).unwrap();
+    let typed = format!("y\n{typed}"); // yes to TypeSafe, then the key
+    ask_typesafe(repo, env, &mut out, &mut typed.as_bytes(), false).unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -536,5 +537,26 @@ fn preflight_warns_of_a_personal_copy_shadowing_an_installed_skill_and_of_superp
     assert_eq!(
         warnings(repo.path(), &*plugins(false), &env),
         Vec::<String>::new()
+    );
+}
+
+#[test]
+fn preflight_names_each_row_whose_app_is_not_on_path() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let no_codex = Fake::new(|_, argv| match argv.join(" ").as_str() {
+        "which codex" => Err("codex not found".to_string()),
+        _ => Ok(String::new()),
+    });
+    let got: Vec<String> = preflight(repo.path(), &*no_codex, &home_env(home.path()))
+        .into_iter()
+        .filter(|m| m.contains("PATH"))
+        .collect();
+    // The defaults: the Review and Debate side B on codex, the rest on claude.
+    assert_eq!(
+        got,
+        [
+            "review runs on codex, which is not on PATH",
+            "side_b runs on codex, which is not on PATH",
+        ]
     );
 }

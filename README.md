@@ -18,14 +18,14 @@ Review, Debate and Fix repeat for up to 3 rounds, then a pull request opens. You
 | Tool | Used for | Setup |
 |---|---|---|
 | [herdr](https://herdr.dev) | Runs every agent in a visible pane | Start `harness` from a pane inside herdr (`HERDR_ENV=1`) |
-| [beads (`bd`)](https://github.com/gastownhall/beads) | The Epic and its Tickets | `bd init` in the Target repo |
+| [beads (`bd`)](https://github.com/gastownhall/beads) | The Epic and its Tickets | `bd init` in the Target repo, which `harness init` offers to run |
 | [git](https://git-scm.com) | Branches and worktrees | The repo needs a remote on GitHub |
 | [GitHub CLI (`gh`)](https://cli.github.com) | Opens PRs, watches for merges | `gh auth login` |
 | [Claude Code (`claude`)](https://claude.com/claude-code) | Implement, Debate, Fix, Address | Logged in |
 | [Codex CLI (`codex`)](https://github.com/openai/codex) | Review | Logged in |
-| [TypeSafe](https://docs.typesafe.ai) API key | Optional: the Judgment approves plans and handles stuck sessions | `TYPESAFE_API_KEY`, or paste it at `harness init` |
+| [TypeSafe](https://docs.typesafe.ai) API key | Optional: the Judgment approves plans and handles stuck sessions, and the Debate settles disputed Findings | `TYPESAFE_API_KEY`, or say yes and paste it at `harness init` |
 
-Without a TypeSafe key, the Harness works the same but asks you instead: every plan approval and every stuck session becomes a Question in the Shell.
+With TypeSafe off, the Harness works the same but asks you instead: every plan approval and every stuck session becomes a Question in the Shell, and a Finding the Debate's sides still dispute is skipped and listed in the PR.
 
 ## Install
 
@@ -55,9 +55,12 @@ harness init
 
   Running `init` again asks again, with the current place as the default, and moves the skills it installed.
 - It installs the Stage skills and `create-pr` there. They are yours to edit from then on, and running `init` again asks before touching them. If the repo already has them committed in `.agents/skills`, those stay.
-- It asks for the TypeSafe key. Press Enter to use `TYPESAFE_API_KEY`, or paste a key, which it keeps in `.harness/typesafe-key`.
+- With no `bd` workspace, it offers to run `bd init`.
+- It offers to write the beads `docs/agents` setup the skills read, only what is missing: `docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md`, and an Agent skills block in `CLAUDE.md`, or `AGENTS.md` when there is no `CLAUDE.md`. A non-interactive `init` writes them too.
+- It asks whether to use TypeSafe, yes by default. Yes asks for the key, which it keeps in `.harness/typesafe-key`, and installs the `typesafe-ai` skill; an empty key is no. With `TYPESAFE_API_KEY` set it is on without asking. Without it, a non-interactive `init` leaves TypeSafe on only where it is already on with a kept key, and off everywhere else. On or off is kept in `.harness/config.json`.
 - It installs each job's default skill, pinned by commit: `tdd`, `code-review`, `ponytail`, `caveman`, `ponytail-review` and `resolving-merge-conflicts`. At user level, a skill of the same name you already have stays as it is.
-- It runs a preflight that reports anything still missing: the `bd` workspace, `gh` auth, the git remote, the `create-pr` skill, a job's skill, or herdr. It also warns about a personal skill that shadows an installed one on Claude, and about the superpowers plugin being enabled.
+- It offers to install herdr's integration for claude or codex when it is not installed or outdated, listing what each install writes. Without it herdr does not know a session's id, so `/continue` starts those Stages fresh instead of resuming them.
+- It runs a preflight that reports anything still missing: the `bd` workspace, `gh` auth, the git remote, the `create-pr` skill, a job's skill, an App a Stage runs on that is not on `PATH`, or herdr. It also warns about a personal skill that shadows an installed one on Claude, and about the superpowers plugin being enabled.
 
 `.harness/` is added to `.gitignore`.
 

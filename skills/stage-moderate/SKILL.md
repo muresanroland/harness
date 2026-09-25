@@ -20,7 +20,7 @@ A side is **limited** when Inputs say so (`Side A: limited until <t>` or `Side B
 - **The side runs on your own App** (the CLI this session runs in): the limit is yours too. Stop where you are. When this session carries on after the reset, run that side again and continue the Debate as usual.
 - **The side runs on another App**: the Debate is not argued. Do not run steps 2 and 3, or stop them where they are. If side A is limited, the audit cannot run: skip it and say so in the Notes. Settle every Finding, the audit's included, as follows:
   - TypeSafe on: ask TypeSafe as in step 4, with `argument_for` and `argument_against` empty. A score of 0.5 or more is **fix**; below 0.5 is **skip**. Settled is `typesafe <score>, <app> limited`. A call that fails or times out twice is **skip**, settled `flagged: TypeSafe unreachable`.
-  - TypeSafe off (Inputs say `TypeSafe: off`, or `TYPESAFE_API_KEY` is empty): every Finding is **skip**, settled `<app> limited, no TypeSafe`.
+  - TypeSafe off (Inputs has **TypeSafe** `off`, or `TYPESAFE_API_KEY` is empty): every Finding is **skip**, settled `<app> limited, no TypeSafe`.
   - In the Notes write `<app> limited until <t>: side <A or B> did not argue`, so the pull request lists it.
 
 ## 1. Gather the Findings
@@ -47,7 +47,8 @@ Give each side the other side's latest answer in full and ask it to answer again
 ## 4. Settle
 
 - Both sides say fix: **fix**, settled `consensus`. Both say skip: **skip**, settled `consensus`.
-- Still disputed: ask TypeSafe, once per Finding. You pass the arguments through unchanged; you do not weigh them.
+- Still disputed, and Inputs has **TypeSafe** `off`: **skip**, settled `disputed, no TypeSafe`. Do not call TypeSafe at all.
+- Still disputed otherwise: ask TypeSafe, once per Finding. You pass the arguments through unchanged; you do not weigh them.
 
 ```
 curl -sS --max-time 60 https://api.typesafe.ai/v1/systemone \
