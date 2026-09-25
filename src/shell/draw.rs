@@ -2,7 +2,8 @@
 //! under its rule newest at the bottom (a Question takes its place when one
 //! shows), the MERGE TO UNBLOCK box, the LIMITED box, the / or @ list, a
 //! notice line and the input line. A plan Question docks the Shell beside it
-//! (draw/modal.rs); the Epic summary takes the whole terminal (draw/pager.rs).
+//! (draw/modal.rs), and so does /config (draw/config.rs); the Epic summary
+//! takes the whole terminal (draw/pager.rs).
 
 use std::sync::atomic::Ordering;
 
@@ -23,6 +24,7 @@ use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
 use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 
+mod config;
 mod modal;
 mod pager;
 
@@ -72,6 +74,8 @@ pub(crate) fn ticket_color(id: &str) -> Color {
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     if let Some(summary) = &s.summary {
         pager::pager(f, s, summary);
+    } else if s.settings.is_some() {
+        config::config(f, s);
     } else if s.modal() {
         modal::plan(f, s);
     } else {

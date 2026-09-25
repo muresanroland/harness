@@ -33,7 +33,7 @@ const DEL_BG: Color = Color::Rgb(56, 20, 26);
 /// it the input line (and a notice or the / or @ list, while one shows),
 /// with margins from 100x30 up. The box and its border, which the caller
 /// titles and renders.
-fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
+pub(super) fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
     let area = f.area();
     let (rect, border) = if area.width >= FOLD {
         let [left, right] =
@@ -71,6 +71,23 @@ fn dock(f: &mut Frame, s: &Screen) -> (Rect, Block<'static>) {
         .border_style(fg(PURPLE))
         .padding(Padding::horizontal(1));
     (rect, block)
+}
+
+/// A dock's badges joined by a muted " · ".
+pub(super) fn joined(badges: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, badge) in badges.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", fg(MUTED)));
+        }
+        spans.push(badge);
+    }
+    spans
+}
+
+/// A dock's rule across `width`.
+pub(super) fn divider(width: usize) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(width), fg(BORDER)))
 }
 
 /// The plan Question in the dock: its badges (the Judgment's score, the
@@ -126,14 +143,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
             };
             badges.push(Span::styled(text, fg(CYAN)));
         }
-        let mut line = Vec::new();
-        for (i, badge) in badges.into_iter().enumerate() {
-            if i > 0 {
-                line.push(Span::styled(" · ", fg(MUTED)));
-            }
-            line.push(badge);
-        }
-        Line::from(line)
+        Line::from(joined(badges))
     };
     let badge_line = match badges(false) {
         line if line.width() > inner.width as usize => badges(true),
@@ -173,10 +183,7 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
             .track_style(fg(BORDER));
         f.render_stateful_widget(bar, body, &mut state);
     }
-    f.render_widget(
-        Line::from(Span::styled("─".repeat(rule.width as usize), fg(BORDER))),
-        rule,
-    );
+    f.render_widget(divider(rule.width as usize), rule);
 
     // The feedback being typed shows its tail.
     let w = foot.width as usize;

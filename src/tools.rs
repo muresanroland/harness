@@ -13,6 +13,8 @@ pub struct RunError {
     pub status: String,
     /// Trimmed stderr.
     pub stderr: String,
+    /// What it printed before it failed: claude -p prints its error there.
+    pub stdout: String,
 }
 
 impl fmt::Display for RunError {
@@ -50,6 +52,7 @@ impl Tools for Exec {
                 command: String::new(),
                 status: "no command".to_string(),
                 stderr: String::new(),
+                stdout: String::new(),
             });
         };
         let command = command_line(argv);
@@ -61,6 +64,7 @@ impl Tools for Exec {
                 command: command.clone(),
                 status: err.to_string(),
                 stderr: String::new(),
+                stdout: String::new(),
             })?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         if !output.status.success() {
@@ -72,6 +76,7 @@ impl Tools for Exec {
                 command,
                 status,
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                stdout,
             });
         }
         Ok(stdout)
@@ -127,6 +132,7 @@ pub(crate) mod fake {
                     command: super::command_line(argv),
                     status: "exit status 1".to_string(),
                     stderr,
+                    stdout: String::new(),
                 }),
             }
         }

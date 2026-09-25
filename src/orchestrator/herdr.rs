@@ -91,6 +91,7 @@ impl Orchestrator {
             command: format!("herdr {}", args[0]),
             status: "unreadable reply".to_string(),
             stderr: err.to_string(),
+            stdout: String::new(),
         })
     }
 

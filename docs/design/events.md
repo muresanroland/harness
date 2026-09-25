@@ -48,6 +48,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | Away | *(harness)* away: on, a Stage's question parks its Ticket · away: off *(/away again, or /continue @ticket)* |
 | /continue @ticket refused | *(harness)* refused: Ticket 5 is not parked · *(on the Ticket, in a single-Ticket run)* continue refused: not an Epic run |
 | Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
+| /config saved during a run | *(harness)* config: Review codex → codex gpt-6-sol/high · config: Review if limited none → claude sonnet *(the row, then what it was and what it is, as the started line names them; the Stages that start after it use it)* |
 | Epic done | *(harness)* Epic done, every Ticket closed |
 | stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
 | errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |

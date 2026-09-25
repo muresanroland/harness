@@ -3,16 +3,21 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
+use crate::tools::Tools;
 
-/// The Review's fallback row, for while the Review's App is Limited.
+/// The Review's fallback row, for when the Review's App is Limited; its
+/// model starts as none, no fallback.
 pub(crate) const IF_LIMITED: &str = "review_if_limited";
+
+/// A model id and its effort levels, as an App lists them.
+pub(crate) type Model = (String, Vec<String>);
 
 /// An agent CLI a Stage can run on: one row of the App table. In the arg
 /// forms, "{}" is the value put in.
@@ -32,6 +37,10 @@ pub(crate) struct App {
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
+    /// Its models' family, which /config labels each with.
+    pub(crate) family: &'static str,
+    /// The models /config offers besides default, run in the given dir.
+    pub(crate) models: fn(&dyn Tools, &Path) -> Result<Vec<Model>, String>,
     /// What its pane shows at a usage limit: regexes, with the reset in
     /// the group "reset" and which limit in "what" when the App says.
     pub(crate) limits: &'static [&'static str],
@@ -103,6 +112,13 @@ pub(crate) static APPS: [App; 2] = [
             "-p",
         ],
         trust: claude_records,
+        family: "Anthropic",
+        models: |_, _| {
+            let efforts = ["low", "medium", "high", "xhigh", "max"].map(String::from);
+            Ok(["fable", "opus", "sonnet", "haiku"]
+                .map(|m| (m.to_string(), efforts.to_vec()))
+                .to_vec())
+        },
         limits: &[
             r"You['’]ve hit your (?P<what>.*?limit) · resets (?P<reset>.+)",
             r"Usage limit reached · continuing automatically at (?P<reset>.+?)(?: · |$)",
@@ -123,6 +139,8 @@ pub(crate) static APPS: [App; 2] = [
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
+        family: "OpenAI",
+        models: codex_models,
         // U+2019 in You’ve; "Try again later." gives no reset
         limits: &[
             r"You['’]ve hit your (?P<what>usage limit)\..*?[Tt]ry again (?:at (?P<reset>.+?)|later)\.",
@@ -136,6 +154,32 @@ pub(crate) static APPS: [App; 2] = [
         plugins: false,
     },
 ];
+
+/// codex's catalog: the models it lists for picking, each with its reasoning
+/// levels; --bundled skips the refresh.
+fn codex_models(tools: &dyn Tools, dir: &Path) -> Result<Vec<Model>, String> {
+    let out = tools
+        .run(dir, &["codex", "debug", "models", "--bundled"])
+        .map_err(|err| err.to_string())?;
+    let doc: Value =
+        serde_json::from_str(&out).map_err(|err| format!("codex debug models: {err}"))?;
+    Ok(doc["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list")
+        .filter_map(|m| {
+            let slug = m["slug"].as_str()?.to_string();
+            let efforts = m["supported_reasoning_levels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|level| level["effort"].as_str().map(String::from))
+                .collect();
+            Some((slug, efforts))
+        })
+        .collect())
+}
 
 /// The App config.json names.
 pub(crate) fn app(name: &str) -> Option<&'static App> {
@@ -209,15 +253,22 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
 type Inputs = Vec<(&'static str, String)>;
 
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row, and "limited until <t>" for a side whose App `limited`
-/// says is, the audit running on side A's, and TypeSafe when off. With them
-/// side A's App, which runs the audit's line.
+/// from its row, the two on Apps of different families, and "limited until
+/// <t>" for a side whose App `limited` says is, the audit running on side
+/// A's, and TypeSafe when off. With them side A's App, which runs the
+/// audit's line.
 pub(crate) fn debate_inputs(
     repo: &Path,
     run_dir: &str,
     limited: impl Fn(&str) -> Option<String>,
 ) -> Result<(Inputs, &'static App), String> {
     let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
+    if a.app.family == b.app.family {
+        return Err(format!(
+            "side_a and side_b both run {} models: the Debate needs two families",
+            a.app.family
+        ));
+    }
     let mut inputs = vec![
         ("Side A command", a.side_command(run_dir)),
         ("Side B command", b.side_command(run_dir)),
@@ -233,12 +284,10 @@ pub(crate) fn debate_inputs(
     Ok((inputs, a.app))
 }
 
-/// The Review's fallback row; None while config.json has no review_if_limited.
+/// The Review's fallback row; None while its model is none, as it is while
+/// config.json has no review_if_limited.
 pub(crate) fn fallback_row(repo: &Path) -> Result<Option<Row>, String> {
-    if config(repo)?.get(IF_LIMITED).is_none() {
-        return Ok(None);
-    }
-    row(repo, IF_LIMITED).map(Some)
+    row(repo, IF_LIMITED).map(|row| Some(row).filter(|row| row.model != "none"))
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
@@ -257,34 +306,15 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
 /// change reaches the next Judgment and Debate. Unset, or a config.json that
 /// cannot be read, is on: the key alone decides, as before init asked.
 pub(crate) fn typesafe(repo: &Path) -> bool {
-    config(repo).map_or(true, |doc| doc["typesafe"] != false)
+    read(repo).map_or(true, |(_, doc)| doc["typesafe"] != false)
 }
 
 /// Keeps TypeSafe on or off in config.json, the rows as they were; a
 /// config.json that is not an object is refused, not overwritten.
 pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
-    let path = repo.join(".harness").join("config.json");
-    let mut doc = config(repo)?;
-    if doc.is_null() {
-        doc = json!({});
-    }
-    let Some(fields) = doc.as_object_mut() else {
-        return Err(format!("{}: not a JSON object", path.display()));
-    };
-    fields.insert("typesafe".to_string(), Value::Bool(on));
-    fs::create_dir_all(path.parent().unwrap())
-        .and_then(|()| fs::write(&path, format!("{doc:#}\n")))
-        .map_err(|err| format!("{}: {err}", path.display()))
-}
-
-/// config.json, Null when there is none.
-fn config(repo: &Path) -> Result<Value, String> {
-    let path = repo.join(".harness").join("config.json");
-    match fs::read(&path) {
-        Ok(raw) => serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display())),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Value::Null),
-        Err(err) => Err(format!("{}: {err}", path.display())),
-    }
+    let (path, mut doc) = read_object(repo)?;
+    doc["typesafe"] = Value::Bool(on);
+    write(&path, &doc)
 }
 
 /// The key of every row of config.json.
@@ -301,33 +331,92 @@ pub(crate) const ROWS: [&str; 8] = [
 
 /// The row under key: a Stage's, or a Debate side's (side_a, side_b).
 pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
+    let (path, doc) = read(repo)?;
+    row_in(&doc, key, &path)
+}
+
+/// .harness/config.json and its path; a missing file is Null.
+pub(crate) fn read(repo: &Path) -> Result<(PathBuf, Value), String> {
     let path = repo.join(".harness").join("config.json");
-    let doc = config(repo)?;
-    let default = if matches!(key, "review" | "side_b") {
-        "codex"
-    } else {
-        "claude"
+    let doc = match fs::read(&path) {
+        Ok(raw) => {
+            serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display()))?
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Value::Null,
+        Err(err) => return Err(format!("{}: {err}", path.display())),
     };
-    let field = |name: &str, default: &str| match &doc[key][name] {
+    Ok((path, doc))
+}
+
+/// config.json to edit: missing (or null) is empty; any other non-object
+/// refuses, so a save never writes over it.
+pub(crate) fn read_object(repo: &Path) -> Result<(PathBuf, Value), String> {
+    match read(repo)? {
+        (path, Value::Null) => Ok((path, json!({}))),
+        (path, doc) if doc.is_object() => Ok((path, doc)),
+        (path, _) => Err(format!("{}: not a JSON object", path.display())),
+    }
+}
+
+/// Writes config.json whole through a temp file, so a Stage reading it as
+/// it starts never sees half of it.
+pub(crate) fn write(path: &Path, doc: &Value) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(doc).unwrap() + "\n";
+    fs::create_dir_all(path.parent().unwrap())
+        .and_then(|()| fs::write(&tmp, text))
+        .and_then(|()| fs::rename(&tmp, path))
+        .map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// A field of the row under key: missing or empty, its default (the row's
+/// App, the fallback's none while config.json has no fallback row, else
+/// default); not a string refuses.
+pub(crate) fn field(doc: &Value, key: &str, name: &str) -> Result<String, String> {
+    let default = match name {
+        "app" if matches!(key, "review" | "side_b") => "codex",
+        "app" => "claude",
+        "model" if key == IF_LIMITED && doc[key].is_null() => "none",
+        _ => "default",
+    };
+    match &doc[key][name] {
         Value::Null => Ok(default.to_string()),
         Value::String(v) if v.is_empty() => Ok(default.to_string()),
         Value::String(v) => Ok(v.clone()),
-        _ => Err(format!("{}: {key} {name} is not a string", path.display())),
-    };
-    let name = field("app", default)?;
+        _ => Err(format!("{key} {name} is not a string")),
+    }
+}
+
+/// Off claude only the Review, its fallback and the Debate's sides run,
+/// until codex has the two-step Plan, the network the Moderator's side
+/// commands and TypeSafe calls need, and a Git write path: its sandbox keeps
+/// Git metadata read-only.
+pub(crate) fn runs_on(key: &str, app: &App) -> Result<(), String> {
+    match app.name == "claude" || matches!(key, "review" | IF_LIMITED | "side_a" | "side_b") {
+        true => Ok(()),
+        false => Err(format!("{key} runs on claude only")),
+    }
+}
+
+/// The row under key in doc, the config.json at path.
+pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String> {
+    let field =
+        |name: &str| field(doc, key, name).map_err(|err| format!("{}: {err}", path.display()));
+    let name = field("app")?;
     let app =
         app(&name).ok_or_else(|| format!("{}: no App named {name:?} for {key}", path.display()))?;
-    // Off claude only the Review, its fallback and the Debate's sides run,
-    // until codex has the two-step Plan, the network the Moderator's side
-    // commands and TypeSafe calls need, and a Git write path: its sandbox
-    // keeps Git metadata read-only.
-    if app.name != "claude" && !matches!(key, "review" | IF_LIMITED | "side_a" | "side_b") {
-        return Err(format!("{key} runs on claude only"));
+    runs_on(key, app)?;
+    let model = field("model")?;
+    // none, no model, is the fallback's alone: elsewhere it would run as one.
+    if model == "none" && key != IF_LIMITED {
+        return Err(format!(
+            "{}: {key} model none: only {IF_LIMITED} takes none",
+            path.display()
+        ));
     }
-    let model = field("model", "default")?;
     // A split: a plan model other than Implement's, not default.
     let plan_model = match key {
-        "implement" => Some(field("plan_model", "default")?),
+        "implement" => Some(field("plan_model")?),
         _ => None,
     }
     .filter(|plan| *plan != model && plan != "default");
@@ -347,7 +436,16 @@ pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
     Ok(Row {
         app,
         model,
-        effort: field("effort", "default")?,
+        effort: field("effort")?,
         plan_model,
     })
+}
+
+/// The one-line prompt that tries model on app, before /config saves it:
+/// the App's headless read-only command, in dir.
+pub(crate) fn probe(app: &App, dir: &Path, model: &str) -> Vec<String> {
+    let mut argv = fill(app.side, &dir.display().to_string());
+    argv.extend(fill(app.model, model));
+    argv.push("Reply with ok".to_string());
+    argv
 }
