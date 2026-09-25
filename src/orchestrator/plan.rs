@@ -567,10 +567,13 @@ impl Orchestrator {
                 }
                 let moved = match self.agent_status(pane).as_deref() {
                     Some("blocked") => self.plan_ready(ticket, pane).is_some(),
-                    _ => match read_stage_result(&file, ResultRequirements::default()).1 {
-                        done if done.is_empty() => true,
+                    _ => match read_stage_result(&file, ResultRequirements::default())
+                        .1
+                        .as_str()
+                    {
+                        "" => true,
                         // a two-step Plan's newer plan
-                        planned if planned == PLANNED => {
+                        PLANNED => {
                             let plan = fs::read_to_string(self.run_dir(ticket).join(PLAN)).ok();
                             self.plans.lock().unwrap().get(ticket) != plan.as_ref()
                         }

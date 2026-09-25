@@ -412,8 +412,10 @@ pub(crate) fn field(doc: &Value, key: &str, name: &str) -> Result<String, String
 /// for Fix and Address: its sandbox keeps Git metadata read-only.
 pub(crate) fn runs_on(key: &str, app: &App) -> Result<(), String> {
     match app.name == "claude"
-        || matches!(key, "implement" | "review" | IF_LIMITED | "side_a" | "side_b")
-    {
+        || matches!(
+            key,
+            "implement" | "review" | IF_LIMITED | "side_a" | "side_b"
+        ) {
         true => Ok(()),
         false => Err(format!("{key} runs on claude only")),
     }

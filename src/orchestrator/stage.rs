@@ -814,13 +814,6 @@ impl Orchestrator {
         let mut inputs = inputs.to_vec();
         inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
         inputs.extend(lacking.as_deref().map(|value| ("Not installed", value)));
-        if st.name == IMPLEMENT.name {
-            let how = match written {
-                true => "write plan.md and STATUS: plan",
-                false => "native plan mode",
-            };
-            inputs.push(("Plan", how));
-        }
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());
         }
@@ -834,6 +827,11 @@ impl Orchestrator {
             if let Err(err) = saved {
                 return Held::Woke(format!("Ticket not shown: {err}"));
             }
+            let how = match written {
+                true => "write plan.md and STATUS: plan",
+                false => "native plan mode",
+            };
+            inputs.push(("Plan", how));
             inputs.push(("Ticket file", &ticket_file_s));
         }
         let session = Session {
