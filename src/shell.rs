@@ -447,6 +447,7 @@ impl Screen {
             self.updated(checked);
         }
         self.probed();
+        self.finished();
         let Some(run) = &mut self.run else {
             return;
         };

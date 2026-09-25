@@ -45,8 +45,6 @@ pub(crate) fn stage_skill(repo: &Path, home: &Path, name: &str) -> Option<Result
     })
 }
 
-// Nothing outside the tests calls update and remove until /config (Ticket 21).
-#[allow(dead_code)]
 pub(crate) mod manifest;
 
 #[cfg(test)]
