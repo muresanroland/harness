@@ -525,8 +525,8 @@ fn a_noul_short_a_question_asked_or_no_judgment_raises_the_plan_question() {
 
 /// config.json's plan_floor, read as the plan is judged: 0.6 approves a plan
 /// the default floor asks about; missing or empty is the default. One that
-/// is not a number from 0 to 1 is never acted on: the plan clearing every
-/// Noul is the Question, and the log says why.
+/// is not a number from 0 to 1, null too, is never acted on: the plan
+/// clearing every Noul is the Question, and the log says why.
 #[test]
 fn config_jsons_plan_floor_moves_the_approval_and_a_bad_one_asks() {
     for (config, answer, approved) in [
@@ -535,6 +535,7 @@ fn config_jsons_plan_floor_moves_the_approval_and_a_bad_one_asks() {
         (r#"{"plan_floor": 0.6}"#, (0.62, 0.9, 0.1), true),
         (r#"{"plan_floor": 1.5}"#, (1.0, 1.0, 0.0), false),
         (r#"{"plan_floor": "high"}"#, (1.0, 1.0, 0.0), false),
+        (r#"{"plan_floor": null}"#, (1.0, 1.0, 0.0), false),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         plans(&w, "idle");
@@ -545,7 +546,7 @@ fn config_jsons_plan_floor_moves_the_approval_and_a_bad_one_asks() {
         o.cfg.typesafe = typesafe(move |_| Ok(nouls(c, i, a)));
         let o = Arc::new(o);
         let mut run = spawn_ticket(o.clone(), "hx-1");
-        let bad = config.contains("1.5") || config.contains("high");
+        let bad = ["1.5", "high", "null"].iter().any(|v| config.contains(v));
         if !approved {
             let (pane, _, judged, _) = plan_question(&w, 1);
             let floor = judged

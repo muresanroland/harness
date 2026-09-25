@@ -733,8 +733,8 @@ fn the_prototype_cases_build_judge_pys_request() {
 
 /// config.json's wake_floor, read at each Wake: 0.6 acts on a Judgment the
 /// default floor asks about; missing or empty is the default. One that is
-/// not a number from 0 to 1 is never acted on: even a sure Judgment is the
-/// Question, and the log says why.
+/// not a number from 0 to 1, null too, is never acted on: even a sure
+/// Judgment is the Question, and the log says why.
 #[test]
 fn config_jsons_wake_floor_moves_the_action_and_a_bad_one_asks() {
     for (config, confidence, acted) in [
@@ -743,6 +743,7 @@ fn config_jsons_wake_floor_moves_the_action_and_a_bad_one_asks() {
         (r#"{"wake_floor": 0.6}"#, 0.65, true),
         (r#"{"wake_floor": -1}"#, 0.99, false),
         (r#"{"wake_floor": "low"}"#, 0.99, false),
+        (r#"{"wake_floor": null}"#, 0.99, false),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         idle_once(&w);
@@ -763,7 +764,7 @@ fn config_jsons_wake_floor_moves_the_action_and_a_bad_one_asks() {
         assert_eq!(asked, !acted, "{config}");
         let refused =
             " hx-1 wake_floor is not a number from 0 to 1: the Judgment is not acted on\n";
-        let bad = config.contains("-1") || config.contains("low");
+        let bad = ["-1", "low", "null"].iter().any(|v| config.contains(v));
         assert_eq!(w.log().contains(refused), bad, "{config}:\n{}", w.log());
     }
 }
