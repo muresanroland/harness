@@ -11,8 +11,7 @@ use super::plan::quoted;
 use super::stage::{Stage, DEBATE};
 use super::trust::{claude_records, codex_records};
 
-/// The Review's fallback row, for while the Review's App is Limited; its
-/// model starts as none, no fallback.
+/// The Review's fallback row, for while the Review's App is Limited.
 pub(crate) const IF_LIMITED: &str = "review_if_limited";
 
 /// An agent CLI a Stage can run on: one row of the App table. In the arg
