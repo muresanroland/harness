@@ -47,6 +47,40 @@ fn plans(w: &World, then: &'static str) {
     });
 }
 
+/// What the Harness prompts a two-step Plan's session with on approval.
+const APPROVED: &str = "implement the approved plan";
+
+/// Implement runs on codex, whose session writes plan.md and STATUS: plan
+/// and waits; feedback brings the revised plan, approval the implementation.
+fn writes(w: &World) {
+    write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"implement": {"app": "codex"}}"#,
+    );
+    let run = w.repo.join(".harness/runs/hx-1");
+    w.session(move |p: &Prompt| {
+        let plan = match (p.stage.as_str(), p.text.as_str()) {
+            ("implement", _) => PLAN,
+            ("", FEEDBACK) => REVISED,
+            ("", APPROVED) => {
+                write_file(&run.join("implement.md"), "STATUS: done\n");
+                return (String::new(), "idle".to_string());
+            }
+            _ => return succeed(p),
+        };
+        write_file(&run.join("plan.md"), plan);
+        write_file(&run.join("implement.md"), "STATUS: plan\n");
+        (String::new(), "idle".to_string())
+    });
+}
+
+/// How many times a two-step Plan was approved in its pane.
+fn approvals(w: &World) -> usize {
+    let prompts = w.called("herdr agent prompt ");
+    let approved = format!(" {APPROVED}");
+    prompts.iter().filter(|c| c.ends_with(&approved)).count()
+}
+
 /// bd shows hx-1 with a description and acceptance criteria.
 fn bd_show(w: &World) {
     w.hook(|_, argv| {
@@ -131,6 +165,177 @@ fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
             "command": format!("'/opt/the harness/harness' __plan-hook '{}'", run.join("plan.md").display()),
         }] }] } })
     );
+}
+
+/// Implement on codex starts with no plan mode and no settings file, its
+/// sandbox writing the Run directory too, and is told
+/// to write its plan; claude's is told to use its native plan mode.
+#[test]
+fn implement_on_codex_starts_with_no_plan_mode_and_is_told_to_write_its_plan() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    writes(&w);
+    w.hook(|_, argv| (argv == ["bd", "show", "hx-1"]).then(|| Ok("hx-1 · the Ticket\n".into())));
+    let o = Arc::new(o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 implement started: codex (pane 1-1)");
+    w.await_line("hx-1 plan ready in implement (pane 1-1)");
+
+    let run = o.run_dir("hx-1");
+    let start = w.called("herdr agent start h-hx-1-implement");
+    assert_eq!(start.len(), 1);
+    assert!(start[0].contains(" --kind codex "), "{start:?}");
+    assert!(
+        start[0].ends_with(&format!(
+            " -- --sandbox workspace-write --add-dir {}",
+            run.display()
+        )),
+        "{start:?}"
+    );
+    assert!(!run.join("settings.json").exists());
+    let prompt = &w.called("herdr agent prompt")[0];
+    assert!(
+        prompt.contains("\n- Plan: write plan.md and STATUS: plan\n"),
+        "{prompt}"
+    );
+    // codex's sandbox cannot run bd: its Ticket is shown in the Run directory
+    let ticket = run.join("ticket.md");
+    assert!(
+        prompt.contains(&format!("\n- Ticket file: {}\n", ticket.display())),
+        "{prompt}"
+    );
+    assert_eq!(fs::read_to_string(ticket).unwrap(), "hx-1 · the Ticket\n");
+
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.run_ticket("hx-1");
+    let prompt = &w.called("herdr agent prompt")[0];
+    assert!(prompt.contains("\n- Plan: native plan mode\n"), "{prompt}");
+}
+
+/// STATUS: plan is a plan ready, with no dialog: yes at the floor prompts
+/// "implement the approved plan"; below it the plan Question, whose approve
+/// does the same. No key is ever sent.
+#[test]
+fn status_plan_is_judged_and_approval_prompts_implement_the_approved_plan() {
+    for score in [0.9, 0.5] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        writes(&w);
+        o.cfg.typesafe = typesafe(move |_| Ok(noul(score)));
+        let o = Arc::new(o);
+        let mut run = spawn_ticket(o.clone(), "hx-1");
+        if score < 0.75 {
+            let (pane, plan, judged, _) = plan_question(&w, 1);
+            assert_eq!((plan.as_str(), judged), (PLAN, Some(score)));
+            assert_eq!(approvals(&w), 0);
+            o.answer("hx-1", &pane, Answer::Approve);
+        }
+        run.wait();
+        assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{score}");
+        assert_eq!(approvals(&w), 1, "{score}");
+        assert!(keys(&w).is_empty(), "{score}");
+        let lines = w.lines();
+        let at = lines
+            .iter()
+            .position(|l| l == "hx-1 plan ready in implement (pane 1-1)")
+            .unwrap_or_else(|| panic!("no plan ready line in {lines:#?}"));
+        assert_eq!(
+            lines[at + 1..at + 4],
+            [
+                format!("hx-1 judged: plan follows the Ticket {score:.2}"),
+                "hx-1 plan approved".to_string(),
+                "hx-1 implemented".to_string(),
+            ],
+            "{score}"
+        );
+    }
+}
+
+/// Feedback goes into the pane as a prompt, no key sent; the session's next
+/// STATUS: plan is judged again, the feedback kept.
+#[test]
+fn feedback_on_a_written_plan_is_a_prompt_and_the_next_status_plan_is_judged_again() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    writes(&w);
+    let fake = typesafe(|n| Ok(noul([0.3, 0.95][n])));
+    o.cfg.typesafe = fake.clone();
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let (pane, _, _, _) = plan_question(&w, 1);
+    o.answer("hx-1", &pane, Answer::Prompt(FEEDBACK.to_string()));
+    w.await_line("hx-1 plan sent back with your feedback");
+    run.wait();
+    assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
+
+    let prompts: Vec<String> = w
+        .called(&format!("herdr agent prompt {pane} "))
+        .into_iter()
+        .filter(|c| !c.contains("# Implement Stage"))
+        .collect();
+    assert_eq!(
+        prompts,
+        [
+            format!("herdr agent prompt {pane} {FEEDBACK}"),
+            format!("herdr agent prompt {pane} {APPROVED}"),
+        ]
+    );
+    assert!(keys(&w).is_empty());
+    let asked = fake.requests();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[1]["state"]["plan"], REVISED);
+    assert_eq!(asked[1]["state"]["prior_feedback"], FEEDBACK);
+    w.await_line("hx-1 judged: plan follows the Ticket 0.95");
+}
+
+/// A worktree the session changed before its plan was approved, HEAD moved
+/// or the tree dirty, fails the Plan: the user's Question, no approval sent.
+/// The session putting the worktree back and writing a newer plan carries
+/// on: that plan is judged, and approved.
+#[test]
+fn a_worktree_changed_before_approval_fails_the_written_plan() {
+    for case in ["HEAD moved", "a dirty tree"] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        writes(&w);
+        let run = o.run_dir("hx-1");
+        let planned = run.join("plan.md");
+        // changed while the first plan is written, put back with the revision
+        w.hook(move |_, argv| {
+            let changed = fs::read_to_string(&planned).is_ok_and(|plan| plan == PLAN);
+            match (case, argv.join(" ").as_str()) {
+                ("HEAD moved", "git rev-parse HEAD") => {
+                    Some(Ok(if changed { "b2\n" } else { "a1\n" }.to_string()))
+                }
+                ("a dirty tree", "git status --porcelain") => {
+                    Some(Ok(if changed { " M src/x.rs\n" } else { "" }.to_string()))
+                }
+                _ => None,
+            }
+        });
+        o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
+        let o = Arc::new(o);
+        let mut running = spawn_ticket(o.clone(), "hx-1");
+
+        let stuck = w.await_event(
+            "stuck in implement: changed the worktree before its plan was approved (pane 1-1)",
+        );
+        let Some(Ask::PlanFailed { pane, feedback }) = stuck.ask else {
+            panic!("{case}: not a plan failure's Question: {stuck:?}");
+        };
+        assert_eq!(feedback, None, "{case}");
+        assert_eq!(approvals(&w), 0, "{case}");
+        assert!(
+            w.lines().iter().all(|l| l != "hx-1 plan approved"),
+            "{case}"
+        );
+        assert_eq!(pane, o.ticket("hx-1").panes["implement"], "{case}");
+
+        write_file(&run.join("plan.md"), REVISED);
+        write_file(&run.join("implement.md"), "STATUS: plan\n");
+        w.await_line("hx-1 carrying on");
+        running.wait();
+        assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{case}");
+        assert_eq!(approvals(&w), 1, "{case}");
+        w.await_line("hx-1 plan approved");
+    }
 }
 
 /// Blocked at the plan dialog with a fresh plan reaches the Noul over the

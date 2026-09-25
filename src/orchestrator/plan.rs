@@ -10,6 +10,12 @@
 //! implements on another: opusplan, its halves remapped in the settings,
 //! which show the dialog's clear-context option; approval moves there, so
 //! the implementing model starts from the plan alone.
+//!
+//! Off claude (harness-7nq.12) the Plan takes two steps: the session writes
+//! plan.md and a Stage result STATUS: plan, and waits. Feedback goes into
+//! its pane as a prompt; approval prompts "implement the approved plan",
+//! only while the worktree is as the session found it: a session that
+//! changed it before approval is a plan failure.
 
 use std::fs;
 use std::thread;
@@ -18,8 +24,8 @@ use serde_json::{json, Value};
 
 use super::app::Row;
 use super::judgment::{plan_said, Action, PLAN_FLOOR};
-use super::result::{read_stage_result, ResultRequirements};
-use super::stage::{result_name, Answer, Ask, Held, Orchestrator, Stage, SETTLE_TICKS};
+use super::result::{read_stage_result, ResultRequirements, PLANNED};
+use super::stage::{result_name, Answer, Ask, Held, Orchestrator, Stage, IMPLEMENT, SETTLE_TICKS};
 use crate::tools::RunError;
 
 /// Where the hook copies the plan the session presents.
@@ -31,6 +37,10 @@ const SETTINGS: &str = "settings.json";
 const FEEDBACK: &str = "Tell Claude what to change";
 /// The approving option a split's settings show, which clears the context.
 const CLEAR: &str = "Yes, clear context";
+/// A two-step Plan's approval, the prompt that ends the planning.
+const APPROVED: &str = "implement the approved plan";
+/// The worktree's HEAD and tree as a two-step Plan's session started.
+const BEFORE: &str = "before-implement.json";
 
 /// How an approval went.
 enum Approval {
@@ -159,6 +169,49 @@ impl Orchestrator {
         Ok(path.display().to_string())
     }
 
+    /// Readies a fresh session's two-step Plan: an earlier session's plan
+    /// goes, and the worktree as it starts is kept, which approval compares
+    /// with: in the run directory, so a resumed session is compared with
+    /// the tree it started from.
+    pub(super) fn start_written_plan(&self, ticket: &str) -> Result<(), String> {
+        let dir = self.run_dir(ticket);
+        let _ = fs::remove_file(dir.join(PLAN));
+        self.plans.lock().unwrap().remove(ticket);
+        fs::write(dir.join(BEFORE), self.snapshot(ticket))
+            .map_err(|err| format!("worktree snapshot not saved: {err}"))
+    }
+
+    /// A two-step Plan ready: the session wrote STATUS: plan, and its plan
+    /// is plan.md.
+    pub(super) fn written_plan(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        label: &str,
+        pane: &str,
+    ) -> Option<Held> {
+        match fs::read_to_string(self.run_dir(ticket).join(PLAN)) {
+            Ok(plan) => self.plan(ticket, st, label, pane, plan),
+            Err(_) => Some(Held::Woke(format!("wrote STATUS: plan and no {PLAN}"))),
+        }
+    }
+
+    /// Whether the Ticket's Implement session plans in two steps: its App
+    /// is not claude.
+    pub(super) fn writes_plan(&self, ticket: &str) -> bool {
+        let ts = self.ticket(ticket);
+        ts.sessions
+            .get(IMPLEMENT.name)
+            .is_some_and(|session| session.app != "claude")
+    }
+
+    /// Whether the worktree is not as the two-step Plan's session found it:
+    /// HEAD moved or the tree changed. No snapshot, no check.
+    fn worktree_changed(&self, ticket: &str) -> bool {
+        fs::read_to_string(self.run_dir(ticket).join(BEFORE))
+            .is_ok_and(|before| before != self.snapshot(ticket))
+    }
+
     /// The plan of an Implement session blocked at its plan dialog, when
     /// the hook copied in one newer than the last judged.
     pub(super) fn plan_ready(&self, ticket: &str, pane: &str) -> Option<String> {
@@ -262,6 +315,11 @@ impl Orchestrator {
     /// with park, stop, the session dying, or its moving on in the pane
     /// (None, "carrying on"). A Question has no timeout.
     fn plan_answer(&self, ticket: &str, pane: &str) -> Result<Answer, Option<Held>> {
+        // at its dialog, or idle at its written plan
+        let waiting: &[&str] = match self.writes_plan(ticket) {
+            true => &["idle", "done"],
+            false => &["blocked"],
+        };
         loop {
             match self.take_answer(ticket, Some(pane)) {
                 Some(Answer::Act(Action::Park)) => return Err(Some(Held::Park)),
@@ -274,7 +332,7 @@ impl Orchestrator {
             }
             match self.agent_status(pane).as_deref() {
                 None => return Err(Some(Held::Woke("session died".to_string()))),
-                Some("blocked") => {}
+                Some(status) if waiting.contains(&status) => {}
                 Some(_) => {
                     self.report(ticket, "carrying on"); // answered in the pane
                     return Err(None);
@@ -294,6 +352,9 @@ impl Orchestrator {
     /// the settings it started with, is approved on the clear-context
     /// option, the cursor moved there first.
     fn approve(&self, ticket: &str, st: &Stage, pane: &str, judged: &str) -> Approval {
+        if self.writes_plan(ticket) {
+            return self.approve_written(ticket, st, pane, judged);
+        }
         let blocked = self.agent_status(pane).as_deref() == Some("blocked");
         let dialog = blocked.then(|| plan_dialog(&self.visible(pane))).flatten();
         let plan = fs::read_to_string(self.run_dir(ticket).join(PLAN)).ok();
@@ -320,6 +381,31 @@ impl Orchestrator {
             (Some(_), Some(plan)) if plan != judged => Approval::Changed(plan),
             _ => Approval::Gone,
         }
+    }
+
+    /// Approves a two-step Plan, only while plan.md holds the plan judged
+    /// and the worktree is as the session found it: its result, the plan,
+    /// goes, and "implement the approved plan" is its prompt.
+    fn approve_written(&self, ticket: &str, st: &Stage, pane: &str, judged: &str) -> Approval {
+        let dir = self.run_dir(ticket);
+        match fs::read_to_string(dir.join(PLAN)) {
+            Ok(plan) if plan != judged => return Approval::Changed(plan),
+            Ok(_) => {}
+            Err(err) => return Approval::Failed(format!("{PLAN}: {err}")),
+        }
+        if self.worktree_changed(ticket) {
+            return Approval::Failed(
+                "changed the worktree before its plan was approved".to_string(),
+            );
+        }
+        let _ = fs::remove_file(dir.join(result_name(st, 0))); // no longer open
+        if let Err(err) = self.herdr(&["agent", "prompt", pane, APPROVED]) {
+            return Approval::Failed(unanswered(err));
+        }
+        self.report(ticket, "plan approved");
+        self.new_deadline(ticket, st);
+        self.settle(pane, &["idle", "done"]);
+        Approval::Sent
     }
 
     /// Whether the session's settings show the clear-context option: a split.
@@ -363,6 +449,9 @@ impl Orchestrator {
     /// keeps plan mode. Once the session is idle in plan mode the feedback
     /// is its prompt, and the Stage's deadline starts over.
     fn send_back(&self, ticket: &str, st: &Stage, pane: &str, feedback: &str) -> SentBack {
+        if self.writes_plan(ticket) {
+            return self.send_back_written(ticket, st, pane, feedback);
+        }
         let screen = self.visible(pane);
         match plan_dialog(&screen) {
             Some(dialog) => {
@@ -397,6 +486,25 @@ impl Orchestrator {
             None if self.idle_in_plan_mode(pane, &screen) => {}
             None => return SentBack::NotSent("the plan dialog is not on screen"),
         }
+        self.feedback_prompt(ticket, st, pane, feedback)
+    }
+
+    /// Sends a two-step Plan back with the user's feedback, only while
+    /// plan.md holds the plan judged: its result, the plan, goes, and the
+    /// feedback is its prompt as it waits.
+    fn send_back_written(&self, ticket: &str, st: &Stage, pane: &str, feedback: &str) -> SentBack {
+        let dir = self.run_dir(ticket);
+        let plan = fs::read_to_string(dir.join(PLAN)).unwrap_or_default();
+        if self.plans.lock().unwrap().get(ticket) != Some(&plan) {
+            return SentBack::Changed(plan);
+        }
+        let _ = fs::remove_file(dir.join(result_name(st, 0))); // no longer open
+        self.feedback_prompt(ticket, st, pane, feedback)
+    }
+
+    /// The feedback as the session's prompt, kept for the plan's next
+    /// Judgment; the Stage's deadline starts over.
+    fn feedback_prompt(&self, ticket: &str, st: &Stage, pane: &str, feedback: &str) -> SentBack {
         if let Err(err) = self.herdr(&["agent", "prompt", pane, feedback]) {
             return SentBack::Failed(unanswered(err));
         }
@@ -459,9 +567,18 @@ impl Orchestrator {
                 }
                 let moved = match self.agent_status(pane).as_deref() {
                     Some("blocked") => self.plan_ready(ticket, pane).is_some(),
-                    _ => read_stage_result(&file, ResultRequirements::default())
+                    _ => match read_stage_result(&file, ResultRequirements::default())
                         .1
-                        .is_empty(),
+                        .as_str()
+                    {
+                        "" => true,
+                        // a two-step Plan's newer plan
+                        PLANNED => {
+                            let plan = fs::read_to_string(self.run_dir(ticket).join(PLAN)).ok();
+                            self.plans.lock().unwrap().get(ticket) != plan.as_ref()
+                        }
+                        _ => false,
+                    },
                 };
                 if moved {
                     self.report(ticket, "carrying on");

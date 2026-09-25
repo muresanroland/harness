@@ -32,6 +32,8 @@ const NO_RESULT: &str = "went idle without a result";
 const NOT_STATUS: &str = "wrote a result file whose first line is not STATUS:";
 /// STATUS: question: neither done nor a Wake (read_question).
 pub(crate) const ASKED: &str = "asked a question";
+/// STATUS: plan: a two-step Plan ready, neither done nor a Wake (plan.rs).
+pub(crate) const PLANNED: &str = "wrote its plan";
 
 /// Interprets and accepts result contents for live completion, resume, and
 /// late completion alike. A nonempty reason means the result is not accepted;
@@ -48,6 +50,7 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
     match value.trim().to_lowercase().as_str() {
         "failed" => return rejected("session reported failure"),
         "question" => return rejected(ASKED),
+        "plan" => return rejected(PLANNED),
         "done" => {}
         _ => return rejected(NOT_STATUS),
     }

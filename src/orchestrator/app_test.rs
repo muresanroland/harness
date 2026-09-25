@@ -194,9 +194,10 @@ fn config_changed_between_two_stages_reaches_the_second() {
 
 /// A config.json no Stage can start on, read as a Stage starts, is a Wake
 /// before its session starts: unreadable, naming the file, a field not a
-/// string, a Stage other than the Review off claude, a plan model split
-/// from Implement's model where either is not a full claude- id, none off
-/// the Review's fallback, or both Debate sides on one family.
+/// string, a Stage other than Implement, the Review or a Debate side off
+/// claude, a plan model split from Implement's model where either is not a
+/// full claude- id, a split off claude, none off the Review's fallback, or
+/// both Debate sides on one family.
 #[test]
 fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
     const SPLIT_NOT_FULL: &str = "{file}: implement plan_model splits from model: \
@@ -227,6 +228,11 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "fable"}}"#,
             "implement",
             SPLIT_NOT_FULL,
+        ),
+        (
+            r#"{"implement": {"app": "codex", "plan_model": "claude-fable-5-1"}}"#,
+            "implement",
+            "{file}: implement plan_model splits from model: the split runs on claude only",
         ),
         (
             r#"{"side_b": {"app": "pi"}}"#,

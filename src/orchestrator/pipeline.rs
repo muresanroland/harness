@@ -220,6 +220,11 @@ impl Orchestrator {
         Ok(result)
     }
 
+    /// The worktree as `[head, tree]` JSON, what a snapshot file holds.
+    pub(super) fn snapshot(&self, ticket: &str) -> String {
+        json!([self.head(ticket), self.tree(ticket)]).to_string()
+    }
+
     /// The worktree's HEAD; None when git cannot say.
     fn head(&self, ticket: &str) -> Option<String> {
         let argv = ["git", "rev-parse", "HEAD"];

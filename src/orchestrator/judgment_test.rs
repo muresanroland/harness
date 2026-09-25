@@ -322,7 +322,7 @@ fn no_key_means_no_request_and_a_question() {
         "a request went out without a key"
     );
     assert!(
-        w.called("bd show").is_empty(),
+        w.called("bd show hx-1 --json").is_empty(),
         "the state was built without a key"
     );
 }

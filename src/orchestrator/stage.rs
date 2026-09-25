@@ -16,7 +16,7 @@ use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::limit::{until, Limit, LAST_LINES};
 use super::result::{
-    read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult, ASKED,
+    read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult, ASKED, PLANNED,
 };
 use super::state::{load_state, Session, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
@@ -652,14 +652,16 @@ impl Orchestrator {
                     Held::Park => return Err(StageError::Parked(format!("by you at {label}"))),
                     Held::Away => return Err(StageError::Parked(AWAY.to_string())),
                     // never a Wake: put to the user, then watched again
-                    Held::Woke(reason) if reason == ASKED => {
+                    Held::Woke(reason) if self.waits_on_you(ticket, st, &reason) => {
                         let pane = self.ticket(ticket).panes.get(st.name).cloned();
                         let pane = pane.unwrap_or_default(); // the pane it asked in
-                        held = self
-                            .question(ticket, st, &label, &pane, &file)
-                            .unwrap_or_else(|| {
-                                self.hold(ticket, st, &label, &pane, &file, want, true, None)
-                            });
+                        held = match reason == ASKED {
+                            true => self.question(ticket, st, &label, &pane, &file),
+                            false => self.written_plan(ticket, st, &label, &pane),
+                        }
+                        .unwrap_or_else(|| {
+                            self.hold(ticket, st, &label, &pane, &file, want, true, None)
+                        });
                         continue;
                     }
                     Held::Retry => {
@@ -770,6 +772,8 @@ impl Orchestrator {
             return held;
         }
         let run_dir = self.run_dir(ticket).display().to_string();
+        let ticket_file = self.run_dir(ticket).join("ticket.md");
+        let ticket_file_s = ticket_file.display().to_string();
         // The Moderator is given each Debate side's command, read now too,
         // and which side's App is Limited. Each job's Delegate skill, as the
         // App that runs its line loads and names one: the audit, the Debate's
@@ -783,6 +787,8 @@ impl Orchestrator {
             },
             false => (Vec::new(), row.app),
         };
+        // Implement plans in claude's plan mode, elsewhere in two steps.
+        let written = st.name == IMPLEMENT.name && row.app.name != "claude";
         let (repo, home) = (&self.cfg.repo, &self.cfg.home);
         let skill = match stage_skill(repo, home, st.skill) {
             Some(Ok(skill)) => skill,
@@ -811,6 +817,23 @@ impl Orchestrator {
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());
         }
+        // Implement's scope is its Ticket, shown here: codex's sandbox
+        // cannot take bd's lock in the main checkout's .beads.
+        if st.name == IMPLEMENT.name {
+            let shown = self.cfg.tools.run(&self.cfg.repo, &["bd", "show", ticket]);
+            let saved = shown
+                .map_err(|err| err.to_string())
+                .and_then(|text| fs::write(&ticket_file, text).map_err(|err| err.to_string()));
+            if let Err(err) = saved {
+                return Held::Woke(format!("Ticket not shown: {err}"));
+            }
+            let how = match written {
+                true => "write plan.md and STATUS: plan",
+                false => "native plan mode",
+            };
+            inputs.push(("Plan", how));
+            inputs.push(("Ticket file", &ticket_file_s));
+        }
         let session = Session {
             app: row.app.name.to_string(),
             ..Default::default()
@@ -833,6 +856,11 @@ impl Orchestrator {
         // Clear its result only after fresh_pane has replaced it, before the
         // new writer.
         let _ = fs::remove_file(file);
+        if written {
+            if let Err(err) = self.start_written_plan(ticket) {
+                return Held::Woke(err);
+            }
+        }
         let deadline = self.new_deadline(ticket, st);
         // The user accepts trust in that very pane, and trust flips while
         // their own session still holds it: after a trust wait the pane may
@@ -926,13 +954,13 @@ impl Orchestrator {
     }
 
     /// The args a Stage's session starts with, the row's model and effort
-    /// last. Only Implement's can fail: it has no plan hook.
+    /// last. Only Implement's on claude can fail: it has no plan hook.
     fn stage_args(&self, ticket: &str, st: &Stage, row: &Row) -> Result<Vec<String>, String> {
         let run_dir = self.run_dir(ticket).display().to_string();
-        let mut args = if st.name == IMPLEMENT.name {
-            // Implement plans first (harness-7bj.9), on claude alone
-            // (stage_row): its own settings hold the hook that copies each
-            // plan into the run directory, and on a split opusplan's remap.
+        let mut args = if st.name == IMPLEMENT.name && row.app.name == "claude" {
+            // Implement plans first (harness-7bj.9), in plan mode on claude:
+            // its own settings hold the hook that copies each plan into the
+            // run directory, and on a split opusplan's remap.
             let settings = self
                 .plan_settings(ticket, row)
                 .map_err(|err| format!("has no plan hook: {err}"))?;
@@ -949,10 +977,9 @@ impl Orchestrator {
         } else if st.name == REVIEW.name {
             (row.app.run_dir_args)(&self.worktree(ticket).display().to_string())
         } else {
-            // Debate, Fix and Address run on claude alone (stage_row).
-            ["--permission-mode", "auto", "--add-dir", &run_dir]
-                .map(String::from)
-                .to_vec()
+            // Implement off claude plans in two steps (plan.rs); Debate, Fix
+            // and Address run on claude alone (stage_row).
+            (row.app.worktree_args)(&run_dir)
         };
         args.extend(row.flags());
         Ok(args)
@@ -981,9 +1008,10 @@ impl Orchestrator {
         let mut args = row.resume(&session.id);
         args.extend(self.stage_args(ticket, st, &row)?);
         let patience = Instant::now() + 6 * self.cfg.tick;
-        // A session that asked waits for its answer, not "continue": its
-        // question is put to the user again.
-        let asked = read_question(file).is_some();
+        // A session that asked, or wrote its plan, waits for its answer, not
+        // "continue": its question or plan is put to the user again.
+        let reason = read_stage_result(file, ResultRequirements::default()).1;
+        let asked = self.waits_on_you(ticket, st, &reason);
         self.start_agent(ticket, st, row.app, &pane, &args, patience)
             .and_then(|()| match asked {
                 true => Ok(()),
@@ -995,6 +1023,13 @@ impl Orchestrator {
         let at = self.locate(&pane);
         self.report(ticket, &format!("{label} resumed: {} {at}", row.said()));
         Ok(pane)
+    }
+
+    /// Whether a Stage whose result gives `reason` waits on you, never a
+    /// Wake: its own question, or Implement's two-step Plan.
+    fn waits_on_you(&self, ticket: &str, st: &Stage, reason: &str) -> bool {
+        let planned = reason == PLANNED && st.name == IMPLEMENT.name;
+        reason == ASKED || planned && self.writes_plan(ticket)
     }
 
     /// Holds a Stage until its agent trusts the directory its pane started
@@ -1323,8 +1358,11 @@ impl Orchestrator {
                     }
                     Some(_) => {}
                 }
-            } else if reason == ASKED && matches!(status.as_deref(), Some("idle" | "done")) {
-                // a session taken up again in its pane after a Wake asks too
+            } else if self.waits_on_you(ticket, st, &reason)
+                && matches!(status.as_deref(), Some("idle" | "done"))
+            {
+                // a session taken up again in its pane after a Wake asks, or
+                // plans, too
                 return Held::Woke(reason);
             }
             if !self.sleep() {

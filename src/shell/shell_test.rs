@@ -1583,9 +1583,9 @@ fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
     );
     assert!(s.run.is_none());
 
-    write_file(&file, r#"{"implement": {"app": "codex"}}"#);
+    write_file(&file, r#"{"moderator": {"app": "codex"}}"#);
     s.command("/start-epic hx");
-    assert_eq!(notice(&s), "implement runs on claude only");
+    assert_eq!(notice(&s), "moderator runs on claude only");
     assert!(s.run.is_none() && w.called("bd worktree create").is_empty());
 
     write_file(&file, r#"{"fix": {"app": "codex"}}"#);

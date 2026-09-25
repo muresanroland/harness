@@ -16,7 +16,7 @@ fn stage_result_acceptance() {
         require_pr: true,
         ..Default::default()
     };
-    let cases: [(&str, &str, ResultRequirements, &str); 15] = [
+    let cases: [(&str, &str, ResultRequirements, &str); 16] = [
         ("done", "STATUS: done\nall good\n", none, ""),
         (
             "failed",
@@ -75,6 +75,12 @@ fn stage_result_acceptance() {
             "STATUS: question\nours or theirs?\n- ours\n",
             none,
             "asked a question",
+        ),
+        (
+            "a plan is not done",
+            "STATUS: plan\n",
+            none,
+            "wrote its plan",
         ),
         (
             "failed even with PR",

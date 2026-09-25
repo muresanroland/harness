@@ -71,15 +71,17 @@ Decided on the map tickets "Limited" (harness-0sx.8) and "Apps per Stage" (harne
 
 ## Wake reasons
 
-session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · never took the continue · never took your answer · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context
+session reported failure · went idle without a result · wrote a result file whose first line is not STATUS: · timed out after 30m · session died · finished without a PR link · never took the Stage skill · never took the nudge · never took the continue · never took your answer · wrote STATUS: plan and no plan.md · has no plan hook · never took the answer to its plan · left plan mode before your feedback · feedback not sent: `why` · the cursor never reached Yes, clear context · changed the worktree before its plan was approved
 
-The last five are plan failures: a Question for the user, no Judgment asked.
+The last six are plan failures: a Question for the user, no Judgment asked.
 
 The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
 
 ## Plans
 
 Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks when unsure" (harness-7bj.9). Implement starts in plan mode; a hook copies the plan into the run directory as `plan.md`, and the Judgment is a TypeSafe Noul over the plan, the Ticket and any earlier feedback, floor 0.8.
+
+Off claude (harness-7nq.12) the Plan takes two steps: the session writes `plan.md` and a Stage result `STATUS: plan`, and waits. The lines are the same; feedback goes into the pane as a prompt, and approval prompts `implement the approved plan`. A worktree the session changed before approval (HEAD moved, or the tree changed) is a plan failure.
 
 | Moment | Wording |
 |---|---|
