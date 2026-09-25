@@ -103,7 +103,7 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 5] = [
     (
         "Review",
         "Review",
-        "Reviews the diff into Findings, respecting earlier Verdicts. It never runs on the model that implemented.",
+        "Reviews the diff into Findings, respecting earlier Verdicts.",
     ),
     (
         "Debate",
@@ -314,19 +314,14 @@ impl Settings {
             }
         };
         // A row on an App no longer in the table still lists the Apps.
-        let app = match (pick.field, self.pick_app(pick)) {
+        match (pick.field, self.pick_app(pick)) {
             (Field::App, _) => {
                 for a in &APPS {
                     entry(a.name, a.family.to_string(), Some(Picked::App(a)));
                 }
-                return out;
             }
-            (_, None) => return out,
-            (_, Some(app)) => app,
-        };
-        match pick.field {
-            Field::App => {}
-            Field::Model => {
+            (_, None) => {}
+            (Field::Model, Some(app)) => {
                 let value = |m: &str| Some(Picked::Value(m.to_string()));
                 if ROWS[pick.row].key == IF_LIMITED {
                     let detail = "no fallback".to_string();
@@ -343,7 +338,7 @@ impl Settings {
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
             }
-            Field::Effort => {
+            (Field::Effort, Some(app)) => {
                 let model = self.value(pick.row, Field::Model);
                 let levels =
                     std::iter::once("default".to_string()).chain(self.efforts(app, &model));
