@@ -7,6 +7,7 @@ use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
 use crate::orchestrator::limit_test::hits;
 use crate::orchestrator::plan_test::{at_dialog, noul};
+use crate::orchestrator::question_test::ASKS;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
@@ -434,6 +435,13 @@ fn the_slash_list_filters_the_command_table_and_fills_in() {
     let mut s = screen();
     type_line(&mut s, "/exit");
     assert!(s.quit);
+    // An optional argument may be left out: Enter runs it typed whole.
+    let mut s = screen();
+    type_line(&mut s, "/continue");
+    assert!(
+        s.input.is_empty() && matches!(s.questions[0].about, About::Continue { .. }),
+        "Enter filled in /continue rather than run it"
+    );
 }
 
 /// Four open Epics for the @ list, two closed Tickets among theirs.
@@ -508,7 +516,7 @@ fn the_at_list_ranks_open_epics_and_tickets_narrowed_by_the_command() {
         "harness-rev.1",
     ];
     assert_eq!(list_keys(&s), open);
-    for name in ["/start-ticket", "/park", "/address"] {
+    for name in ["/start-ticket", "/park", "/address", "/continue"] {
         s.input = format!("{name} @");
         assert_eq!(list_keys(&s), open, "{name}");
     }
@@ -562,11 +570,11 @@ fn up_and_down_move_an_open_lists_cursor_and_scroll_recent_when_none_is() {
     for _ in 0..20 {
         s.key(key(KeyCode::Down));
     }
-    assert_eq!(s.pick, 9, "past the last row");
+    assert_eq!(s.pick, 10, "past the last row");
     s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Enter));
-    assert_eq!(s.input, "/questions ");
+    assert_eq!(s.input, "/away ");
     // Typing puts the cursor back on the top row.
     s.input.clear();
     type_in(&mut s, "/");
@@ -607,7 +615,7 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     let want = [
         " › /start-epic    <epic> [--max N]  run every Ticket of an open Epic",
         "   /start-ticket  <ticket>          run one Ticket",
-        "   /continue                        resume the saved run",
+        "   /continue      [<ticket>]        resume the saved run, or unpark one Ticket",
         "   /stop-work                       stop the run, the panes stay",
         "   /retry         <ticket>          the Ticket's Stage again, in a fresh session",
         "   /park          <ticket>          take a Ticket out to wait for you",
@@ -632,12 +640,12 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     assert_eq!(at("run every Ticket").0, TEXT);
     assert_eq!(at("run one Ticket").0, MUTED);
     // The window follows the cursor to the last row.
-    for _ in 0..9 {
+    for _ in 0..10 {
         s.key(key(KeyCode::Down));
     }
     let buf = render(&s, 120, 40);
     assert!(
-        row(&buf, 29).starts_with("   /continue"),
+        row(&buf, 29).starts_with("   /stop-work"),
         "{:#?}",
         rows(&buf)
     );
@@ -646,11 +654,7 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     let buf = render(&s, 80, 24);
     assert!(row(&buf, 11).contains("harness-kqe"), "{:#?}", rows(&buf));
     assert!(row(&buf, 13).contains("6 more, PgDn"), "{:#?}", rows(&buf));
-    assert!(
-        row(&buf, 14).starts_with("   /stop-work"),
-        "{:#?}",
-        rows(&buf)
-    );
+    assert!(row(&buf, 14).starts_with("   /retry"), "{:#?}", rows(&buf));
     assert!(row(&buf, 20).starts_with(" › /exit"), "{:#?}", rows(&buf));
     assert!(row(&buf, 21).contains("↑↓ pick"), "{:#?}", rows(&buf));
     assert_eq!(row(&buf, 23).trim_end(), "› /▌");
@@ -3155,6 +3159,149 @@ fn kept_feedback_can_be_resent_and_a_failed_plan_step_offers_retry() {
             "{line:?}:\n{log}"
         );
     }
+}
+
+/// `ticket`'s Implement session asks ASKS, and takes up the answer ours;
+/// every other session succeeds.
+fn asks_in(w: &World, ticket: &'static str) {
+    w.session(move |p| match p.text.as_str() {
+        "ours" => (String::new(), "working".to_string()),
+        _ if p.ticket == ticket && p.stage == "implement" => (ASKS.to_string(), "idle".to_string()),
+        _ => succeed(p),
+    });
+}
+
+/// The asking session writes its result for the answer it took.
+fn answered(s: &mut Screen, w: &World, ticket: &str) {
+    await_line(s, &format!("{ticket} sent your answer"));
+    let pane = s.state.tickets[ticket].panes["implement"].clone();
+    write_file(
+        &w.repo.join(format!(".harness/runs/{ticket}/implement.md")),
+        "STATUS: done\n",
+    );
+    w.lock().agents.insert(pane, "idle".to_string());
+}
+
+/// Away on: a Stage's question parks its Ticket with a bd comment, its pane
+/// left open, and AWAY on the status row. /continue @ticket, no run live,
+/// turns Away off, watches that session again and puts its question first,
+/// whose answer goes into the pane.
+#[test]
+fn away_parks_a_stage_question_and_continue_at_ticket_puts_it_first() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    asks_in(&w, "hx-1");
+    let mut s = shell(&w);
+    s.command("/away");
+    await_line(&mut s, "away: on, a Stage's question parks its Ticket");
+    assert!(
+        find(&render(&s, 120, 40), "AWAY").is_some(),
+        "no AWAY on the status row"
+    );
+    s.command("/start-ticket hx-1");
+    await_line(&mut s, "hx-1 parked: asked you while away");
+    await_end(&mut s);
+    assert!(s.questions.is_empty(), "Away still asked");
+    assert_eq!(w.called("bd comments add hx-1 ").len(), 1);
+    let pane = s.state.tickets["hx-1"].panes["implement"].clone();
+    assert_eq!(w.lock().agents[&pane], "idle", "the asking pane was closed");
+    assert!(w.called("herdr pane close").is_empty());
+
+    s.command("/continue @hx-1");
+    await_line(&mut s, "away: off");
+    assert!(
+        find(&render(&s, 120, 40), "AWAY").is_none(),
+        "AWAY stayed on"
+    );
+    await_questions(&mut s, 1);
+    assert_eq!(question(&s), "question in implement (pane 1-1)");
+    assert_eq!(
+        s.options(),
+        [
+            "ours",
+            "theirs",
+            "an answer of your own",
+            "open the pane",
+            "park"
+        ]
+    );
+    assert!(find(&render(&s, 120, 40), "Which parser stays?").is_some());
+    pick(&mut s, 1);
+    answered(&mut s, &w, "hx-1");
+    await_line(&mut s, "hx-1 PR #hx-1 opened after 1 round");
+    await_end(&mut s);
+    assert_eq!(
+        w.called("herdr agent start h-hx-1-implement").len(),
+        1,
+        "continue started the asking Stage afresh"
+    );
+    assert_eq!(
+        w.called(&format!("herdr agent prompt {pane} ours")).len(),
+        1
+    );
+    for line in ["hx-1 you answered: ours", "hx-1 sent your answer"] {
+        assert!(logged(&w, line), "the log lacks {line:?}:\n{}", log(&w));
+    }
+}
+
+#[test]
+fn away_on_parks_a_question_already_waiting() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    asks_in(&w, "hx-1");
+    let mut s = shell(&w);
+    s.command("/start-ticket hx-1");
+    await_line(&mut s, "hx-1 asking you: question in implement (pane 1-1)");
+    s.command("/away");
+    await_line(&mut s, "hx-1 parked: asked you while away");
+    assert!(
+        s.questions.is_empty(),
+        "the parked Ticket's Question stayed"
+    );
+    await_end(&mut s);
+    assert_eq!(w.called("bd comments add hx-1 ").len(), 1);
+    assert!(w.called("herdr pane close").is_empty());
+}
+
+/// In a live Epic run /continue @ticket is the scheduler's: it unparks the
+/// Ticket at its Stage and its question goes ahead of one already waiting.
+#[test]
+fn continue_at_ticket_in_a_live_run_unparks_it_and_puts_its_question_first() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
+    w.lock().merged = true;
+    w.session(
+        |p| match (p.ticket.as_str(), p.stage.as_str(), p.text.as_str()) {
+            (_, _, "ours") => (String::new(), "working".to_string()),
+            ("hx-1", "implement", _) => (ASKS.to_string(), "idle".to_string()),
+            ("hx-2", "implement", _) => (String::new(), "idle".to_string()), // a Wake
+            _ => succeed(p),
+        },
+    );
+    let mut s = shell(&w);
+    s.command("/away");
+    s.command("/start-epic hx");
+    await_line(&mut s, "hx-1 parked: asked you while away");
+    await_line(&mut s, "hx-2 asking you: stuck in implement");
+    s.command("/continue @hx-2");
+    assert_eq!(notice(&s), "refused: Ticket hx-2 is not parked");
+
+    s.command("/continue @hx-1");
+    await_questions(&mut s, 2);
+    assert_eq!(s.questions[0].ticket.as_deref(), Some("hx-1"));
+    assert!(
+        question(&s).starts_with("question in implement"),
+        "{}",
+        question(&s)
+    );
+    pick(&mut s, 1);
+    answered(&mut s, &w, "hx-1");
+    await_line(&mut s, "hx-1 merged, Ticket closed");
+    assert_eq!(s.questions[0].ticket.as_deref(), Some("hx-2"));
+    assert!(
+        question(&s).starts_with("stuck in implement: "),
+        "{}",
+        question(&s)
+    );
+    s.command("/stop-work");
+    await_end(&mut s);
 }
 
 /// Every markdown element the modal styles, and a Tests section long

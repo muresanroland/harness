@@ -1,6 +1,7 @@
 //! Session ids in the State, and /continue resuming a Stage by its id.
 
-use super::stage::Orchestrator;
+use super::question_test::ASKS;
+use super::stage::{Answer, Orchestrator};
 use super::state::{load_state, Session};
 use super::world::{
     new_world, restarted, spawn_epic, spawn_ticket, succeed, wait_until, working, BdTicket, World,
@@ -148,6 +149,36 @@ fn stopped_run_whose_pane_is_gone_resumes_the_stage_by_its_session_id() {
             "the resumed {label} is prompted with continue alone, never its Stage skill"
         );
     }
+}
+
+#[test]
+fn a_stage_resumed_by_id_that_asked_is_put_its_question_not_continue() {
+    let (w, stopped) = stopped_at("implement", "implement", true);
+    write_file(&stopped.run_dir("hx-1").join("implement.md"), ASKS);
+    panes_gone(&w);
+    let o = restarted(&w, &stopped);
+    w.session(|p| match p.text.as_str() {
+        "ours" => (String::new(), "working".to_string()),
+        _ => succeed(p),
+    });
+    let before = w.calls().len();
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let asked = w.await_event("question in implement");
+    let pane = o.ticket("hx-1").panes["implement"].clone();
+    assert!(asked.text.ends_with(&o.locate(&pane)), "{}", asked.text);
+    o.answer("hx-1", &pane, Answer::Prompt("ours".to_string()));
+    w.await_line("hx-1 sent your answer");
+    finishes(&w, &o, &pane, "implement.md");
+    run.wait();
+
+    w.await_line("hx-1 implement resumed: claude (pane");
+    assert_eq!(starts(&w, before, "implement").len(), 1);
+    assert_eq!(
+        w.since(before, &format!("herdr agent prompt {pane} ")),
+        [format!("herdr agent prompt {pane} ours")],
+        "the resumed session was prompted before its answer"
+    );
 }
 
 #[test]

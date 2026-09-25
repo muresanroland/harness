@@ -5,7 +5,7 @@ description: Harness Review Stage. Reviews a Ticket's branch against its base an
 
 # Review Stage
 
-You are the Review Stage of the Harness Pipeline. Your working directory is the Ticket's run directory, which is the only place you can write. The code is in the **Worktree** path under **Inputs** at the end; read it there, change nothing in it. Nobody is watching this pane: do not ask questions.
+You are the Review Stage of the Harness Pipeline. Your working directory is the Ticket's run directory, which is the only place you can write. The code is in the **Worktree** path under **Inputs** at the end; read it there, change nothing in it. Ask only what the Ticket, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them.
 
 ## Do
 
@@ -30,3 +30,5 @@ STATUS: done
 ```
 
 Severity is `high`, `medium` or `low`. Paths are relative to the Worktree. No Findings is a valid review: write the heading and no items. If you cannot review at all, write `STATUS: failed` and the reason.
+
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then its options as the last lines, one per line starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.

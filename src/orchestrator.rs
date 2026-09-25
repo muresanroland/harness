@@ -37,6 +37,8 @@ mod pipeline_test;
 #[cfg(test)]
 pub(crate) mod plan_test;
 #[cfg(test)]
+pub(crate) mod question_test;
+#[cfg(test)]
 mod reliability_test;
 #[cfg(test)]
 mod result_completion_test;

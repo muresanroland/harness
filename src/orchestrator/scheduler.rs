@@ -125,6 +125,10 @@ impl Orchestrator {
                         ts.panes.remove(&stage);
                         ts.sessions.remove(&stage);
                     });
+                } else if kind == "continue" && ts.status == STATUS_PARKED && self.consume(&command)
+                {
+                    // /continue @ticket: its live session watched again, its question asked
+                    self.update(ticket, |ts| ts.status = STATUS_RUNNING.to_string());
                 } else if kind == "address" && self.consume(&command) {
                     launch(ticket, Orchestrator::address);
                 } else if ts.status.is_empty() && self.consume(&command) {

@@ -5,11 +5,11 @@ description: Harness Implement Stage. Implements one beads Ticket in its worktre
 
 # Implement Stage
 
-You are one Stage of the Harness Pipeline, in a fresh session inside the Ticket's git worktree. Nobody is watching this pane: do not ask questions, decide and note the decision. The Orchestrator only reads your result file. Your inputs are under **Inputs** at the end.
+You are one Stage of the Harness Pipeline, in a fresh session inside the Ticket's git worktree. Ask only what the Ticket, the approved plan, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them. The Orchestrator only reads your result file. Your inputs are under **Inputs** at the end.
 
 ## Plan first
 
-You start in plan mode. Your plan lists what you will change, the tests you will write, and every decision the Ticket left to you; it covers each acceptance criterion and nothing beyond the Ticket. Then exit plan mode. An approver reads the plan against the Ticket; if feedback comes back instead of approval, revise the same plan and present it again. Steps 1 to 3 below are your planning; step 4 starts once the plan is approved.
+You start in plan mode. Your plan lists what you will change, the tests you will write, and every decision the Ticket left to you; it covers each acceptance criterion and nothing beyond the Ticket. Then exit plan mode. Before the plan is approved you cannot write the result file: put an open question in the plan, and the plan review answers it. An approver reads the plan against the Ticket; if feedback comes back instead of approval, revise the same plan and present it again. Steps 1 to 3 below are your planning; step 4 starts once the plan is approved.
 
 ## Do
 
@@ -33,3 +33,5 @@ STATUS: done
 ```
 
 If you cannot finish (the Ticket is impossible as written, tests cannot be made to pass, a tool is missing), commit nothing broken and write `STATUS: failed` followed by the reason and what you tried. A missing file or any other first line counts as not done.
+
+To ask, write the **Result file** with `STATUS: question` as its first line, then the question, then its options as the last lines, one per line starting with `- `, and wait: the answer comes into this pane as a prompt. Carry on, and overwrite the Result file with done or failed when you finish.
