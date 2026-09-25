@@ -511,18 +511,13 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
         Span::styled("▏", fg(PURPLE)),
     ])];
     let entries = st.entries(pick);
-    let name_w = match pick.field {
-        Field::App => 12,
-        Field::Job(_) => 24,
-        _ => 18,
+    // a job's current pick is marked ' ✓' after its mark
+    let (name_w, tick) = match pick.field {
+        Field::App => (12, 1),
+        Field::Job(_) => (24, 3),
+        _ => (18, 1),
     };
     let marks = entries.iter().filter_map(|e| e.mark);
-    // a job's current pick is marked ' ✓' after its mark
-    let tick = if matches!(pick.field, Field::Job(_)) {
-        3
-    } else {
-        1
-    };
     let mark_w = marks.map(|m| m.0.chars().count() + tick).max().unwrap_or(0);
     let detail_w = width.saturating_sub(2 + name_w + mark_w.max(10)).min(44);
     let (mut at, mut n) = (0, 0);

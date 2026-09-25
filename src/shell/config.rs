@@ -1592,23 +1592,23 @@ impl Screen {
                         })
                     })
                     .collect();
-                let mut said = match (changed.is_empty(), &one) {
-                    (false, _) => vec![format!("updated {}", changed.join(", "))],
-                    (true, Some(name)) => vec![format!("{name} is up to date")],
-                    (true, None) => vec!["every skill is up to date".to_string()],
+                let head = match (changed.is_empty(), &one) {
+                    (false, _) => format!("updated {}", changed.join(", ")),
+                    (true, Some(name)) => format!("{name} is up to date"),
+                    (true, None) => "every skill is up to date".to_string(),
                 };
-                if failed.is_empty() && changed.is_empty() {
-                    st.note = Some((said.remove(0), GREEN));
-                    return;
-                }
-                said.extend(
-                    failed
-                        .iter()
-                        .map(|(name, why)| format!("{name} not updated: {why}")),
-                );
-                match failed.is_empty() {
-                    true => self.done(said.join("; ")),
-                    false => self.refused(&said.join("; ")),
+                let said = std::iter::once(head)
+                    .chain(
+                        failed
+                            .iter()
+                            .map(|(name, why)| format!("{name} not updated: {why}")),
+                    )
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                match (failed.is_empty(), changed.is_empty()) {
+                    (true, true) => st.note = Some((said, GREEN)),
+                    (true, false) => self.done(said),
+                    _ => self.refused(&said),
                 }
             }
         }
