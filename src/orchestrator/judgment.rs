@@ -1,8 +1,10 @@
 //! The Judgments (ADR 0004): for a Wake one TypeSafe Choice over its
 //! evidence, acted on at or above a confidence floor, its request judge.py's
 //! from docs/design/judgment-prototype, keys in its order, without the two
-//! diagnostic Nouls it dropped; for a Plan one TypeSafe Noul over the plan and
-//! the Ticket, approved at or above its own floor (harness-7bj.9).
+//! diagnostic Nouls it dropped; for a Plan one TypeSafe Noul per criterion
+//! over the plan and the Ticket, judge_plan.py's from
+//! docs/design/plan-judgment-prototype (harness-cq7). Each floor is
+//! config.json's, read at each use.
 
 use std::fs;
 use std::path::Path;
@@ -12,17 +14,24 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::app::typesafe;
+use super::app::{self, typesafe, Floor};
 use super::stage::Orchestrator;
 use super::state::TicketState;
 
 /// At or above this confidence the Judgment acts; below it the Wake is a
 /// Question.
-pub(crate) const FLOOR: f64 = 0.7;
+pub(crate) const WAKE_FLOOR: Floor = Floor {
+    key: "wake_floor",
+    default: 0.7,
+};
 
-/// At or above this score for yes a plan is approved; below it, or a no, the
-/// plan is a Question.
-pub(crate) const PLAN_FLOOR: f64 = 0.75;
+/// With covers and in_scope at or above this score for yes, and asks below
+/// 0.5, a plan is approved; otherwise it is a Question. The prototype's
+/// replay settled it.
+pub(crate) const PLAN_FLOOR: Floor = Floor {
+    key: "plan_floor",
+    default: 0.65,
+};
 
 /// How many waits a session may take.
 const WAITS: usize = 3;
@@ -253,17 +262,21 @@ struct PlanTicket {
     description: String,
 }
 
-/// One Noul, `follows`, over a plan.
+/// The plan Nouls, judge_plan.py's, in its order: each criterion and its
+/// instructions.
+const PLAN_NOULS: [(&str, &str); 3] = [
+    ("covers", "Does the plan meet every acceptance criterion of the Ticket, with the change and the test each one needs?"),
+    ("in_scope", "Does the plan stay within the Ticket? Work toward something the Ticket never asks for, such as another feature, command or rename, is beyond it; the tests, docs, refactors and plumbing the Ticket's own change needs are in scope."),
+    ("asks", "Does the plan put a question of its own to the person approving it, one they must answer before the work can start? Questions the planned code will put to its users are not that, and neither are decisions the plan makes itself with the answer it took."),
+];
+
+/// The plan Nouls over a plan, in the one request.
 pub(crate) fn plan_request(state: &PlanState) -> String {
     #[derive(Serialize)]
     struct Request<'a> {
         model: &'a str,
         state: &'a PlanState,
-        questions: Questions<'a>,
-    }
-    #[derive(Serialize)]
-    struct Questions<'a> {
-        follows: Noul<'a>,
+        questions: Nouls,
     }
     #[derive(Serialize)]
     struct Noul<'a> {
@@ -271,26 +284,86 @@ pub(crate) fn plan_request(state: &PlanState) -> String {
         kind: &'a str,
         instructions: &'a str,
     }
+    struct Nouls;
+    impl Serialize for Nouls {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            let mut map = s.serialize_map(Some(PLAN_NOULS.len()))?;
+            for (name, instructions) in PLAN_NOULS {
+                let noul = Noul {
+                    kind: "noul",
+                    instructions,
+                };
+                map.serialize_entry(name, &noul)?;
+            }
+            map.end()
+        }
+    }
     let body = Request {
         model: "jev-latest",
         state,
-        questions: Questions {
-            follows: Noul {
-                kind: "noul",
-                instructions: "Does this plan implement the Ticket, all of it and nothing more, without leaving decisions open?",
-            },
-        },
+        questions: Nouls,
     };
     serde_json::to_string(&body).expect("a request of strings serializes")
 }
 
-/// A plan's score as the judged line says it: a yes as its score, a no as
-/// one minus it.
-pub(crate) fn plan_said(score: f64) -> String {
-    if score >= 0.5 {
-        format!("plan follows the Ticket {score:.2}")
-    } else {
-        format!("plan strays from the Ticket {:.2}", 1.0 - score)
+/// A Judgment of a plan: each Noul's score for yes, and the floor it was
+/// put against, None for one config.json holds that is not a number from 0
+/// to 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PlanJudged {
+    pub(crate) covers: f64,
+    pub(crate) in_scope: f64,
+    pub(crate) asks: f64,
+    pub(crate) floor: Option<f64>,
+}
+
+impl PlanJudged {
+    /// Approved: covers and in_scope at or above the floor, and no question
+    /// put to the user, since only they can answer it. Never on a bad floor.
+    pub(crate) fn approves(&self) -> bool {
+        let clears = |floor| self.covers >= floor && self.in_scope >= floor;
+        self.floor.is_some_and(clears) && self.asks < 0.5
+    }
+
+    /// The scores as the judged line says them, a yes as its score, marked
+    /// when short of the floor, and a no as one minus it: "plan covers the
+    /// Ticket 0.62 < 0.65, stays in scope 0.88, asks nothing 0.95".
+    pub(crate) fn said(&self) -> String {
+        let say = |score: f64, yes: &str, no: &str| match score >= 0.5 {
+            true => format!("{yes} {}", self.against(score)),
+            false => format!("{no} {:.2}", 1.0 - score),
+        };
+        let asks = match self.asks >= 0.5 {
+            true => format!("asks you a question {:.2}", self.asks),
+            false => format!("asks nothing {:.2}", 1.0 - self.asks),
+        };
+        format!(
+            "plan {}, {}, {asks}",
+            say(
+                self.covers,
+                "covers the Ticket",
+                "misses an acceptance criterion"
+            ),
+            say(self.in_scope, "stays in scope", "goes beyond the Ticket"),
+        )
+    }
+
+    /// Each score for yes, marked as in said(), where said() does not fit.
+    pub(crate) fn short(&self) -> String {
+        format!(
+            "covers {}, in scope {}, asks {:.2}",
+            self.against(self.covers),
+            self.against(self.in_scope),
+            self.asks
+        )
+    }
+
+    /// A score the floor applies to, "< floor" after it when short.
+    fn against(&self, score: f64) -> String {
+        match self.floor {
+            Some(floor) if score < floor => format!("{score:.2} < {floor:.2}"),
+            _ => format!("{score:.2}"),
+        }
     }
 }
 
@@ -367,16 +440,41 @@ impl Orchestrator {
         })
     }
 
-    /// Puts a plan to TypeSafe: its score for yes. None without a key, on
-    /// any error, or for a reply with no score: the plan is then a Question.
-    pub(crate) fn judge_plan(&self, ticket: &str, plan: &str) -> Option<f64> {
+    /// Puts a plan to TypeSafe: each Noul's score for yes, with the plan
+    /// floor as config.json has it now. None without a key, on any error, or
+    /// for a reply short of a score: the plan is then a Question.
+    pub(crate) fn judge_plan(&self, ticket: &str, plan: &str) -> Option<PlanJudged> {
         let key = self.typesafe_key();
         if key.is_empty() {
             return None;
         }
+        let body = plan_request(&self.plan_state(ticket, plan));
+        let (covers, in_scope, asks) = self.ask_typesafe(ticket, key, &body, |reply| {
+            let score = |noul: &str| {
+                reply["answers"][noul]["noul"]
+                    .as_f64()
+                    .filter(|score| (0.0..=1.0).contains(score))
+            };
+            Ok((
+                score("covers").ok_or("no covers in the reply")?,
+                score("in_scope").ok_or("no in_scope in the reply")?,
+                score("asks").ok_or("no asks in the reply")?,
+            ))
+        })?;
+        Some(PlanJudged {
+            covers,
+            in_scope,
+            asks,
+            floor: self.floor(ticket, &PLAN_FLOOR),
+        })
+    }
+
+    /// The plan Judgment's state: the plan, the Ticket as bd shows it, and
+    /// the feedback kept from the plan before.
+    pub(crate) fn plan_state(&self, ticket: &str, plan: &str) -> PlanState {
         let feedback = self.ticket(ticket).feedback;
         let spec = self.ticket_spec(ticket);
-        let state = PlanState {
+        PlanState {
             plan: plan.to_string(),
             ticket: PlanTicket {
                 id: spec.id,
@@ -384,13 +482,16 @@ impl Orchestrator {
                 description: spec.spec,
             },
             prior_feedback: (!feedback.is_empty()).then_some(feedback),
-        };
-        self.ask_typesafe(ticket, key, &plan_request(&state), |reply| {
-            reply["answers"]["follows"]["noul"]
-                .as_f64()
-                .filter(|score| (0.0..=1.0).contains(score))
-                .ok_or("no answer in the reply")
-        })
+        }
+    }
+
+    /// A floor as config.json has it now; None, and the log says why, for
+    /// one that is not a number from 0 to 1: the Judgment is then not acted
+    /// on, and its Question asks.
+    pub(crate) fn floor(&self, ticket: &str, floor: &Floor) -> Option<f64> {
+        app::floor(&self.cfg.repo, floor)
+            .map_err(|err| self.log(ticket, &format!("{err}: the Judgment is not acted on")))
+            .ok()
     }
 
     /// Posts a request under the key and reads the reply; an error, or a

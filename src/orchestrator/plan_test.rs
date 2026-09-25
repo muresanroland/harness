@@ -1,5 +1,5 @@
 use super::judgment::fake::Fake;
-use super::judgment::Action;
+use super::judgment::{Action, PlanJudged, PLAN_FLOOR};
 use super::stage::{Answer, Ask, Config, Orchestrator};
 use super::state::{load_state, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, Prompt, World};
@@ -17,9 +17,28 @@ const PLAN: &str = "# Plan\n\n- change src/x.rs\n- test: x_works\n";
 const REVISED: &str = "# Plan\n\n- change src/x.rs and src/y.rs\n- test: x_works, y_works\n";
 const FEEDBACK: &str = "cover y too";
 
-/// TypeSafe's answer to a plan: the Noul's score for yes.
-pub(crate) fn noul(score: f64) -> Value {
-    json!({ "answers": { "follows": { "type": "noul", "noul": score } } })
+/// TypeSafe's answer to a plan: each Noul's score for yes.
+pub(crate) fn nouls(covers: f64, in_scope: f64, asks: f64) -> Value {
+    json!({ "answers": {
+        "covers": { "type": "noul", "noul": covers },
+        "in_scope": { "type": "noul", "noul": in_scope },
+        "asks": { "type": "noul", "noul": asks },
+    } })
+}
+
+/// A plan scored `covers` on covers, in scope at 0.9 and asking nothing.
+fn covers(covers: f64) -> Value {
+    nouls(covers, 0.9, 0.1)
+}
+
+/// The judged line of covers(score), a yes of 0.5 or more.
+fn covers_said(score: f64) -> String {
+    let floor = PLAN_FLOOR.default;
+    let short = match score < floor {
+        true => format!(" < {floor:.2}"),
+        false => String::new(),
+    };
+    format!("plan covers the Ticket {score:.2}{short}, stays in scope 0.90, asks nothing 0.90")
 }
 
 /// A TypeSafe that answers the plans put to it in turn, by number.
@@ -93,7 +112,7 @@ fn bd_show(w: &World) {
 }
 
 /// The nth plan Question: its pane, plan, score and kept feedback.
-fn plan_question(w: &World, n: usize) -> (String, String, Option<f64>, Option<String>) {
+fn plan_question(w: &World, n: usize) -> (String, String, Option<PlanJudged>, Option<String>) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let asked = w
@@ -219,12 +238,18 @@ fn status_plan_is_judged_and_approval_prompts_implement_the_approved_plan() {
     for score in [0.9, 0.5] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         writes(&w);
-        o.cfg.typesafe = typesafe(move |_| Ok(noul(score)));
+        o.cfg.typesafe = typesafe(move |_| Ok(covers(score)));
         let o = Arc::new(o);
         let mut run = spawn_ticket(o.clone(), "hx-1");
-        if score < 0.75 {
+        if score < PLAN_FLOOR.default {
             let (pane, plan, judged, _) = plan_question(&w, 1);
-            assert_eq!((plan.as_str(), judged), (PLAN, Some(score)));
+            let want = PlanJudged {
+                covers: score,
+                in_scope: 0.9,
+                asks: 0.1,
+                floor: Some(PLAN_FLOOR.default),
+            };
+            assert_eq!((plan.as_str(), judged), (PLAN, Some(want)));
             assert_eq!(approvals(&w), 0);
             o.answer("hx-1", &pane, Answer::Approve);
         }
@@ -240,7 +265,7 @@ fn status_plan_is_judged_and_approval_prompts_implement_the_approved_plan() {
         assert_eq!(
             lines[at + 1..at + 4],
             [
-                format!("hx-1 judged: plan follows the Ticket {score:.2}"),
+                format!("hx-1 judged: {}", covers_said(score)),
                 "hx-1 plan approved".to_string(),
                 "hx-1 implemented".to_string(),
             ],
@@ -255,7 +280,7 @@ fn status_plan_is_judged_and_approval_prompts_implement_the_approved_plan() {
 fn feedback_on_a_written_plan_is_a_prompt_and_the_next_status_plan_is_judged_again() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     writes(&w);
-    let fake = typesafe(|n| Ok(noul([0.3, 0.95][n])));
+    let fake = typesafe(|n| Ok(covers([0.3, 0.95][n])));
     o.cfg.typesafe = fake.clone();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
@@ -283,7 +308,7 @@ fn feedback_on_a_written_plan_is_a_prompt_and_the_next_status_plan_is_judged_aga
     assert_eq!(asked.len(), 2);
     assert_eq!(asked[1]["state"]["plan"], REVISED);
     assert_eq!(asked[1]["state"]["prior_feedback"], FEEDBACK);
-    w.await_line("hx-1 judged: plan follows the Ticket 0.95");
+    w.await_line(&format!("hx-1 judged: {}", covers_said(0.95)));
 }
 
 /// A worktree the session changed before its plan was approved, HEAD moved
@@ -310,7 +335,7 @@ fn a_worktree_changed_before_approval_fails_the_written_plan() {
                 _ => None,
             }
         });
-        o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
+        o.cfg.typesafe = typesafe(|_| Ok(covers(0.9)));
         let o = Arc::new(o);
         let mut running = spawn_ticket(o.clone(), "hx-1");
 
@@ -338,33 +363,35 @@ fn a_worktree_changed_before_approval_fails_the_written_plan() {
     }
 }
 
-/// Blocked at the plan dialog with a fresh plan reaches the Noul over the
-/// plan and the Ticket; yes at 0.76 approves it with enter, each step a line.
+/// Blocked at the plan dialog with a fresh plan reaches the Nouls over the
+/// plan and the Ticket, one request; clearing every one approves it with
+/// enter and no Question: covers and in_scope at the floor, asks just under
+/// a yes. Each step is a line, the judged line naming every score.
 #[test]
-fn a_fresh_plan_at_its_dialog_reaches_the_noul_and_yes_at_the_floor_approves_it() {
+fn a_fresh_plan_at_its_dialog_reaches_the_nouls_and_clearing_each_approves_it() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     plans(&w, "idle");
     bd_show(&w);
-    let fake = typesafe(|_| Ok(noul(0.76)));
+    let fake = typesafe(|_| Ok(nouls(0.65, 0.65, 0.49)));
     o.cfg.typesafe = fake.clone();
     o.run_ticket("hx-1");
     assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN);
 
+    let asked = fake.requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0]["model"], "jev-latest");
     assert_eq!(
-        fake.requests(),
-        [json!({
-            "model": "jev-latest",
-            "state": {
-                "plan": PLAN,
-                "ticket": { "id": "hx-1", "title": "Ticket hx-1", "description": "Do x.\n\nAcceptance criteria:\nx works" },
-                "prior_feedback": null,
-            },
-            "questions": { "follows": {
-                "type": "noul",
-                "instructions": "Does this plan implement the Ticket, all of it and nothing more, without leaving decisions open?",
-            } },
-        })]
+        asked[0]["state"],
+        json!({
+            "plan": PLAN,
+            "ticket": { "id": "hx-1", "title": "Ticket hx-1", "description": "Do x.\n\nAcceptance criteria:\nx works" },
+            "prior_feedback": null,
+        })
     );
+    let questions = asked[0]["questions"].as_object().unwrap();
+    let names: Vec<&str> = questions.keys().map(String::as_str).collect();
+    assert_eq!(names, ["asks", "covers", "in_scope"]);
+    assert!(questions.values().all(|q| q["type"] == "noul"));
     assert_eq!(keys(&w), ["enter"]);
     let lines = w.lines();
     let at = lines
@@ -374,7 +401,7 @@ fn a_fresh_plan_at_its_dialog_reaches_the_noul_and_yes_at_the_floor_approves_it(
     assert_eq!(
         lines[at + 1..at + 4],
         [
-            "hx-1 judged: plan follows the Ticket 0.76",
+            "hx-1 judged: plan covers the Ticket 0.65, stays in scope 0.65, asks nothing 0.51",
             "hx-1 plan approved",
             "hx-1 implemented"
         ]
@@ -386,25 +413,50 @@ fn a_fresh_plan_at_its_dialog_reaches_the_noul_and_yes_at_the_floor_approves_it(
     assert!(!w.log().contains("sk-test"));
 }
 
-/// Yes below the floor, a no at any score, no Judgment to be had or no key:
-/// the judged line, then the plan Question, with the plan and the score;
-/// approve sends enter.
+/// One Noul short of the floor, a question asked whatever the others score,
+/// no Judgment to be had or no key: the judged line naming every score, then
+/// the plan Question, with the plan and the scores; approve sends enter.
 #[test]
-fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
+fn a_noul_short_a_question_asked_or_no_judgment_raises_the_plan_question() {
     for (name, answer, said) in [
         (
-            "yes below the floor",
-            Ok(0.74),
-            Some("plan follows the Ticket 0.74"),
+            "covers short",
+            Ok((0.64, 0.9, 0.1)),
+            Some("plan covers the Ticket 0.64 < 0.65, stays in scope 0.90, asks nothing 0.90"),
         ),
-        ("no", Ok(0.12), Some("plan strays from the Ticket 0.88")),
+        (
+            "a criterion missed",
+            Ok((0.19, 0.9, 0.1)),
+            Some(
+                "plan misses an acceptance criterion 0.81, stays in scope 0.90, asks nothing 0.90",
+            ),
+        ),
+        (
+            "in_scope short",
+            Ok((0.9, 0.64, 0.1)),
+            Some("plan covers the Ticket 0.90, stays in scope 0.64 < 0.65, asks nothing 0.90"),
+        ),
+        (
+            "beyond the Ticket",
+            Ok((0.9, 0.3, 0.1)),
+            Some("plan covers the Ticket 0.90, goes beyond the Ticket 0.70, asks nothing 0.90"),
+        ),
+        (
+            "asks",
+            Ok((1.0, 1.0, 0.5)),
+            Some("plan covers the Ticket 1.00, stays in scope 1.00, asks you a question 0.50"),
+        ),
         ("error", Err("401: bad key sk-test"), None),
-        ("no key", Ok(1.0), None),
-        ("TypeSafe off", Ok(1.0), None),
+        ("no key", Ok((1.0, 1.0, 0.0)), None),
+        ("TypeSafe off", Ok((1.0, 1.0, 0.0)), None),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         plans(&w, "idle");
-        let fake = typesafe(move |_| answer.map(noul).map_err(str::to_string));
+        let fake = typesafe(move |_| {
+            answer
+                .map(|(c, i, a)| nouls(c, i, a))
+                .map_err(str::to_string)
+        });
         o.cfg.typesafe = fake.clone();
         if name == "no key" {
             o.cfg.api_key = String::new();
@@ -420,7 +472,15 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
 
         let (pane, plan, judged, feedback) = plan_question(&w, 1);
         assert_eq!((plan.as_str(), feedback), (PLAN, None), "{name}");
-        assert_eq!(judged, answer.ok().filter(|_| said.is_some()), "{name}");
+        let want = answer.ok().filter(|_| said.is_some());
+        let want = want.map(|(covers, in_scope, asks)| PlanJudged {
+            covers,
+            in_scope,
+            asks,
+            floor: Some(PLAN_FLOOR.default),
+        });
+        assert_eq!(judged, want, "{name}");
+        assert_eq!(judged.map(|j| j.said()).as_deref(), said, "{name}");
         assert!(keys(&w).is_empty(), "{name}");
         // the lines, then the Question, which has none of its own
         let texts: Vec<(String, bool)> = w
@@ -463,6 +523,48 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
     }
 }
 
+/// config.json's plan_floor, read as the plan is judged: 0.6 approves a plan
+/// the default floor asks about; missing or empty is the default. One that
+/// is not a number from 0 to 1, null too, is never acted on: the plan
+/// clearing every Noul is the Question, and the log says why.
+#[test]
+fn config_jsons_plan_floor_moves_the_approval_and_a_bad_one_asks() {
+    for (config, answer, approved) in [
+        ("", (0.62, 0.9, 0.1), false),
+        (r#"{"plan_floor": ""}"#, (0.62, 0.9, 0.1), false),
+        (r#"{"plan_floor": 0.6}"#, (0.62, 0.9, 0.1), true),
+        (r#"{"plan_floor": 1.5}"#, (1.0, 1.0, 0.0), false),
+        (r#"{"plan_floor": "high"}"#, (1.0, 1.0, 0.0), false),
+        (r#"{"plan_floor": null}"#, (1.0, 1.0, 0.0), false),
+    ] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        plans(&w, "idle");
+        if !config.is_empty() {
+            write_file(&w.repo.join(".harness/config.json"), config);
+        }
+        let (c, i, a) = answer;
+        o.cfg.typesafe = typesafe(move |_| Ok(nouls(c, i, a)));
+        let o = Arc::new(o);
+        let mut run = spawn_ticket(o.clone(), "hx-1");
+        let bad = ["1.5", "high", "null"].iter().any(|v| config.contains(v));
+        if !approved {
+            let (pane, _, judged, _) = plan_question(&w, 1);
+            let floor = judged
+                .unwrap_or_else(|| panic!("{config}: no Judgment"))
+                .floor;
+            assert_eq!(floor.is_none(), bad, "{config}");
+            o.answer("hx-1", &pane, Answer::Approve);
+        }
+        run.wait();
+        assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{config}");
+        let asked = w.events().iter().any(|e| e.ask.is_some());
+        assert_eq!(asked, !approved, "{config}");
+        let refused =
+            " hx-1 plan_floor is not a number from 0 to 1: the Judgment is not acted on\n";
+        assert_eq!(w.log().contains(refused), bad, "{config}:\n{}", w.log());
+    }
+}
+
 /// Feedback reads the pane before every key: down a key a call to "Tell
 /// Claude what to change", enter, idle in plan mode confirmed, then the
 /// prompt. The feedback is kept once sent, and the revised plan is judged
@@ -471,13 +573,13 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
 fn feedback_reads_the_pane_before_each_key_and_the_revised_plan_is_judged_again() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     plans(&w, "idle");
-    let fake = typesafe(|n| Ok(noul([0.3, 0.95][n])));
+    let fake = typesafe(|n| Ok(covers([0.3, 0.95][n])));
     o.cfg.typesafe = fake.clone();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
     let (pane, _, judged, _) = plan_question(&w, 1);
-    assert_eq!(judged, Some(0.3));
+    assert_eq!(judged.map(|j| j.covers), Some(0.3));
     let before = w.calls().len();
     o.answer("hx-1", &pane, Answer::Prompt(FEEDBACK.to_string()));
     w.await_line("hx-1 plan sent back with your feedback");
@@ -528,7 +630,7 @@ fn feedback_reads_the_pane_before_each_key_and_the_revised_plan_is_judged_again(
         lines[sent + 1..sent + 4],
         [
             "hx-1 plan ready in implement (pane 1-1)",
-            "hx-1 judged: plan follows the Ticket 0.95",
+            &format!("hx-1 judged: {}", covers_said(0.95)),
             "hx-1 plan approved"
         ],
         "{lines:#?}"
@@ -647,7 +749,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
         write_file(&w.repo.join(".harness/config.json"), config);
         plans(&w, "idle");
         bd_show(&w);
-        o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
+        o.cfg.typesafe = typesafe(|_| Ok(covers(0.9)));
         w.lock().options = options.map(str::to_string).to_vec();
         w.lock().cursor = cursor;
         o.run_ticket("hx-1");
@@ -706,7 +808,7 @@ fn a_split_with_no_clear_context_option_is_a_plan_failure() {
         r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "claude-fable-5-1"}}"#,
     );
     plans(&w, "idle");
-    o.cfg.typesafe = typesafe(|_| Ok(noul(0.9)));
+    o.cfg.typesafe = typesafe(|_| Ok(covers(0.9)));
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
 
@@ -736,7 +838,7 @@ fn a_plan_changed_during_its_judgment_gets_no_enter_for_the_old_one() {
         } else {
             seen.store(keys(&world).len(), Ordering::SeqCst);
         }
-        Ok(noul(0.9))
+        Ok(covers(0.9))
     });
     o.cfg.typesafe = fake.clone();
     o.run_ticket("hx-1");
@@ -795,7 +897,7 @@ fn restarted(w: &Arc<World>, o: &Orchestrator, typesafe: Arc<Fake>) -> Arc<Orche
 fn a_prompt_that_is_not_the_plan_dialog_is_the_ordinary_blocked_question() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     w.session(|_| (String::new(), "blocked".to_string()));
-    let fake = typesafe(|_| Ok(noul(0.9)));
+    let fake = typesafe(|_| Ok(covers(0.9)));
     o.cfg.typesafe = fake.clone();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
@@ -813,7 +915,7 @@ fn a_prompt_that_is_not_the_plan_dialog_is_the_ordinary_blocked_question() {
 
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     plans(&w, "blocked"); // approved, it stops at a permission prompt
-    o.cfg.typesafe = typesafe(|_| Ok(noul(0.3)));
+    o.cfg.typesafe = typesafe(|_| Ok(covers(0.3)));
     let o = Arc::new(o);
     let (pane, _, _, _) = {
         let _run = spawn_ticket(o.clone(), "hx-1");
@@ -824,7 +926,7 @@ fn a_prompt_that_is_not_the_plan_dialog_is_the_ordinary_blocked_question() {
     assert_eq!(w.lock().agents[&pane], "blocked");
     assert!(o.run_dir("hx-1").join("plan.md").exists());
 
-    let fake = typesafe(|_| Ok(noul(0.9)));
+    let fake = typesafe(|_| Ok(covers(0.9)));
     let o = restarted(&w, &Arc::try_unwrap(o).ok().unwrap(), fake.clone());
     let mut run = spawn_ticket(o.clone(), "hx-1");
     let blocked = w.await_nth("waiting at a prompt in implement (pane 1-1)", 1);
@@ -858,7 +960,7 @@ fn stop_during_the_plan_judgment_takes_no_action_and_park_parks() {
         while !go.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(1));
         }
-        Ok(noul(0.95))
+        Ok(covers(0.95))
     });
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");
@@ -903,7 +1005,7 @@ fn a_plan_failure_is_the_users_question_not_the_wake_judgment() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     plans(&w, "idle");
     w.fail_once("herdr agent send-keys", "pane gone");
-    let fake = typesafe(|_| Ok(noul(0.9)));
+    let fake = typesafe(|_| Ok(covers(0.9)));
     o.cfg.typesafe = fake.clone();
     let o = Arc::new(o);
     let mut run = spawn_ticket(o.clone(), "hx-1");

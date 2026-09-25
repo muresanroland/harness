@@ -1,0 +1,21 @@
+{
+ "expect": "reject",
+ "today": {
+  "follows": 0.05
+ },
+ "nouls": {
+  "covers": 0.04,
+  "in_scope": 0.3,
+  "asks": 0.24
+ },
+ "usage": {
+  "today": {
+   "input_tokens": 3092,
+   "output_tokens": 22
+  },
+  "nouls": {
+   "input_tokens": 3209,
+   "output_tokens": 53
+  }
+ }
+}

@@ -2,7 +2,7 @@
 //! lists, the probe, and a change saved during a run.
 
 use super::config::{put, Field};
-use super::logo::PURPLE;
+use super::logo::{PURPLE, RED};
 use super::shell_test::{
     asking, await_line, cols, find, key, logged, render, row, rows, screen_at, shell, type_in,
     type_line,
@@ -1460,6 +1460,108 @@ fn typesafe_on_without_a_key_asks_it_masked() {
     assert_eq!(note(&s), "TypeSafe on");
     let buf = render(&s, 160, 45);
     assert!(find(&buf, "••••d0e7").is_some(), "{:#?}", rows(&buf));
+}
+
+/// The TypeSafe page shows both floors, a missing one as its default; Enter
+/// types one, saved at once to config.json; a value that is not a number
+/// from 0 to 1 is refused, the text kept to mend; nothing typed puts the
+/// default back.
+#[test]
+fn the_typesafe_page_shows_both_floors_and_saves_one_at_once() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"plan_floor": 0.6}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    typesafe_page(&mut s);
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "  wake floor            0.70  default").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        find(&buf, "  plan floor            0.60 ").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "0.60  default").is_none(), "{:#?}", rows(&buf));
+
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    type_in(&mut s, "0.8");
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "wake floor › 0.8▏").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Enter));
+    assert_eq!(
+        config_json(repo.path()),
+        json!({"plan_floor": 0.6, "wake_floor": 0.8})
+    );
+    assert_eq!(note(&s), "wake floor 0.80");
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "▸ wake floor            0.80").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter]);
+    type_in(&mut s, "1.5");
+    s.key(key(KeyCode::Enter));
+    assert_eq!(
+        note(&s),
+        "Refused: 1.5 is not a number from 0 to 1. Nothing changed."
+    );
+    assert_eq!(
+        config_json(repo.path()),
+        json!({"plan_floor": 0.6, "wake_floor": 0.8})
+    );
+    let typing = &s.settings.as_ref().unwrap().typing;
+    assert!(matches!(typing, Some((_, text)) if text == "1.5"));
+
+    // Esc, then nothing typed on the wake floor puts its default back.
+    keys(
+        &mut s,
+        &[KeyCode::Esc, KeyCode::Up, KeyCode::Enter, KeyCode::Enter],
+    );
+    assert_eq!(config_json(repo.path()), json!({"plan_floor": 0.6}));
+    assert_eq!(note(&s), "wake floor 0.70, its default");
+}
+
+/// A floor in config.json that is not a number from 0 to 1 is flagged: the
+/// title's check badge, a ✗ on the TypeSafe line, its value in red, and the
+/// check on the TypeSafe page.
+#[test]
+fn a_floor_that_is_not_a_number_from_0_to_1_is_flagged() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"wake_floor": "high"}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    let buf = render(&s, 160, 45);
+    assert!(row(&buf, 0).contains("━ ✗ 1 check ┓"), "{:?}", row(&buf, 0));
+    assert!(find(&buf, "TypeSafe  on ✗").is_some(), "{:#?}", rows(&buf));
+
+    keys(&mut s, &[KeyCode::Down; 7]);
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    let (x, y) = find(&buf, "\"high\"").unwrap_or_else(|| panic!("{:#?}", rows(&buf)));
+    assert_eq!(buf[(x, y)].fg, RED);
+    assert!(
+        find(
+            &buf,
+            "✗ wake_floor is not a number from 0 to 1: its Judgments"
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
 }
 
 /// u fetches a skill's source again and says the new commit; U fetches
