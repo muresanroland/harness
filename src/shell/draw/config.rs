@@ -11,7 +11,9 @@ use ratatui::Frame;
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::{App, APPS};
-use crate::shell::config::{distinct, family, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
+use crate::shell::config::{
+    distinct, family_label, sign, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS,
+};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 
@@ -296,7 +298,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
             vec![shown, muted("  no fallback".into())]
         }
         Field::Model | Field::Plan => match app {
-            Some(app) => vec![shown, muted(format!("  {}", family(app, &v)))],
+            Some(app) => vec![shown, muted(format!("  {}", family_label(app, &v)))],
             None => vec![shown],
         },
         Field::Effort => match app {
@@ -354,13 +356,15 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         lines.push(Line::from(Span::styled("CHECKS", bold(MUTED))));
     }
     for check in checks {
-        let (mark, color, text) = match check.holds {
-            Some(true) => ("  ✓ ", GREEN, MUTED),
-            Some(false) => ("  ✗ ", RED, RED),
-            None => ("  ? ", ORANGE, ORANGE),
+        let (mark, color) = sign(check.holds);
+        let text = if check.holds == Some(true) {
+            MUTED
+        } else {
+            color
         };
         let text = vec![(format!("{}.", check.text), fg(text))];
-        lines.extend(wrap_spans(text, width, mark, "    ", bold(color)));
+        let mark = format!("  {mark} ");
+        lines.extend(wrap_spans(text, width, &mark, "    ", bold(color)));
     }
     (lines, at)
 }

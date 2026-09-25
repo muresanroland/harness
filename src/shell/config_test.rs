@@ -785,6 +785,16 @@ fn the_toggle_splits_on_a_plan_model_and_joins_again() {
         ]
     );
 
+    // Implement's model list offers no default: the split needs a named one.
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "Implement model · claude").is_some() && find(&buf, "claude's own").is_none(),
+        "{:#?}",
+        rows(&buf)
+    );
+    keys(&mut s, &[KeyCode::Esc, KeyCode::Up, KeyCode::Up]);
+
     // The plan on Implement's own model: one model again, nothing probed.
     let calls = tools.calls().len();
     keys(&mut s, &[KeyCode::Down, KeyCode::Enter]);
@@ -993,4 +1003,46 @@ fn an_app_not_installed_opens_a_window_that_opens_its_homepage() {
     );
     assert!(s.settings.as_ref().unwrap().home.is_none());
     assert!(!repo.path().join(".harness/config.json").exists());
+}
+
+/// A config.json broken by hand on two rules mends one rule at a time: a
+/// change that leaves a rule broken as it was saves, one that breaks a
+/// rule that held is refused.
+#[test]
+fn a_config_broken_on_two_rules_mends_one_at_a_time() {
+    let repo = TempDir::new();
+    let file = repo.path().join(".harness/config.json");
+    write_file(
+        &file,
+        r#"{"implement": {"model": "opus"}, "review": {"app": "claude", "model": "opus"},
+            "side_b": {"app": "claude"}}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    let buf = render(&s, 160, 45);
+    assert!(
+        row(&buf, 0).contains("━ ✗ 2 checks ┓"),
+        "{:?}",
+        row(&buf, 0)
+    );
+    // The Review to codex, its default: the Debate stays broken.
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
+    assert_eq!(
+        config_json(repo.path())["review"],
+        json!({"app": "codex", "model": "default"})
+    );
+    let buf = render(&s, 160, 45);
+    assert!(
+        row(&buf, 0).contains(" ✗ 1 check · saved "),
+        "{:?}",
+        row(&buf, 0)
+    );
+    // The Review back on Implement's model breaks a rule that held.
+    let saved = std::fs::read_to_string(&file).unwrap();
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Up, KeyCode::Enter]);
+    type_in(&mut s, "opus");
+    s.key(key(KeyCode::Enter));
+    assert!(note(&s).starts_with("Refused: The Review would run on Implement's model"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
 }

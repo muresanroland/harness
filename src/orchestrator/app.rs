@@ -481,6 +481,8 @@ pub(crate) fn canonical(model: &str) -> String {
 }
 
 /// What a model's name tells of its family, on an App of no one family.
+// ponytail: a substring guess; each App's own model listing with families
+// when one names a model this misreads.
 const FAMILIES: [(&str, &str); 8] = [
     ("claude", "Anthropic"),
     ("fable", "Anthropic"),
@@ -506,6 +508,8 @@ pub(crate) fn family(app: &App, model: &str) -> Option<&'static str> {
 
 /// A model as the rules compare it: its one name, or the App's default,
 /// which cannot be told on an App of no one family.
+// ponytail: an App's default counts as a model of its own, though
+// claude's may be opus; resolve it with the probe when that bites.
 fn model_id(app: &App, model: &str) -> Option<String> {
     match model {
         "default" => app.family.map(|_| format!("{}'s default", app.name)),

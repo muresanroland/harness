@@ -251,7 +251,8 @@ pub(crate) struct Orchestrator {
 impl Orchestrator {
     /// Loads the Target repo's state file, so a restarted Orchestrator
     /// resumes; a config.json no Pipeline Stage can start on, or one that
-    /// breaks a rule /config keeps, refuses the run. Address runs on demand, so its row Wakes it alone (attempt).
+    /// breaks a rule /config keeps, refuses the run. Address runs on
+    /// demand, so its row Wakes it alone (attempt).
     pub(crate) fn new(cfg: Config) -> io::Result<Arc<Self>> {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;

@@ -254,7 +254,7 @@ fn said(doc: &Value, row: usize) -> String {
 }
 
 /// A model's family on app as /config labels it.
-pub(crate) fn family(app: &App, model: &str) -> &'static str {
+pub(crate) fn family_label(app: &App, model: &str) -> &'static str {
     app::family(app, model).unwrap_or("family unknown")
 }
 
@@ -327,11 +327,10 @@ impl Settings {
     /// that cannot be told.
     pub(crate) fn mark(&self, section: usize) -> Option<(&'static str, Color)> {
         let holds: Vec<_> = self.checks(Some(section)).iter().map(|c| c.holds).collect();
-        match () {
-            _ if holds.contains(&Some(false)) => Some(("✗", RED)),
-            _ if holds.contains(&None) => Some(("?", ORANGE)),
-            _ => None,
-        }
+        [Some(false), None]
+            .into_iter()
+            .find(|h| holds.contains(h))
+            .map(sign)
     }
 
     /// A section's line on the left: its row's App and model; the Debate's
@@ -432,7 +431,7 @@ impl Settings {
             (Field::App, _) => {
                 for a in &APPS {
                     let detail = match self.is_installed(a) {
-                        true => family(a, "default"),
+                        true => family_label(a, "default"),
                         false => "not installed",
                     };
                     entry(a.name, detail.into(), Some(Picked::App(a)));
@@ -443,7 +442,11 @@ impl Settings {
                 let theirs = app::family(app, &self.value(pick.row, Field::Model));
                 for (id, _) in self.listed(app) {
                     if app::family(app, id) == theirs {
-                        entry(id, family(app, id).into(), Some(Picked::Value(id.clone())));
+                        entry(
+                            id,
+                            family_label(app, id).into(),
+                            Some(Picked::Value(id.clone())),
+                        );
                     }
                 }
                 let detail = "probed before it saves".to_string();
@@ -455,13 +458,16 @@ impl Settings {
                     let detail = "no fallback".to_string();
                     entry("none", detail, value("none"));
                 }
-                let detail = format!("{}'s own · {}", app.name, family(app, "default"));
-                entry("default", detail, value("default"));
+                // A split needs a named model for each half.
+                if pick.row != 0 || pick.app.is_some() || self.split().is_none() {
+                    let detail = format!("{}'s own · {}", app.name, family_label(app, "default"));
+                    entry("default", detail, value("default"));
+                }
                 if let Err(err) = self.catalog(app) {
                     entry(err, String::new(), None);
                 }
                 for (id, _) in self.listed(app) {
-                    entry(id, family(app, id).into(), value(id));
+                    entry(id, family_label(app, id).into(), value(id));
                 }
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
@@ -483,8 +489,7 @@ impl Settings {
         out
     }
 
-    /// The rule model, picked from pick's list, would break, of those that
-    /// read the pick's row.
+    /// The rule model, picked from pick's list, would break.
     fn mark_of(&self, pick: &Pick, model: &str) -> Option<(&'static str, Color)> {
         let key = ROWS[pick.row].key;
         let mut fields = vec![(pick.field, model.to_string())];
@@ -493,9 +498,7 @@ impl Settings {
         }
         let mut doc = self.doc.clone();
         put(&mut doc, key, &fields);
-        let broken = app::checks(&doc)
-            .into_iter()
-            .find(|c| c.holds != Some(true) && c.rows.contains(&key))?;
+        let broken = broken_by(&self.doc, &doc)?;
         let mark = match (broken.holds, broken.rows, key) {
             (None, ..) => "? family unknown",
             (_, ["implement"], _) if pick.field == Field::Plan => "✗ not Implement's family",
@@ -506,7 +509,7 @@ impl Settings {
             (_, _, "side_a") => "✗ side B's family",
             _ => "✗ side A's family",
         };
-        Some((mark, if broken.holds.is_none() { ORANGE } else { RED }))
+        Some((mark, sign(broken.holds).1))
     }
 
     pub(crate) fn choices(&self, pick: &Pick) -> Vec<Picked> {
@@ -593,13 +596,33 @@ fn staged(
     let mut doc = read.clone();
     put(&mut doc, key, fields);
     let row = app::row_in(&doc, key, &path)?;
-    if let Some(broken) = app::checks(&doc)
-        .into_iter()
-        .find(|c| c.holds != Some(true))
-    {
+    if let Some(broken) = broken_by(&read, &doc) {
         return Err(broken.text);
     }
     Ok((path, read, doc, row))
+}
+
+/// The first rule the change from before to after breaks: one broken after
+/// that held before, or was not checked, so a config.json broken by hand
+/// mends one rule at a time.
+fn broken_by(before: &Value, after: &Value) -> Option<Check> {
+    let was = app::checks(before);
+    let was_broken = |c: &Check| {
+        was.iter()
+            .any(|w| w.rows == c.rows && w.holds != Some(true))
+    };
+    app::checks(after)
+        .into_iter()
+        .find(|c| c.holds != Some(true) && !was_broken(c))
+}
+
+/// How a rule's state shows: ✓ holds, ✗ broken, ? cannot be told.
+pub(crate) fn sign(holds: Option<bool>) -> (&'static str, Color) {
+    match holds {
+        Some(true) => ("✓", GREEN),
+        Some(false) => ("✗", RED),
+        None => ("?", ORANGE),
+    }
 }
 
 /// doc with a row's fields put in. On Implement a new App, or a plan model
@@ -617,18 +640,18 @@ pub(crate) fn put(doc: &mut Value, key: &str, fields: &[(Field, String)]) {
         return;
     }
     let (Ok(model), Ok(plan)) = (
-        app::field(doc, key, "model"),
-        app::field(doc, key, "plan_model"),
+        app::field(doc, key, Field::Model.key()),
+        app::field(doc, key, Field::Plan.key()),
     ) else {
         return;
     };
     let row = doc[key].as_object_mut().unwrap();
     let new_app = fields.iter().any(|(field, _)| *field == Field::App);
     if new_app || plan == "default" || app::canonical(&plan) == app::canonical(&model) {
-        row.remove("plan_model");
+        row.remove(Field::Plan.key());
     } else {
-        row.insert("model".into(), json!(app::full_id(&model)));
-        row.insert("plan_model".into(), json!(app::full_id(&plan)));
+        row.insert(Field::Model.key().into(), json!(app::full_id(&model)));
+        row.insert(Field::Plan.key().into(), json!(app::full_id(&plan)));
     }
 }
 
