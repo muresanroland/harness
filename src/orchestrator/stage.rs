@@ -1129,9 +1129,20 @@ impl Orchestrator {
                 Some(Answer::Act(Action::Park)) => return Some(Held::Park),
                 Some(Answer::Prompt(text)) => {
                     // An answered question is no longer open: a session that
-                    // goes idle without rewriting it has no result.
+                    // goes idle without rewriting it has no result. Removed
+                    // first, so nothing written after the prompt is taken.
+                    let kept = fs::read(file);
                     let _ = fs::remove_file(file);
                     if let Err(err) = self.herdr(&["agent", "prompt", pane, &text]) {
+                        // never taken, still open: put back unless written anew,
+                        // so the Wake's hold asks it again
+                        if let Ok(kept) = kept {
+                            let _ = fs::OpenOptions::new()
+                                .write(true)
+                                .create_new(true)
+                                .open(file)
+                                .and_then(|mut f| f.write_all(&kept));
+                        }
                         return Some(Held::Woke(format!("never took your answer: {err}")));
                     }
                     self.report(ticket, "sent your answer");

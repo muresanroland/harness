@@ -132,6 +132,39 @@ fn a_question_answered_in_the_pane_left_unwritten_is_no_result_not_asked_again()
 }
 
 #[test]
+fn an_answer_the_pane_never_took_leaves_the_question_to_ask_again() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.typesafe = Fake::down();
+    w.session(|p| match p.stage == "implement" {
+        true => (ASKS.to_string(), "idle".to_string()),
+        false => succeed(p),
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let Some(Ask::StageQuestion { pane, .. }) = w.await_event("question in implement").ask else {
+        panic!("no Question raised");
+    };
+    let (prompt, armed) = (
+        format!("herdr agent prompt {pane} ours"),
+        AtomicBool::new(true),
+    );
+    w.hook(move |_, argv| {
+        (argv.join(" ") == prompt && armed.swap(false, Ordering::SeqCst))
+            .then(|| Err("pane went away".to_string()))
+    });
+    o.answer("hx-1", &pane, Answer::Prompt("ours".to_string()));
+    w.await_line("never took your answer");
+    let asked = w.await_nth("question in implement", 2);
+    let Some(Ask::StageQuestion { question, .. }) = asked.ask else {
+        panic!("a question raised {:?}, not a Question", asked.ask);
+    };
+    assert_eq!(question, "Which parser stays?");
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
+}
+
+#[test]
 fn a_question_written_while_its_status_is_read_is_kept() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     o.cfg.typesafe = Fake::down();
