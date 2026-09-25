@@ -333,6 +333,9 @@ pub(crate) struct Settings {
     /// The foot's line being typed.
     pub(crate) typing: Option<(Typing, String)>,
     pub(crate) probe: Option<Probe>,
+    /// Each App and model a probe answered while this /config is open: not
+    /// probed again till it opens anew.
+    probed: Vec<(&'static str, String)>,
     pub(crate) busy: Option<Busy>,
     /// A source's skills to tick, which replaces the Skills page.
     pub(crate) listing: Option<Listing>,
@@ -999,6 +1002,7 @@ impl Screen {
             pick: None,
             typing: None,
             probe: None,
+            probed: Vec::new(),
             busy: None,
             listing: None,
             confirm: None,
@@ -1254,8 +1258,8 @@ impl Screen {
     }
 
     /// A change to a row: refused if the Stage could not start on it; one
-    /// that changes nothing is dropped; a named model is probed first,
-    /// anything else saves at once.
+    /// that changes nothing is dropped; a named model is probed first, once
+    /// per App while /config is open, anything else saves at once.
     // ponytail: no timeout on the probe: Esc drops one that hangs, its
     // process running on to its end (it has no stdin to wait on).
     fn change(&mut self, row: usize, fields: Vec<(Field, String)>) {
@@ -1286,6 +1290,9 @@ impl Screen {
             return self.save(row, &fields);
         };
         let app = staged.app;
+        if st.probed.contains(&(app.name, model.clone())) {
+            return self.save(row, &fields);
+        }
         let argv = app::probe(app, &repo, &model);
         let (tx, result) = mpsc::channel();
         thread::spawn(move || {
@@ -1312,7 +1319,10 @@ impl Screen {
         };
         let probe = st.probe.take().unwrap();
         match result {
-            Ok(_) => self.save(probe.row, &probe.fields),
+            Ok(_) => {
+                st.probed.push((probe.app, probe.model));
+                self.save(probe.row, &probe.fields);
+            }
             Err(err) => {
                 let why = refusal(&err);
                 let text = format!(
