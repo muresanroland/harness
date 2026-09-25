@@ -17,8 +17,8 @@ With **Fix items** `none` there is nothing to apply: go to step 2.
 
 ## 2. Open the pull request, only if **Open PR** is yes
 
-1. Run the repo's /create-pr skill. It owns the repo's conventions for pushing the branch and creating the PR.
-2. Make sure the PR description includes, adding them with `gh pr edit --body-file` if /create-pr did not:
+1. Run the repo's create-pr skill. It owns the repo's conventions for pushing the branch and creating the PR.
+2. Make sure the PR description includes, adding them with `gh pr edit --body-file` if the create-pr skill did not:
    - The Ticket id and what was built (the run directory's `implement.md` has the summary).
    - **Verdict history**: from every file under **Verdict history**, each skipped Finding with its reason and how it was settled, grouped by Round. Carry over each Verdict's Notes.
    - **Leftovers never re-checked**: if this is Round 3 and you applied fix items, list them. No Review ran after them, so the human reviewer is the first to see those changes. Otherwise write "none".

@@ -11,8 +11,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::orchestrator::app::{self, APPS};
-use crate::skills::manifest::{self, Installed, Location, Manifest, Place, JOBS, NONE};
-use crate::skills::SKILLS;
+use crate::skills::manifest::{self, Installed, Location, Manifest, Place, JOBS};
+use crate::skills::{stage_skill, SKILLS};
 use crate::tools::Tools;
 
 /// The record of every skill file init wrote, path to the text it wrote:
@@ -754,10 +754,7 @@ pub(crate) fn preflight(
         Ok(manifest) => {
             for (job, suggestions) in JOBS {
                 let pick = manifest.pick(job);
-                let built_in = suggestions
-                    .iter()
-                    .any(|&(name, source)| name == pick && source.is_empty());
-                if pick != NONE && !built_in && !have.iter().any(|name| name == pick) {
+                if manifest::lacks(job, pick, &have) {
                     // init installs only the default
                     let fix = if pick == suggestions[0].0 {
                         "harness init installs it, or /config picks another"
@@ -791,7 +788,8 @@ pub(crate) fn preflight(
 
 /// What the preflight warns of without failing: a personal skill that shadows
 /// one the Harness installed, since Claude Code runs a personal skill over a
-/// project one of the same name, and the superpowers plugin.
+/// project one of the same name, the superpowers plugin, and an installed
+/// Stage skill that lost a job's placeholder, which the shipped one holds.
 pub(crate) fn warnings(
     repo: &Path,
     tools: &dyn Tools,
@@ -810,6 +808,20 @@ pub(crate) fn warnings(
                 .exists()
             {
                 warn.push(format!("your personal ~/.claude/skills/{name} shadows the installed {name}: Claude Code runs a personal skill over a project one"));
+            }
+        }
+    }
+    for (name, shipped) in SKILLS {
+        let Some(Ok(installed)) = stage_skill(repo, &home, name) else {
+            continue;
+        };
+        for (job, _) in JOBS {
+            let held = manifest::placeholder(job);
+            if shipped.contains(&held) && !installed.contains(&held) {
+                warn.push(format!(
+                    "the installed {name} lacks {held}: the {} skill you pick never runs there; put the line back, or refresh it with harness init",
+                    job.replace('-', " ")
+                ));
             }
         }
     }

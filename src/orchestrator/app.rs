@@ -32,6 +32,8 @@ pub(crate) struct App {
     /// What its pane shows at a usage limit: regexes, with the reset in
     /// the group "reset" and which limit in "what" when the App says.
     pub(crate) limits: &'static [&'static str],
+    /// How a Stage skill's "Use the {} skill" names a job's pick.
+    pub(crate) mention: fn(&str) -> String,
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -84,6 +86,8 @@ pub(crate) static APPS: [App; 2] = [
             r"You['’]ve hit your (?P<what>.*?limit) · resets (?P<reset>.+)",
             r"Usage limit reached · continuing automatically at (?P<reset>.+?)(?: · |$)",
         ],
+        // In words, a plugin's skill plugin-qualified as the pick names it.
+        mention: |pick| pick.to_string(),
     },
     App {
         name: "codex",
@@ -99,6 +103,9 @@ pub(crate) static APPS: [App; 2] = [
         limits: &[
             r"You['’]ve hit your (?P<what>usage limit)\..*?[Tt]ry again (?:at (?P<reset>.+?)|later)\.",
         ],
+        // $name, which a skill with implicit invocation off (review-agent)
+        // needs; codex has no Claude Code plugins to qualify it by.
+        mention: |pick| format!("${}", pick.split_once(':').map_or(pick, |(_, name)| name)),
     },
 ];
 

@@ -102,6 +102,23 @@ pub(crate) const JOBS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// A job's placeholder in a Stage skill: {{job}}, alone on the line that uses
+/// the job's Delegate skill.
+pub(crate) fn placeholder(job: &str) -> String {
+    format!("{{{{{job}}}}}")
+}
+
+/// Whether the job's pick is a skill missing from have (list's names): none
+/// needs nothing, nor does a skill built into its App.
+pub(crate) fn lacks(job: &str, pick: &str, have: &[String]) -> bool {
+    let built_in = JOBS
+        .iter()
+        .filter(|(name, _)| *name == job)
+        .flat_map(|(_, suggestions)| suggestions.iter())
+        .any(|&(name, source)| name == pick && source.is_empty());
+    pick != NONE && !built_in && !have.iter().any(|name| name == pick)
+}
+
 /// Where the skills the Harness installs go, as harness init asked.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -227,6 +244,46 @@ impl Manifest {
 
     pub(crate) fn place(&self, repo: &Path, home: &Path) -> Place {
         self.location.unwrap_or(Location::Repo).place(repo, home)
+    }
+
+    /// A Stage skill with each job's placeholder filled in with the job's
+    /// pick, as mention names it. A pick of none drops the placeholder's
+    /// line, leaving the Stage skill's own instruction around it, and so
+    /// does one lacking from have (list's names); those are given back too,
+    /// each as "pick (job)".
+    pub(crate) fn fill_jobs(
+        &self,
+        skill: &str,
+        have: &[String],
+        mention: fn(&str) -> String,
+    ) -> (String, Vec<String>) {
+        let mut lacking = Vec::new();
+        let lines: Vec<String> = skill
+            .lines()
+            .filter_map(|line| {
+                let mut line = line.to_string();
+                for (job, _) in JOBS {
+                    let held = placeholder(job);
+                    if !line.contains(&held) {
+                        continue;
+                    }
+                    let pick = self.pick(job);
+                    if lacks(job, pick, have) {
+                        let said = format!("{pick} ({job})");
+                        if !lacking.contains(&said) {
+                            lacking.push(said);
+                        }
+                        return None;
+                    }
+                    if pick == NONE {
+                        return None;
+                    }
+                    line = line.replace(&held, &mention(pick));
+                }
+                Some(line)
+            })
+            .collect();
+        (lines.join("\n"), lacking)
     }
 
     /// Moves every skill the Harness installed here, the Shipped ones too,
