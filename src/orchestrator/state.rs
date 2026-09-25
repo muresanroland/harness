@@ -52,6 +52,9 @@ pub(crate) struct TicketState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub(crate) conflict: bool,
+    /// The App whose usage limit holds the Ticket, while it holds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) limited: String,
 }
 
 /// A Stage's session: the App it runs on, and the id herdr's integration
@@ -61,6 +64,10 @@ pub(crate) struct Session {
     pub(crate) app: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) id: String,
+    /// When the last usage limit it hit resets: a later one at that time of
+    /// day in its pane is that old line, read a day or a week on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reset: Option<chrono::DateTime<chrono::Local>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -69,6 +76,10 @@ pub(crate) struct State {
     pub(crate) epic: String,
     #[serde(default, deserialize_with = "null_is_empty")]
     pub(crate) tickets: BTreeMap<String, TicketState>,
+    /// App name -> when its last usage limit resets: no Stage starts on it
+    /// until then, in this run or a /continue after the Harness closed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) limits: BTreeMap<String, chrono::DateTime<chrono::Local>>,
 }
 
 fn is_zero(n: &usize) -> bool {

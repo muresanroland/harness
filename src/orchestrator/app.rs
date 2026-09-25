@@ -29,6 +29,9 @@ pub(crate) struct App {
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
+    /// What its pane shows at a usage limit: regexes, with the reset in
+    /// the group "reset" and which limit in "what" when the App says.
+    pub(crate) limits: &'static [&'static str],
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -77,6 +80,10 @@ pub(crate) static APPS: [App; 2] = [
             "-p",
         ],
         trust: claude_records,
+        limits: &[
+            r"You['’]ve hit your (?P<what>.*?limit) · resets (?P<reset>.+)",
+            r"Usage limit reached · continuing automatically at (?P<reset>.+?)(?: · |$)",
+        ],
     },
     App {
         name: "codex",
@@ -88,6 +95,10 @@ pub(crate) static APPS: [App; 2] = [
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
+        // U+2019 in You’ve; "Try again later." gives no reset
+        limits: &[
+            r"You['’]ve hit your (?P<what>usage limit)\..*?[Tt]ry again (?:at (?P<reset>.+?)|later)\.",
+        ],
     },
 ];
 

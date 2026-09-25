@@ -3,21 +3,10 @@
 use super::stage::Orchestrator;
 use super::state::{load_state, Session};
 use super::world::{
-    new_world, restarted, spawn_epic, spawn_ticket, succeed, working, BdTicket, World,
+    new_world, restarted, spawn_epic, spawn_ticket, succeed, wait_until, working, BdTicket, World,
 };
 use super::write_file;
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
-
-/// Waits up to 5s for `done`.
-fn until(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !done() {
-        assert!(Instant::now() < deadline, "{what} never happened");
-        thread::sleep(Duration::from_millis(1));
-    }
-}
 
 /// hx-1 stopped as a killed run leaves it: its `stage` session working in
 /// its pane, with its id saved when herdr's integration is installed (`ids`).
@@ -32,7 +21,7 @@ fn stopped_at(stage: &'static str, label: &str, ids: bool) -> (Arc<World>, Arc<O
     let run = spawn_ticket(o.clone(), "hx-1");
     w.await_line(&format!("hx-1 {label} started"));
     if ids {
-        until("the session id saved", || {
+        wait_until("the session id saved", || {
             !o.ticket("hx-1").sessions[stage].id.is_empty()
         });
     }
@@ -71,6 +60,7 @@ fn a_stage_start_saves_its_session_id_and_app_beside_its_pane() {
         Session {
             app: "codex".to_string(),
             id: reported,
+            reset: None,
         },
         "state.json keeps the Review's session id, as herdr's agent get reported it, and its App"
     );
@@ -83,7 +73,7 @@ fn another_agent_in_the_stage_pane_never_has_its_session_id_saved() {
     w.session(working);
     let o = Arc::new(o);
     let _run = spawn_ticket(o.clone(), "hx-1");
-    until("the session id saved", || {
+    wait_until("the session id saved", || {
         o.ticket("hx-1")
             .sessions
             .get("implement")
@@ -99,7 +89,7 @@ fn another_agent_in_the_stage_pane_never_has_its_session_id_saved() {
         world.sessions.insert(pane.clone(), "other".to_string());
     }
     let get = format!("herdr agent get {pane}");
-    until("the pane watched twice more", || {
+    wait_until("the pane watched twice more", || {
         w.calls()[before..].iter().filter(|c| **c == get).count() >= 2
     });
 
@@ -136,7 +126,7 @@ fn stopped_run_whose_pane_is_gone_resumes_the_stage_by_its_session_id() {
         let mut run = spawn_ticket(o.clone(), "hx-1");
 
         let pane = || o.ticket("hx-1").panes[stage].clone();
-        until(&format!("{label} told to continue"), || {
+        wait_until(&format!("{label} told to continue"), || {
             w.calls()[before..].contains(&format!("herdr agent prompt {} continue", pane()))
         });
         let pane = pane();
@@ -167,7 +157,7 @@ fn a_live_pane_is_watched_even_with_a_saved_session_id() {
     let pane = o.ticket("hx-1").panes["review"].clone();
     let before = w.calls().len();
     let mut run = spawn_ticket(o.clone(), "hx-1");
-    until("the live Review watched", || {
+    wait_until("the live Review watched", || {
         w.calls()[before..].contains(&format!("herdr agent get {pane}"))
     });
     finishes(&w, &o, &pane, "review-1.md");
@@ -274,7 +264,7 @@ fn retry_of_a_parked_ticket_never_resumes() {
     let o = Arc::new(o);
     let mut run = spawn_epic(o.clone(), "hx");
     w.await_line("hx-1 implement started");
-    until("the session id saved", || {
+    wait_until("the session id saved", || {
         !o.ticket("hx-1").sessions["implement"].id.is_empty()
     });
     o.command("park-hx-1");

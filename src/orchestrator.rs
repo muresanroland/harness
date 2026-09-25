@@ -4,6 +4,7 @@
 pub(crate) mod app;
 pub(crate) mod herdr;
 pub(crate) mod judgment;
+pub(crate) mod limit;
 pub(crate) mod pipeline;
 pub(crate) mod plan;
 pub(crate) mod result;
@@ -27,6 +28,8 @@ mod app_test;
 mod async_result_test;
 #[cfg(test)]
 mod judgment_test;
+#[cfg(test)]
+pub(crate) mod limit_test;
 #[cfg(test)]
 mod panes_test;
 #[cfg(test)]

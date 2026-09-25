@@ -1,7 +1,8 @@
 //! The layout: header, status row, Overall, the TICKETS sections, RECENT
 //! under its rule newest at the bottom (a Question takes its place when one
-//! shows), the MERGE TO UNBLOCK box, the / or @ list, a notice line and the
-//! input line. A plan Question docks the Shell beside it (draw/modal.rs).
+//! shows), the MERGE TO UNBLOCK box, the LIMITED box, the / or @ list, a
+//! notice line and the input line. A plan Question docks the Shell beside it
+//! (draw/modal.rs).
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -14,6 +15,7 @@ use super::logo::{
     PURPLE, RED, REST, TEXT, TICKET_COLORS,
 };
 use super::{suffix, About, Epic, Screen};
+use crate::orchestrator::limit::{holds, until};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
@@ -79,25 +81,29 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
 
 /// The Shell drawn into `area`: header, status row, Overall, the TICKETS
 /// sections, RECENT (newest at the bottom), the boxed QUESTION (a plan
-/// docks in the modal instead), the red MERGE TO UNBLOCK box, the / or @
-/// list, notice, input. The row from which the list, a notice and the input
-/// line show, for the fold to leave.
+/// docks in the modal instead), the red MERGE TO UNBLOCK box, the amber
+/// LIMITED box, the / or @ list, notice, input. The row from which the list,
+/// a notice and the input line show, for the fold to leave.
 fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
     let tree = sections(s, area.width.saturating_sub(2) as usize);
     let head_h = header_height(area);
     let unblock = unblock_lines(s);
-    let unblock_h = match unblock.len() {
+    let limited = limited_lines(s);
+    let boxed_h = |lines: &[Line]| match lines.len() {
         0 => 0,
         n => n as u16 + 2,
     };
-    // MERGE TO UNBLOCK takes its rows first, then the / or @ list, leaving
+    let (unblock_h, limited_h) = (boxed_h(&unblock), boxed_h(&limited));
+    // MERGE TO UNBLOCK and LIMITED take their rows first, then the / or @ list, leaving
     // TICKETS its three. The TICKETS tree takes its rows and RECENT keeps at
     // least four, its rule and three lines. A Question takes RECENT's space,
     // its pane tail cut first; TICKETS gives up rows only when the question
     // and its options do not fit, and on a screen too short for even that
     // the Question's bottom is cut. A taller tree scrolls (PageUp, PageDown
     // with the input empty).
-    let free = area.height.saturating_sub(head_h + 5 + unblock_h);
+    let free = area
+        .height
+        .saturating_sub(head_h + 5 + unblock_h + limited_h);
     let list = list_lines(
         s,
         area.width.saturating_sub(2) as usize,
@@ -118,7 +124,7 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
         (lines, height)
     });
     let asked_h = asked.as_ref().map_or(0, |(_, h)| *h);
-    let [head, top, over, _, tickets, recent, question, merge, lists, notice, input] =
+    let [head, top, over, _, tickets, recent, question, merge, limit, lists, notice, input] =
         Layout::vertical([
             Constraint::Length(head_h),
             Constraint::Length(1),
@@ -128,6 +134,7 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
             Constraint::Min(0),
             Constraint::Length(asked_h),
             Constraint::Length(unblock_h),
+            Constraint::Length(limited_h),
             Constraint::Length(list_h),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -166,6 +173,12 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
         f.render_widget(
             Paragraph::new(unblock).block(boxed("MERGE TO UNBLOCK").border_style(fg(RED))),
             merge,
+        );
+    }
+    if !limited.is_empty() {
+        f.render_widget(
+            Paragraph::new(limited).block(boxed("LIMITED").border_style(fg(ORANGE))),
+            limit,
         );
     }
     f.render_widget(Paragraph::new(list), inset(lists));
@@ -292,6 +305,42 @@ fn unblock_lines(s: &Screen) -> Vec<Line<'static>> {
             ])
         })
         .collect()
+}
+
+/// LIMITED's lines: each App whose usage limit still holds, and when it
+/// resumes, 'CLAUDE LIMITED until 3:45pm · resumes by itself'.
+fn limited_lines(s: &Screen) -> Vec<Line<'static>> {
+    let now = (s.cfg.clock)();
+    let how = match s.running {
+        true => "resumes by itself",
+        false => "/continue after the reset",
+    };
+    s.state
+        .limits
+        .iter()
+        .filter(|(_, reset)| holds(**reset, now))
+        .map(|(app, reset)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{} LIMITED until {}",
+                        app.to_uppercase(),
+                        until(*reset, now)
+                    ),
+                    bold(ORANGE),
+                ),
+                Span::styled(format!(" · {how}"), fg(ORANGE)),
+            ])
+        })
+        .collect()
+}
+
+/// When the usage limit holding a Ticket resets, while it holds.
+fn held_until(s: &Screen, id: &str) -> Option<String> {
+    let now = (s.cfg.clock)();
+    let ts = s.state.tickets.get(id)?;
+    let reset = *s.state.limits.get(&ts.limited)?;
+    holds(reset, now).then(|| until(reset, now))
 }
 
 /// An Epic's color by its place on the tree; off the tree, the first.
@@ -516,6 +565,10 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
                 (_, Some(ts)) => ts.stage.clone(),
                 (_, None) => String::new(),
             };
+            // held by a usage limit, a working Ticket says until when
+            let stage = held_until(s, &t.id)
+                .filter(|_| st == Status::Working)
+                .map_or(stage, |when| format!("limited until {when}"));
             let stage = Span::styled(format!("{stage:>16}  "), fg(MUTED));
             let label = Span::styled(format!("{label:<11}"), bold(lc));
             let right = stage.width() + label.width();

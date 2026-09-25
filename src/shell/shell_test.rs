@@ -5,6 +5,7 @@ use super::logo::{
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::Action;
+use crate::orchestrator::limit_test::hits;
 use crate::orchestrator::plan_test::{at_dialog, noul};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Ask, Config, Event, Orchestrator};
@@ -12,7 +13,7 @@ use crate::orchestrator::state::{
     acquire_lock, load_state, State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
     STATUS_RUNNING,
 };
-use crate::orchestrator::world::{new_world, succeed, BdTicket, World};
+use crate::orchestrator::world::{new_world, set_clock, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
@@ -1175,6 +1176,105 @@ fn the_live_status_row_counts_each_label_and_drops_its_glyphs_then_its_end_when_
             "● 1 working  ◆ 1 needs you  ◇ 1 waiting on a merge  ○ 1 to merge  ✓ 2 merged"
         ) && !line.contains("parked"),
         "{line:?}"
+    );
+}
+
+/// A Limited App: an amber LIMITED box above the input, a line per App
+/// that holds; each Ticket it holds reads "limited until" as its stage and
+/// counts as working. Idle it waits on /continue; a passed limit is gone.
+#[test]
+fn a_limited_app_is_an_amber_box_and_its_held_tickets_read_limited_until() {
+    let mut s = sections_screen(true);
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 25, 14, 0, 0)
+        .unwrap();
+    let clock = set_clock(&mut s.cfg, now);
+    let reset = chrono::Local
+        .with_ymd_and_hms(2026, 9, 25, 15, 45, 0)
+        .unwrap();
+    s.state.limits.insert("claude".to_string(), reset);
+    s.state.tickets.get_mut("harness-a.6").unwrap().limited = "claude".to_string();
+
+    let buf = render(&s, 120, 40);
+    let (x, y) = find(&buf, "┌ LIMITED ─").unwrap_or_else(|| panic!("{:#?}", rows(&buf)));
+    assert_eq!(buf[(x, y)].fg, ORANGE);
+    assert_eq!(
+        row(&buf, y + 1).trim_matches(['│', ' ']),
+        "CLAUDE LIMITED until 3:45pm · resumes by itself"
+    );
+    let (tx, ty) = find(&buf, "CLAUDE LIMITED").unwrap();
+    assert_eq!(buf[(tx, ty)].fg, ORANGE);
+    assert!(row(&buf, y + 2).starts_with('└'));
+    assert!(find(&buf, "┌ MERGE TO UNBLOCK ─").unwrap().1 < y);
+    let held = row_of(&buf, "6 RECENT scroll");
+    assert!(held.ends_with("limited until 3:45pm  WORKING"), "{held:?}");
+    let status = row(&buf, 8);
+    assert!(
+        status.contains("● 1 working") && !status.contains("limited"),
+        "{status:?}"
+    );
+
+    s.running = false;
+    let buf = render(&s, 120, 40);
+    assert!(
+        find(
+            &buf,
+            "CLAUDE LIMITED until 3:45pm · /continue after the reset"
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+
+    *clock.lock().unwrap() = reset + chrono::Duration::minutes(2);
+    let buf = render(&s, 120, 40);
+    assert!(find(&buf, "LIMITED").is_none(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "limited until").is_none());
+}
+
+/// A long limit ends the run in the Shell with its own line, not "panes
+/// left running"; /continue after the reset resumes the Stage by its id.
+#[test]
+fn a_long_limit_ends_the_run_and_continue_after_the_reset_resumes_it() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().integration = true;
+    hits(
+        &w,
+        "hx-1",
+        "implement",
+        "idle",
+        "You've hit your weekly limit · resets Mon 12:00am",
+    );
+    let mut s = shell(&w);
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 25, 14, 0, 0)
+        .unwrap();
+    let clock = set_clock(&mut s.cfg, now);
+    s.command("/start-ticket hx-1");
+    await_line(
+        &mut s,
+        "claude weekly limit until Mon 12:00am: sessions saved, panes closed, /continue after the reset",
+    );
+    await_end(&mut s);
+    assert!(
+        !s.events.iter().any(|e| e.text.starts_with("stopped")),
+        "said panes left running after closing them"
+    );
+    assert!(find(&render(&s, 120, 40), "CLAUDE LIMITED until Mon 12:00am").is_some());
+
+    let id = s.state.tickets["hx-1"].sessions["implement"].id.clone();
+    *clock.lock().unwrap() = chrono::Local
+        .with_ymd_and_hms(2026, 9, 28, 0, 2, 0)
+        .unwrap();
+    s.command("/continue");
+    s.key(key(KeyCode::Enter));
+    await_line(&mut s, "hx-1 implement resumed: claude (pane");
+    await_line(&mut s, "hx-1 PR #hx-1 opened");
+    await_end(&mut s);
+    let starts = w.called("herdr agent start h-hx-1-implement ");
+    assert!(
+        starts.len() == 2 && starts[1].contains(&format!("--resume {id} ")),
+        "{starts:?}"
     );
 }
 

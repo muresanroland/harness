@@ -28,7 +28,8 @@ impl Orchestrator {
     /// stopped.
     pub(crate) fn run_ticket(&self, ticket: &str) {
         match self.pipeline(ticket) {
-            Ok(()) | Err(StageError::Stopped) => {}
+            Ok(()) => {}
+            Err(StageError::Stopped) => self.close_on_limit(ticket),
             Err(StageError::Parked(reason)) => {
                 self.update(ticket, |ts| {
                     ts.status = STATUS_PARKED.to_string();

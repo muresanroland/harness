@@ -165,6 +165,9 @@ pub(crate) struct Inner {
     pub(crate) integration: bool,
     /// Pane -> the session id its agent reports.
     pub(crate) sessions: BTreeMap<String, String>,
+    /// Pane -> its recent lines, as 'agent read' gives them; unset, a
+    /// canned tail.
+    pub(crate) tails: BTreeMap<String, String>,
     /// Width, height in cells of every pane; zero means roomy and square.
     pub(crate) rect: (usize, usize),
     pub(crate) tickets: Vec<BdTicket>,
@@ -436,6 +439,10 @@ impl World {
             return w.wait_err.clone().map_or(Ok("{}".to_string()), Err);
         }
         if cmd.starts_with("herdr agent read") {
+            let pane = w.names.get(argv[3]).map_or(argv[3], String::as_str);
+            if let Some(tail) = w.tails.get(pane) {
+                return Ok(tail.clone());
+            }
             return Ok("Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string());
         }
         if cmd.starts_with("herdr agent get") {
@@ -704,10 +711,33 @@ impl Tools for World {
     }
 }
 
-/// A new process over the saved state, its Events to the same panel.
+/// Sets `cfg`'s wall clock at `at`; the test moves it through what this
+/// gives back.
+pub(crate) fn set_clock(
+    cfg: &mut Config,
+    at: chrono::DateTime<chrono::Local>,
+) -> Arc<Mutex<chrono::DateTime<chrono::Local>>> {
+    let clock = Arc::new(Mutex::new(at));
+    let read = clock.clone();
+    cfg.clock = Arc::new(move || *read.lock().unwrap());
+    clock
+}
+
+/// Waits up to 5s for `done`.
+pub(crate) fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} never happened");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A new process over the saved state, its Events to the same panel, on
+/// the same clock.
 pub(crate) fn restarted(w: &Arc<World>, o: &Orchestrator) -> Arc<Orchestrator> {
     let mut cfg = Config::for_tests(w.clone(), &w.repo, &w.home);
     cfg.events = o.cfg.events.clone();
+    cfg.clock = o.cfg.clock.clone();
     Arc::new(Orchestrator::with_state(cfg, load_state(&w.repo).unwrap()))
 }
 
