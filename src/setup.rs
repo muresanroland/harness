@@ -773,9 +773,10 @@ pub(crate) fn preflight(
         }
         Err(err) => missing.push(err),
     }
-    // A row that cannot be read is the Orchestrator's to refuse.
+    // A row that cannot be read is the Orchestrator's to refuse; the
+    // Review's fallback, unset (model none), runs nothing.
     for key in app::ROWS {
-        let Ok(row) = app::row(repo, key) else {
+        let Some(row) = app::row(repo, key).ok().filter(|row| row.model != "none") else {
             continue;
         };
         let name = row.app.name;

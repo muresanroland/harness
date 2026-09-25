@@ -1593,6 +1593,12 @@ fn an_unreadable_config_or_a_stage_off_claude_refuses_the_run() {
     assert_eq!(notice(&s), "fix runs on claude only");
     assert!(s.run.is_none());
 
+    // The Review's fallback is read too, not found broken at a limit.
+    write_file(&file, r#"{"review_if_limited": {"app": "pi"}}"#);
+    s.command("/start-epic hx");
+    assert!(notice(&s).ends_with(r#"no App named "pi" for review_if_limited"#));
+    assert!(s.run.is_none());
+
     // Address runs on demand: its row does not hold up the Pipeline.
     w.lock().merged = true;
     write_file(&file, r#"{"address": {"app": "codex"}}"#);

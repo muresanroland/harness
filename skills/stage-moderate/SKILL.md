@@ -17,7 +17,7 @@ Nothing you run may change the worktree: the Orchestrator compares it with its s
 
 A side is **limited** when Inputs say so (`Side A: limited until <t>` or `Side B: limited until <t>`), or when its command stops with its App's usage-limit text instead of an answer: codex exits 1 with "You’ve hit your usage limit" on stderr; claude exits non-zero with "You've hit your … limit" on stdout. That is a limit, not a failed side: do not retry it.
 
-- **The side runs on your own App** (the CLI this session runs in): the limit is yours too. Stop where you are. When this session carries on after the reset, run that side again and continue the Debate as usual.
+- **The side runs on your own App** (the App this session runs on): the limit is yours too. End your turn with the side's limit line as it printed it, and nothing after it: the Orchestrator reads it off your pane and holds the Debate until the reset. When this session carries on after the reset, run that side again and continue the Debate as usual.
 - **The side runs on another App**: the Debate is not argued. Do not run steps 2 and 3, or stop them where they are. If side A is limited, the audit cannot run: skip it and say so in the Notes. Settle every Finding, the audit's included, as follows:
   - TypeSafe on: ask TypeSafe as in step 4, with `argument_for` and `argument_against` empty. A score of 0.5 or more is **fix**; below 0.5 is **skip**. Settled is `typesafe <score>, <app> limited`. A call that fails or times out twice is **skip**, settled `flagged: TypeSafe unreachable`.
   - TypeSafe off (Inputs has **TypeSafe** `off`, or `TYPESAFE_API_KEY` is empty): every Finding is **skip**, settled `<app> limited, no TypeSafe`.

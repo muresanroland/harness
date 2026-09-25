@@ -251,9 +251,10 @@ fn config(repo: &Path) -> Result<Value, String> {
 }
 
 /// The key of every row of config.json.
-pub(crate) const ROWS: [&str; 7] = [
+pub(crate) const ROWS: [&str; 8] = [
     "implement",
     "review",
+    IF_LIMITED,
     "moderator",
     "side_a",
     "side_b",

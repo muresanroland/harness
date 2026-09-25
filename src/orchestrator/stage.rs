@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{debate_inputs, stage_row, App, Row};
+use super::app::{debate_inputs, fallback_row, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
 use super::limit::{until, Limit, LAST_LINES};
@@ -236,6 +236,7 @@ impl Orchestrator {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
         debate_inputs(&cfg.repo, "", |_| None).map_err(io::Error::other)?;
+        fallback_row(&cfg.repo).map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -592,11 +593,13 @@ impl Orchestrator {
                     .is_ok_and(|reply| reply.result.agent.pane_id == *pane)
         });
         // Its pane gone, it is resumed by its saved session id instead, and
-        // watched as a live one; failing that it starts fresh.
+        // watched as a live one; failing that it starts fresh. A Review on a
+        // Limited App starts fresh, as the user answers.
+        let asked = |s: &Session| st.name == REVIEW.name && self.limited_until(&s.app).is_some();
         if let Some(session) = saved
             .sessions
             .get(st.name)
-            .filter(|s| resumed && live.is_none() && !s.id.is_empty())
+            .filter(|s| resumed && live.is_none() && !s.id.is_empty() && !asked(s))
         {
             match self.wait_limit(ticket, &label, &session.app) {
                 Some(Held::Park) => return Err(StageError::Parked(format!("by you at {label}"))),

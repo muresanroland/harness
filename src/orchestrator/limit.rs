@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use chrono::{DateTime, Datelike, Duration, Local, Month, NaiveDate, NaiveTime, TimeZone, Weekday};
 use regex::Regex;
 
-use super::app::{app, fallback_row, App, Row};
+use super::app::{app, fallback_row, stage_row, App, Row};
 use super::result::{read_stage_result, ResultRequirements, StageResult};
 use super::stage::{Ask, Held, Orchestrator, Stage, REVIEW};
 use super::state::{Review, TicketState};
@@ -326,9 +326,11 @@ impl Orchestrator {
             ticket,
             &format!("{app} {what} until {when}: {label} holds {at}"),
         );
-        // A Review goes as the user answered: on wait it holds as any
-        // Stage; otherwise its session is left, and it starts again.
-        if st.name == REVIEW.name {
+        // A Review on its own App goes as the user answered: on wait it holds
+        // as any Stage; otherwise its session is left, and it starts again.
+        // On its fallback's it holds as any Stage: the answer stands.
+        let own = || stage_row(&self.cfg.repo, st).is_ok_and(|row| row.app.name == app);
+        if st.name == REVIEW.name && own() {
             match self.review_answer(ticket, label, app) {
                 Err(held) => return held,
                 Ok(Some(Review::Fallback | Review::Unreviewed)) => {

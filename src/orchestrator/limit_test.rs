@@ -8,7 +8,10 @@ use super::world::{
 };
 use super::write_file;
 use crate::skills::SKILLS;
+use crate::tools::Tools;
 use chrono::{DateTime, Local, TimeZone};
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -650,9 +653,9 @@ fn review_with_the_fallback_starts_stage_review_on_its_app_and_model() {
     );
     write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
     // the codex Review stops at its limit; every session after it is done
-    let (world, first) = (w.clone(), std::sync::atomic::AtomicBool::new(true));
+    let (world, first) = (w.clone(), AtomicBool::new(true));
     w.session(move |p| {
-        if p.stage == "review" && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        if p.stage == "review" && first.swap(false, SeqCst) {
             world.lock().tails.insert(p.pane.clone(), CODEX.to_string());
             return (String::new(), "idle".to_string());
         }
@@ -753,4 +756,68 @@ fn the_moderator_is_told_which_side_is_limited() {
         moderate.contains("Side B: limited until"),
         "stage-moderate has no rule for a limited side"
     );
+}
+
+#[test]
+fn a_fallback_review_at_its_own_limit_holds_and_asks_nothing_more() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    clock(&mut o);
+    write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"review_if_limited": {"app": "claude", "model": "opus"}}"#,
+    );
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    // codex's Review stops at its limit, then the fallback's at claude's
+    let (world, reviews) = (w.clone(), AtomicUsize::new(0));
+    w.session(move |p| {
+        if p.stage == "review" {
+            let tail = match reviews.fetch_add(1, SeqCst) {
+                0 => CODEX,
+                _ => CLAUDE,
+            };
+            world.lock().tails.insert(p.pane.clone(), tail.to_string());
+            return (String::new(), "idle".to_string());
+        }
+        succeed(p)
+    });
+    let o = Arc::new(o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    wait_until("the Review's limit Question", || {
+        !review_questions(&w).is_empty()
+    });
+    o.review("codex", Review::Fallback);
+    w.await_line("hx-1 claude session limit until 3:45pm: review 1 holds (pane");
+    wait_until("hx-1 held on claude", || {
+        o.ticket("hx-1").limited == "claude"
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(review_questions(&w).len(), 1, "a second Question");
+}
+
+#[test]
+fn continue_with_the_question_unanswered_asks_it_again_rather_than_wait() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().integration = true;
+    clock(&mut o);
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    hits(&w, "hx-1", "review", "idle", CODEX);
+    let o = Arc::new(o);
+    let run = spawn_ticket(o.clone(), "hx-1");
+    wait_until("the Review's limit Question", || {
+        !review_questions(&w).is_empty()
+    });
+    drop(run); // /stop-work, the Question unanswered
+               // its pane gone since, its session id saved
+    let ts = o.ticket("hx-1");
+    assert!(!ts.sessions["review"].id.is_empty(), "{ts:?}");
+    w.run(&w.repo, &["herdr", "pane", "close", &ts.panes["review"]])
+        .unwrap();
+
+    let o = restarted(&w, &o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    wait_until("the Question asked again", || {
+        review_questions(&w).len() == 2
+    });
+    o.review("codex", Review::Unreviewed);
+    w.await_line("hx-1 PR #hx-1 opened");
 }
