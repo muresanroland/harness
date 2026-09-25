@@ -2,6 +2,7 @@
 //! provider's usage limit, read from the last lines of the Stage's pane.
 //! Never a Wake: every Stage on that App holds until the reset.
 
+use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
@@ -225,25 +226,36 @@ impl Orchestrator {
 
     /// The row a Review starts on: its own, or while its App is Limited, as
     /// the user answered: its own once the limit is over (wait), the
-    /// fallback's, or none, the Review skipped (unreviewed).
-    pub(super) fn review_row(&self, ticket: &str, label: &str, row: Row) -> Result<Row, Held> {
+    /// fallback's, or none, the Review skipped (unreviewed): its result
+    /// written to `file` as any Stage's, so a resumed run skips it too.
+    pub(super) fn review_row(
+        &self,
+        ticket: &str,
+        label: &str,
+        file: &Path,
+        row: Row,
+    ) -> Result<Row, Held> {
         let app = row.app.name;
         let Some(reset) = self.limited_until(app) else {
             return Ok(row);
         };
         match self.review_answer(ticket, label, app)? {
-            Some(Review::Unreviewed) => Err(Held::Done(StageResult {
-                unreviewed: format!(
+            Some(Review::Unreviewed) => {
+                let why = format!(
                     "{app} was limited until {}",
                     until(reset, (self.cfg.clock)())
-                ),
-                ..Default::default()
-            })),
+                );
+                fs::write(file, format!("STATUS: done\nUNREVIEWED: {why}\n"))
+                    .map_err(|err| Held::Woke(format!("unreviewed result not saved: {err}")))?;
+                Err(Held::Done(StageResult {
+                    unreviewed: why,
+                    ..Default::default()
+                }))
+            }
             // A fallback unset since waits for the reset.
-            Some(Review::Fallback) => match fallback_row(&self.cfg.repo) {
-                Ok(fallback) => Ok(fallback.unwrap_or(row)),
-                Err(err) => Err(Held::Woke(err)),
-            },
+            Some(Review::Fallback) => fallback_row(&self.cfg.repo)
+                .map(|fallback| fallback.unwrap_or(row))
+                .map_err(Held::Woke),
             _ => Ok(row),
         }
     }
@@ -329,8 +341,9 @@ impl Orchestrator {
         // A Review on its own App goes as the user answered: on wait it holds
         // as any Stage; otherwise its session is left, and it starts again.
         // On its fallback's it holds as any Stage: the answer stands.
-        let own = || stage_row(&self.cfg.repo, st).is_ok_and(|row| row.app.name == app);
-        if st.name == REVIEW.name && own() {
+        if st.name == REVIEW.name
+            && stage_row(&self.cfg.repo, st).is_ok_and(|row| row.app.name == app)
+        {
             match self.review_answer(ticket, label, app) {
                 Err(held) => return held,
                 Ok(Some(Review::Fallback | Review::Unreviewed)) => {

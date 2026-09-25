@@ -10,6 +10,7 @@ use super::write_file;
 use crate::skills::SKILLS;
 use crate::tools::Tools;
 use chrono::{DateTime, Local, TimeZone};
+use std::fs;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
@@ -609,6 +610,11 @@ fn a_codex_limit_on_a_review_asks_once_and_unreviewed_skips_review_and_debate_un
 
     o.review("codex", Review::Unreviewed);
     w.await_line("hx-1 review 1 and debate 1 skipped: codex was limited until 3:05pm");
+    // Kept as any result, so /continue after the reset skips it too.
+    assert_eq!(
+        fs::read_to_string(o.run_dir("hx-1").join("review-1.md")).unwrap(),
+        "STATUS: done\nUNREVIEWED: codex was limited until 3:05pm\n"
+    );
     w.await_line("hx-1 PR #hx-1 opened");
     w.await_line("hx-2 PR #hx-2 opened");
     for ticket in ["hx-1", "hx-2"] {

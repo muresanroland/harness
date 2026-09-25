@@ -198,10 +198,12 @@ pub(crate) fn debate_inputs(
     Ok(inputs)
 }
 
-/// The Review's fallback row; None while its model is none.
+/// The Review's fallback row; None while config.json has no review_if_limited.
 pub(crate) fn fallback_row(repo: &Path) -> Result<Option<Row>, String> {
-    let row = row(repo, IF_LIMITED)?;
-    Ok((row.model != "none").then_some(row))
+    if config(repo)?.get(IF_LIMITED).is_none() {
+        return Ok(None);
+    }
+    row(repo, IF_LIMITED).map(Some)
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
@@ -287,7 +289,7 @@ pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
     if app.name != "claude" && !matches!(key, "review" | IF_LIMITED | "side_a" | "side_b") {
         return Err(format!("{key} runs on claude only"));
     }
-    let model = field("model", if key == IF_LIMITED { "none" } else { "default" })?;
+    let model = field("model", "default")?;
     // A split: a plan model other than Implement's, not default.
     let plan_model = match key {
         "implement" => Some(field("plan_model", "default")?),

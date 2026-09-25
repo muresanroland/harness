@@ -725,7 +725,7 @@ impl Orchestrator {
         };
         // A Review on a Limited App goes as the user answered.
         let row = match st.name == REVIEW.name {
-            true => match self.review_row(ticket, label, row) {
+            true => match self.review_row(ticket, label, file, row) {
                 Ok(row) => row,
                 Err(held) => return held,
             },

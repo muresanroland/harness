@@ -65,6 +65,9 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
         } else if lower.starts_with("- [skip]") {
             result.skips.push(line.trim().to_string());
         }
+        if let Some(why) = line.strip_prefix("UNREVIEWED:") {
+            result.unreviewed = why.trim().to_string();
+        }
         // As ^PR:\s*(\S+): the whitespace may cross blank lines.
         if let Some(rest) = line.strip_prefix("PR:").filter(|_| result.pr.is_empty()) {
             match rest.split_whitespace().next() {

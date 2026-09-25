@@ -167,6 +167,14 @@ Not a finding: - [fix] inside prose is ignored only when it does not start the l
             },
         ),
         (
+            "Review skipped, its App Limited",
+            "STATUS: done\nUNREVIEWED: codex was limited until 3:05pm\n",
+            StageResult {
+                unreviewed: "codex was limited until 3:05pm".to_string(),
+                ..Default::default()
+            },
+        ),
+        (
             "Fix with the PR after a blank line",
             "STATUS: done\nPR:\n\nhttps://github.com/o/r/pull/7\n",
             StageResult {
