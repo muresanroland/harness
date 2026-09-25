@@ -11,6 +11,7 @@ use super::Screen;
 use crate::orchestrator::stage::Ask;
 use crate::orchestrator::world::{new_world, succeed, BdTicket};
 use crate::orchestrator::write_file;
+use crate::skills::manifest::{add, Manifest, NONE};
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
 use crate::tools::{RunError, Tools};
@@ -341,7 +342,7 @@ fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
 
     keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Down]);
     let buf = render(&s, 160, 45);
-    let right: Vec<String> = (1..21).map(|y| text(&buf, y, 99, 158)).collect();
+    let right: Vec<String> = (1..24).map(|y| text(&buf, y, 99, 158)).collect();
     assert_eq!(
         right,
         [
@@ -361,6 +362,9 @@ fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
             "  side B app            codex",
             "  side B model          gpt-6-sol  OpenAI",
             "  side B effort         default",
+            "",
+            "DELEGATE SKILLS",
+            "  over-engineering audit  ponytail-review  not installed",
             "",
             "CHECKS",
             "  ✓ The sides come from two families: Anthropic and OpenAI.",
@@ -777,11 +781,11 @@ fn the_toggle_splits_on_a_plan_model_and_joins_again() {
             "  implement model       claude-opus-5-5  Anthropic",
             "  effort                high",
             "",
-            "",
-            "",
-            "",
-            "",
-            "",
+            "DELEGATE SKILLS",
+            "  test-first              tdd  not installed",
+            "  self review             code-review  not installed",
+            "  working mode            ponytail  not installed",
+            "  prose                   caveman  not installed",
         ]
     );
 
@@ -1005,4 +1009,426 @@ fn a_config_broken_on_two_rules_mends_one_at_a_time() {
     s.key(key(KeyCode::Enter));
     assert!(note(&s).starts_with("Refused: The Review would run on Implement's model"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
+}
+
+const TDD: &str = "---\nname: tdd\n---\ntest first\n";
+
+/// A two-skill pack as a clone finds it.
+const PACK: &[(&str, &str)] = &[
+    ("skills/engineering/tdd/SKILL.md", TDD),
+    (
+        "skills/engineering/code-review/SKILL.md",
+        "---\nname: code-review\n---\n",
+    ),
+];
+
+/// Fake Tools where git clone writes the pack into its destination and
+/// rev-parse answers abc1234def; everything else is "".
+fn clones() -> Arc<Fake> {
+    Fake::new(|_, argv| {
+        if argv.contains(&"clone") {
+            let dest = Path::new(argv.last().unwrap());
+            for (path, text) in PACK {
+                write_file(&dest.join(path), text);
+            }
+            Ok(String::new())
+        } else if argv.contains(&"rev-parse") {
+            Ok("abc1234def\n".to_string())
+        } else {
+            Ok(String::new())
+        }
+    })
+}
+
+/// Polls until /config's clone or update has finished.
+fn await_busy(s: &mut Screen) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.settings.as_ref().unwrap().busy.is_some() {
+        assert!(Instant::now() < deadline, "the clone never finished");
+        s.poll();
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn manifest(repo: &Path) -> Manifest {
+    Manifest::load(repo).unwrap()
+}
+
+/// /config open on the Skills page.
+fn skills_page(tools: Arc<Fake>, repo: &Path) -> Screen {
+    let mut s = screen_at(tools, repo);
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Down; 6]);
+    s.key(key(KeyCode::Enter));
+    s
+}
+
+/// A bare name is not a source: refused at once with where to find one,
+/// the text kept to mend, nothing cloned.
+#[test]
+fn adding_a_bare_name_is_refused_before_any_clone() {
+    let repo = TempDir::new();
+    let tools = clones();
+    let mut s = skills_page(tools.clone(), repo.path());
+    s.key(key(KeyCode::Char('a')));
+    type_in(&mut s, "tdd");
+    s.key(key(KeyCode::Enter));
+    assert!(note(&s).contains("skills.sh"), "{}", note(&s));
+    assert!(s.settings.as_ref().unwrap().typing.is_some());
+    assert!(
+        !tools.calls().iter().any(|c| c.contains("clone")),
+        "{:#?}",
+        tools.calls()
+    );
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "source › tdd▏").is_some(), "{:#?}", rows(&buf));
+}
+
+/// Removing a skill a job uses asks first, naming the job; no keeps it,
+/// yes removes it and sets that job to none.
+#[test]
+fn removing_a_skill_a_job_uses_asks_then_sets_the_job_to_none() {
+    let repo = TempDir::new();
+    let tools = clones();
+    add(
+        repo.path(),
+        Path::new(""),
+        &*tools,
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    let mut s = skills_page(tools, repo.path());
+    s.key(key(KeyCode::Down)); // the location, then tdd
+    s.key(key(KeyCode::Char('d')));
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(
+            &buf,
+            "tdd is the Delegate skill for Plan + Implement test-first"
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Char('n')));
+    assert!(manifest(repo.path()).skills.contains_key("tdd"));
+    s.key(key(KeyCode::Char('d')));
+    s.key(key(KeyCode::Char('y')));
+    let m = manifest(repo.path());
+    assert!(!m.skills.contains_key("tdd"));
+    assert_eq!(m.pick("test-first"), NONE);
+    assert!(!repo.path().join(".agents/skills/tdd").exists());
+    assert_eq!(note(&s), "removed tdd; Plan + Implement test-first is none");
+}
+
+/// A source with two skills, one installed from it already: the checklist
+/// shows that one ticked; the other ticked installs, and the note says so.
+#[test]
+fn adding_a_pack_shows_the_checklist_and_installs_the_ticked_skill() {
+    let repo = TempDir::new();
+    let tools = clones();
+    add(
+        repo.path(),
+        Path::new(""),
+        &*tools,
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    let mut s = skills_page(tools.clone(), repo.path());
+    s.key(key(KeyCode::Char('a')));
+    type_in(&mut s, "mattpocock/skills");
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "cloning mattpocock/skills…").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    await_busy(&mut s);
+    let text =
+        |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
+    let buf = render(&s, 160, 45);
+    let right: Vec<String> = (1..5).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "Skills in mattpocock/skills",
+            "▸ [ ] code-review",
+            "  [x] tdd                     installed",
+            "",
+        ]
+    );
+    s.key(key(KeyCode::Enter));
+    assert_eq!(note(&s), "Space ticks a skill to install.");
+    keys(&mut s, &[KeyCode::Char(' '), KeyCode::Enter]);
+    await_busy(&mut s);
+    let m = manifest(repo.path());
+    assert_eq!(
+        m.skills.keys().collect::<Vec<_>>(),
+        ["code-review", "tdd"],
+        "{m:?}"
+    );
+    assert_eq!(m.skills["code-review"].commit, "abc1234def");
+    assert_eq!(
+        note(&s),
+        "installed code-review from mattpocock/skills @ abc1234"
+    );
+    assert!(s.settings.as_ref().unwrap().listing.is_none());
+}
+
+/// A job's suggestion not installed: picking it clones its source, installs
+/// it and picks it.
+#[test]
+fn picking_a_suggestion_not_installed_clones_it_and_picks_it() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/skills.json"),
+        r#"{"picks": {"test-first": "none"}}"#,
+    );
+    let tools = clones();
+    let mut s = screen_at(tools.clone(), repo.path());
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Enter, KeyCode::Down, KeyCode::Down]);
+    keys(&mut s, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "  tdd ").is_some_and(|(_, y)| cols(&buf, y, 99, 158).contains("not installed")),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "▸ none").is_some(), "{:#?}", rows(&buf));
+    // from none, the current pick, up past the other two suggestions
+    keys(
+        &mut s,
+        &[KeyCode::Up, KeyCode::Up, KeyCode::Up, KeyCode::Enter],
+    );
+    await_busy(&mut s);
+    assert!(
+        tools
+            .calls()
+            .iter()
+            .any(|c| c.contains("clone") && c.contains("https://github.com/mattpocock/skills")),
+        "{:#?}",
+        tools.calls()
+    );
+    let m = manifest(repo.path());
+    assert!(m.skills.contains_key("tdd"), "{m:?}");
+    assert_eq!(m.pick("test-first"), "tdd");
+    assert!(repo.path().join(".agents/skills/tdd/SKILL.md").is_file());
+    assert_eq!(
+        note(&s),
+        "installed tdd from mattpocock/skills @ abc1234; Plan + Implement test-first uses it"
+    );
+}
+
+/// A job lists only the skills its Stage's App loads: the Review on codex
+/// hides a personal skill only Claude loads, and lists codex's built-in;
+/// Implement on claude lists it.
+#[test]
+fn the_review_job_on_codex_hides_a_claude_only_skill() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    write_file(
+        &home.path().join(".claude/skills/grilling/SKILL.md"),
+        "---\nname: grilling\n---\n",
+    );
+    write_file(
+        &home.path().join(".agents/skills/archify/SKILL.md"),
+        "---\nname: archify\n---\n",
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    s.cfg.home = home.path().to_path_buf();
+    type_line(&mut s, "/config");
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter]);
+    keys(&mut s, &[KeyCode::Down; 6]);
+    s.key(key(KeyCode::Enter));
+    let text =
+        |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
+    let buf = render(&s, 160, 45);
+    let right: Vec<String> = (1..10).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "Review review · codex   filter › ▏",
+            "  SUGGESTED",
+            "  review-agent            built into codex built in",
+            "  requesting-code-review  obra/superpowers not installed",
+            "▸ none                    the Stage skill… ✓ current",
+            "  YOUR OTHER SKILLS CODEX CAN SEE",
+            "  archify                 ~/.agents/skills yours",
+            "",
+            "",
+        ]
+    );
+    assert!(find(&buf, "grilling").is_none(), "{:#?}", rows(&buf));
+
+    keys(
+        &mut s,
+        &[KeyCode::Esc, KeyCode::Left, KeyCode::Up, KeyCode::Enter],
+    );
+    keys(&mut s, &[KeyCode::Down; 4]);
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "grilling").is_some(), "{:#?}", rows(&buf));
+    assert!(find(&buf, "archify").is_none(), "{:#?}", rows(&buf));
+}
+
+/// The Skills page: the location read-only, then each skill, a Shipped one
+/// said so, a fetched one with its source @ commit and the jobs using it.
+#[test]
+fn the_skills_page_renders_the_location_and_each_skill() {
+    let repo = TempDir::new();
+    let tools = clones();
+    add(
+        repo.path(),
+        Path::new(""),
+        &*tools,
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    let mut m = manifest(repo.path());
+    m.skills.insert(
+        "create-pr".to_string(),
+        crate::skills::manifest::Installed {
+            shipped: true,
+            ..Default::default()
+        },
+    );
+    m.save(repo.path()).unwrap();
+    let mut s = skills_page(tools, repo.path());
+    let text =
+        |buf: &_, y: u16, from: usize, to: usize| cols(buf, y, from, to).trim_end().to_string();
+    let buf = render(&s, 160, 45);
+    assert_eq!(text(&buf, 13, 69, 97), "▸ Skills    1 installed");
+    let right: Vec<String> = (1..11).map(|y| text(&buf, y, 99, 158)).collect();
+    assert_eq!(
+        right,
+        [
+            "Skills  1 installed",
+            "The skills the Harness installed, from their sources; the",
+            "Skill manifest is .harness/skills.json.",
+            "",
+            "▸ location    the repo, committed  .agents/skills",
+            "",
+            "  create-pr               shipped with the Harness",
+            "  tdd                     mattpocock/skills @ abc1234",
+            "    ← Plan + Implement test-first",
+            "",
+        ]
+    );
+    assert!(
+        find(
+            &buf,
+            "Run harness init again to change where skills are installed."
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    keys(&mut s, &[KeyCode::Down, KeyCode::Char('d')]);
+    assert_eq!(
+        note(&s),
+        "create-pr is a Shipped skill: it cannot be removed."
+    );
+    assert!(s.settings.as_ref().unwrap().confirm.is_none());
+}
+
+/// /config open on the TypeSafe page.
+fn typesafe_page(s: &mut Screen) {
+    type_line(s, "/config");
+    keys(s, &[KeyCode::Down; 7]);
+    s.key(key(KeyCode::Enter));
+}
+
+/// TypeSafe on: turning it off asks first, saying what changes; yes saves
+/// off in config.json.
+#[test]
+fn typesafe_off_asks_then_saves_off() {
+    let repo = TempDir::new();
+    let mut s = screen_at(apps(""), repo.path());
+    typesafe_page(&mut s);
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "TypeSafe  on").is_some(), "{:#?}", rows(&buf));
+    s.key(key(KeyCode::Enter));
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(
+            &buf,
+            "Turn TypeSafe off? Every Wake and Plan becomes a Question"
+        )
+        .is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Char('n')));
+    assert!(!repo.path().join(".harness/config.json").exists());
+    s.key(key(KeyCode::Enter));
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(config_json(repo.path()), json!({"typesafe": false}));
+    assert_eq!(note(&s), "TypeSafe off");
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "TypeSafe  off").is_some(), "{:#?}", rows(&buf));
+}
+
+/// TypeSafe on without a key asks the key, shown as dots; it is kept as
+/// init keeps it, readable only by you, and TypeSafe saves on.
+#[test]
+fn typesafe_on_without_a_key_asks_it_masked() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"typesafe": false}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    s.cfg.api_key = String::new();
+    typesafe_page(&mut s);
+    s.key(key(KeyCode::Enter));
+    type_in(&mut s, "sk-new9");
+    let buf = render(&s, 160, 45);
+    assert!(
+        find(&buf, "TypeSafe key › •••••••▏").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(find(&buf, "sk-new9").is_none(), "{:#?}", rows(&buf));
+    s.key(key(KeyCode::Enter));
+    let file = repo.path().join(".harness/typesafe-key");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "sk-new9\n");
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(config_json(repo.path()), json!({"typesafe": true}));
+    assert_eq!(s.cfg.api_key, "sk-new9");
+    assert_eq!(note(&s), "TypeSafe on");
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "••••new9").is_some(), "{:#?}", rows(&buf));
+}
+
+/// u fetches a skill's source again and says the new commit; U fetches
+/// every one, which here is up to date.
+#[test]
+fn updating_says_the_new_commit_or_up_to_date() {
+    let repo = TempDir::new();
+    let tools = clones();
+    add(
+        repo.path(),
+        Path::new(""),
+        &*tools,
+        "mattpocock/skills",
+        Some("tdd"),
+    )
+    .unwrap();
+    let mut m = manifest(repo.path());
+    m.skills.get_mut("tdd").unwrap().commit = "0000000old".to_string();
+    m.save(repo.path()).unwrap();
+    let mut s = skills_page(tools, repo.path());
+    keys(&mut s, &[KeyCode::Down, KeyCode::Char('u')]);
+    await_busy(&mut s);
+    assert_eq!(note(&s), "updated tdd 0000000 → abc1234");
+    assert_eq!(manifest(repo.path()).skills["tdd"].commit, "abc1234def");
+    s.key(key(KeyCode::Char('U')));
+    await_busy(&mut s);
+    assert_eq!(note(&s), "every skill is up to date");
 }

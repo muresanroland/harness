@@ -114,6 +114,16 @@ pub(crate) fn lacks(pick: &str, have: &[String], built_in: &[&str]) -> bool {
     pick != NONE && !built_in.contains(&pick) && !have.iter().any(|name| name == pick)
 }
 
+/// The config.json row whose App runs a job's line: the audit is side A's.
+pub(crate) fn job_row(job: &str) -> &'static str {
+    match job {
+        "review" => "review",
+        "audit" => "side_a",
+        "merge-conflicts" => "address",
+        _ => "implement",
+    }
+}
+
 /// Where the skills the Harness installs go, as harness init asked.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

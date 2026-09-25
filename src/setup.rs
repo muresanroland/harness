@@ -18,7 +18,7 @@ use crate::tools::Tools;
 /// The record of every skill file init wrote, path to the text it wrote:
 /// under refresh, a file that still matches is unedited and is rewritten.
 const RECORD: &str = ".harness/installed-skills.json";
-const KEY_FILE: &str = ".harness/typesafe-key";
+pub(crate) const KEY_FILE: &str = ".harness/typesafe-key";
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -507,6 +507,13 @@ fn ask_typesafe_key(
     if key.is_empty() {
         return Ok(false);
     }
+    keep_key(repo, &key)?;
+    write!(out, "init: TypeSafe key kept in {KEY_FILE}\r\n")?;
+    Ok(true)
+}
+
+/// Keeps the TypeSafe key in KEY_FILE, readable only by the user.
+pub(crate) fn keep_key(repo: &Path, key: &str) -> io::Result<()> {
     fs::create_dir_all(repo.join(".harness"))?;
     File::options()
         .write(true)
@@ -514,9 +521,7 @@ fn ask_typesafe_key(
         .truncate(true)
         .mode(0o600)
         .open(repo.join(KEY_FILE))?
-        .write_all(format!("{key}\n").as_bytes())?;
-    write!(out, "init: TypeSafe key kept in {KEY_FILE}\r\n")?;
-    Ok(true)
+        .write_all(format!("{key}\n").as_bytes())
 }
 
 /// Puts a [Y/n] question: enter or y is yes, Ctrl-C, Ctrl-D or any other
@@ -752,15 +757,8 @@ pub(crate) fn preflight(
         Ok(manifest) => {
             for (job, suggestions) in JOBS {
                 let pick = manifest.pick(job);
-                // The row running the job's line: the audit is side A's.
-                let key = match *job {
-                    "review" => "review",
-                    "audit" => "side_a",
-                    "merge-conflicts" => "address",
-                    _ => "implement",
-                };
                 // A row that cannot be read is the Orchestrator's to refuse.
-                let Ok(row) = app::row(repo, key) else {
+                let Ok(row) = app::row(repo, manifest::job_row(job)) else {
                     continue;
                 };
                 let have: Vec<String> = found
