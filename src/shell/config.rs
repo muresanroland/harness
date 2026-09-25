@@ -30,67 +30,63 @@ pub(crate) struct ConfigRow {
     pub(crate) note: &'static str,
 }
 
-const fn config_row(
-    key: &'static str,
-    name: &'static str,
-    lead: &'static str,
-    section: usize,
-    note: &'static str,
-) -> ConfigRow {
-    ConfigRow {
-        key,
-        name,
-        lead,
-        section,
-        note,
-    }
-}
-
 pub(crate) const ROWS: [ConfigRow; 8] = [
-    config_row(
-        "implement",
-        "Implement",
-        "",
-        0,
-        "Plans, implements test-first, reviews itself and commits in the Ticket's worktree.",
-    ),
-    config_row("review", "Review", "", 1, "Reviews the diff into Findings."),
-    config_row(
-        IF_LIMITED,
-        "Review if limited",
-        "if limited:",
-        1,
-        "Runs the Review when the Review's App is Limited and you answer to review with it; none leaves wait or open the PR unreviewed.",
-    ),
-    config_row(
-        "moderator",
-        "Moderator",
-        "Moderator",
-        2,
-        "stage-moderate's pane: runs the Debate and settles each Finding.",
-    ),
-    config_row(
-        "side_a",
-        "Debate side A",
-        "side A",
-        2,
-        "Argues each Finding, headless; also runs the ponytail audit.",
-    ),
-    config_row(
-        "side_b",
-        "Debate side B",
-        "side B",
-        2,
-        "Argues each Finding, headless, on a model from another family than side A.",
-    ),
-    config_row("fix", "Fix", "", 3, "Fixes the Findings to fix, then opens the PR."),
-    config_row(
-        "address",
-        "Address",
-        "",
-        4,
-        "Resolves a PR's merge conflicts or review comments.",
-    ),
+    ConfigRow {
+        key: "implement",
+        name: "Implement",
+        lead: "",
+        section: 0,
+        note: "Plans, implements test-first, reviews itself and commits in the Ticket's worktree.",
+    },
+    ConfigRow {
+        key: "review",
+        name: "Review",
+        lead: "",
+        section: 1,
+        note: "Reviews the diff into Findings.",
+    },
+    ConfigRow {
+        key: IF_LIMITED,
+        name: "Review if limited",
+        lead: "if limited:",
+        section: 1,
+        note: "Runs the Review when the Review's App is Limited and you answer to review with it; none leaves wait or open the PR unreviewed.",
+    },
+    ConfigRow {
+        key: "moderator",
+        name: "Moderator",
+        lead: "Moderator",
+        section: 2,
+        note: "stage-moderate's pane: runs the Debate and settles each Finding.",
+    },
+    ConfigRow {
+        key: "side_a",
+        name: "Debate side A",
+        lead: "side A",
+        section: 2,
+        note: "Argues each Finding, headless; also runs the ponytail audit.",
+    },
+    ConfigRow {
+        key: "side_b",
+        name: "Debate side B",
+        lead: "side B",
+        section: 2,
+        note: "Argues each Finding, headless, on a model from another family than side A.",
+    },
+    ConfigRow {
+        key: "fix",
+        name: "Fix",
+        lead: "",
+        section: 3,
+        note: "Fixes the Findings to fix, then opens the PR.",
+    },
+    ConfigRow {
+        key: "address",
+        name: "Address",
+        lead: "",
+        section: 4,
+        note: "Resolves a PR's merge conflicts or review comments.",
+    },
 ];
 
 /// The Pipeline's sections: title, short name on the left, description.
@@ -578,7 +574,8 @@ impl Screen {
     }
 
     /// A model picked or typed: with the new App it came after, the pair;
-    /// the effort back to default when the model does not list it.
+    /// the effort back to default on a new App, or when the model does not
+    /// list it.
     fn pick_model(&mut self, pick: &Pick, model: &str) {
         let st = self.settings.as_ref().unwrap();
         let mut fields = vec![(Field::Model, model.to_string())];
@@ -587,7 +584,9 @@ impl Screen {
                 fields.insert(0, (Field::App, app.name.to_string()));
             }
             let effort = st.value(pick.row, Field::Effort);
-            if effort != "default" && !st.efforts(app, model).contains(&effort) {
+            if effort != "default"
+                && (pick.app.is_some() || !st.efforts(app, model).contains(&effort))
+            {
                 fields.push((Field::Effort, "default".to_string()));
             }
         }

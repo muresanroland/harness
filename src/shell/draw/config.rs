@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::modal::{dock, wrap_spans};
+use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
 use crate::shell::config::{distinct, Field, Pick, Settings, ROWS, SECTIONS};
@@ -58,10 +58,6 @@ pub(super) fn config(f: &mut Frame, s: &Screen) {
     f.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), right);
 }
 
-fn divider(width: usize) -> Line<'static> {
-    Line::from(Span::styled("─".repeat(width), fg(BORDER)))
-}
-
 /// `text` cut and padded to `width`.
 fn pad(text: &str, width: usize) -> String {
     format!("{:<width$}", cut(text, width.saturating_sub(1)))
@@ -94,12 +90,7 @@ fn badges(s: &Screen, st: &Settings) -> Vec<Span<'static>> {
         return Vec::new();
     }
     let mut spans = vec![Span::raw(" ")];
-    for (i, badge) in badges.into_iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" · ", fg(MUTED)));
-        }
-        spans.push(badge);
-    }
+    spans.extend(joined(badges));
     spans.push(Span::raw(" "));
     spans
 }
@@ -118,20 +109,19 @@ fn hint(st: &Settings) -> &'static str {
 /// there is room, a rule, then the lines whose pages come later.
 fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'static>> {
     let row = |name: &str, summary: String, selected: bool| {
-        let name_style = match (selected, st.open) {
-            (true, false) => bold(PURPLE),
-            (true, true) => bold(TEXT),
-            (false, _) => fg(TEXT),
+        let (name_style, bg) = match (selected, st.open) {
+            (true, false) => (bold(PURPLE), Some(SEL_BG)),
+            (true, true) => (bold(TEXT), Some(REST_BG)),
+            (false, _) => (fg(TEXT), None),
         };
         let spans = vec![
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
             Span::styled(pad(name, 10), name_style),
             Span::styled(cut(&summary, width.saturating_sub(12)), fg(MUTED)),
         ];
-        match (selected, st.open) {
-            (true, false) => filled(spans, width, SEL_BG),
-            (true, true) => filled(spans, width, REST_BG),
-            (false, _) => Line::from(spans),
+        match bg {
+            Some(bg) => filled(spans, width, bg),
+            None => Line::from(spans),
         }
     };
     let mut lines = vec![Line::from(Span::styled("PIPELINE", bold(MUTED)))];

@@ -93,15 +93,15 @@ fn config_opens_docked_at_160x45_and_as_a_box_at_100x30() {
 
 /// The Review from claude to codex: picking the App leads into codex's
 /// models, read from its catalog (the hidden one left out); the model is
-/// probed, saves with the App, and the effort, from that model's levels,
-/// saves at once.
+/// probed and saves with the App, the effort back to default though codex
+/// lists `high` too, and the effort, from that model's levels, saves at once.
 #[test]
 fn review_to_codex_a_listed_model_and_an_effort_save_all_three() {
     let repo = TempDir::new();
     let file = repo.path().join(".harness/config.json");
     write_file(
         &file,
-        r#"{"review": {"app": "claude", "model": "opus", "effort": "max"}}"#,
+        r#"{"review": {"app": "claude", "model": "opus", "effort": "high"}}"#,
     );
     let tools = apps("");
     let mut s = screen_at(tools.clone(), repo.path());
