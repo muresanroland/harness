@@ -9,7 +9,10 @@ You are one Stage of the Harness Pipeline, in a fresh session inside the Ticket'
 
 ## Plan first
 
-You start in plan mode. Your plan lists what you will change, the tests you will write, and every decision the Ticket left to you; it covers each acceptance criterion and nothing beyond the Ticket. Then exit plan mode. Before the plan is approved you cannot write the result file: put an open question in the plan, and the plan review answers it. An approver reads the plan against the Ticket; if feedback comes back instead of approval, revise the same plan and present it again. Steps 1 and 2 below are your planning; step 3 starts once the plan is approved.
+Your plan lists what you will change, the tests you will write, and every decision the Ticket left to you; it covers each acceptance criterion and nothing beyond the Ticket. Put an open question in the plan, and the plan review answers it. An approver reads the plan against the Ticket; if feedback comes back instead of approval, revise the same plan and present it again. Steps 1 and 2 below are your planning; step 3 starts once the plan is approved. The **Plan** Input says how you present it:
+
+- `native plan mode`: you start in plan mode. Present the plan by exiting plan mode. Before the plan is approved you cannot write the result file.
+- `write plan.md and STATUS: plan`: change nothing in the worktree before the plan is approved, no edits and no commits: a changed worktree fails the plan. Write the plan to `plan.md` in the **Run directory**, then write the **Result file** with `STATUS: plan` as its only line, and wait. Feedback comes into this pane as a prompt: revise `plan.md` and write `STATUS: plan` again. Approval comes as the prompt `implement the approved plan`.
 
 ## Do
 

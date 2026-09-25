@@ -27,6 +27,9 @@ pub(crate) struct App {
     /// The unattended args of the Review, in the Run directory, given the
     /// worktree.
     pub(crate) run_dir_args: fn(&str) -> Vec<String>,
+    /// The unattended args of a Stage in the worktree, given the Run
+    /// directory.
+    pub(crate) worktree_args: fn(&str) -> Vec<String>,
     pub(crate) model: &'static [&'static str],
     pub(crate) effort: &'static [&'static str],
     pub(crate) resume: &'static [&'static str],
@@ -92,6 +95,11 @@ pub(crate) static APPS: [App; 2] = [
             .map(String::from)
             .to_vec()
         },
+        worktree_args: |run_dir| {
+            ["--permission-mode", "auto", "--add-dir", run_dir]
+                .map(String::from)
+                .to_vec()
+        },
         model: &["--model", "{}"],
         effort: &["--effort", "{}"],
         resume: &["--resume", "{}"],
@@ -134,6 +142,17 @@ pub(crate) static APPS: [App; 2] = [
         // The sandbox writes only where the pane starts: the result file
         // there, nothing in the worktree.
         run_dir_args: |_| ["--sandbox", "workspace-write"].map(String::from).to_vec(),
+        // The sandbox writes the worktree, where the pane starts, and the
+        // Run directory, for the plan and the result.
+        // ponytail: Git metadata stays read-only, so Implement's commit asks
+        // you to let it out of the sandbox (a blocked session); a Git write
+        // path that keeps .git's hooks and config out of reach when that
+        // asks too often.
+        worktree_args: |run_dir| {
+            ["--sandbox", "workspace-write", "--add-dir", run_dir]
+                .map(String::from)
+                .to_vec()
+        },
         model: &["-m", "{}"],
         effort: &["-c", "model_reasoning_effort={}"],
         resume: &["resume", "{}"],
@@ -387,12 +406,14 @@ pub(crate) fn field(doc: &Value, key: &str, name: &str) -> Result<String, String
     }
 }
 
-/// Off claude only the Review, its fallback and the Debate's sides run,
-/// until codex has the two-step Plan, the network the Moderator's side
-/// commands and TypeSafe calls need, and a Git write path: its sandbox keeps
-/// Git metadata read-only.
+/// Off claude only Implement (the two-step Plan, plan.rs), the Review, its
+/// fallback and the Debate's sides run, until codex has the network the
+/// Moderator's side commands and TypeSafe calls need, and a Git write path
+/// for Fix and Address: its sandbox keeps Git metadata read-only.
 pub(crate) fn runs_on(key: &str, app: &App) -> Result<(), String> {
-    match app.name == "claude" || matches!(key, "review" | IF_LIMITED | "side_a" | "side_b") {
+    match app.name == "claude"
+        || matches!(key, "implement" | "review" | IF_LIMITED | "side_a" | "side_b")
+    {
         true => Ok(()),
         false => Err(format!("{key} runs on claude only")),
     }
@@ -420,6 +441,12 @@ pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String>
         _ => None,
     }
     .filter(|plan| *plan != model && plan != "default");
+    if plan_model.is_some() && app.name != "claude" {
+        return Err(format!(
+            "{}: implement plan_model splits from model: the split runs on claude only",
+            path.display()
+        ));
+    }
     // Full ids: opusplan's remap env takes no alias, and an alias for one
     // half may resolve through the other's remap to the same model.
     let full = |m: &str| m.starts_with("claude-");
