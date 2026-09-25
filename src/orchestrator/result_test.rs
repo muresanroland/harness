@@ -1,5 +1,7 @@
 use super::herdr::{location, PaneInfo, TabInfo};
-use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
+use super::result::{
+    read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult,
+};
 use super::write_file;
 use crate::tempdir::TempDir;
 
@@ -14,7 +16,7 @@ fn stage_result_acceptance() {
         require_pr: true,
         ..Default::default()
     };
-    let cases: [(&str, &str, ResultRequirements, &str); 14] = [
+    let cases: [(&str, &str, ResultRequirements, &str); 15] = [
         ("done", "STATUS: done\nall good\n", none, ""),
         (
             "failed",
@@ -69,6 +71,12 @@ fn stage_result_acceptance() {
             "",
         ),
         (
+            "a question is not done",
+            "STATUS: question\nours or theirs?\n- ours\n",
+            none,
+            "asked a question",
+        ),
+        (
             "failed even with PR",
             "STATUS: failed\nPR: https://example.test/pr/7\n",
             pr,
@@ -91,6 +99,43 @@ fn stage_result_acceptance() {
             );
         }
     }
+}
+
+#[test]
+fn a_question_is_its_text_and_its_dash_options() {
+    let dir = TempDir::new();
+    let path = dir.path().join("result.md");
+    assert_eq!(read_question(&path), None, "a missing file asks nothing");
+    write_file(
+        &path,
+        "STATUS: Question\r\n\nBoth sides changed parse().\nWhich one stays?\n\n- ours: keep the new parser\n-  theirs\n",
+    );
+    assert_eq!(
+        read_question(&path),
+        Some((
+            "Both sides changed parse().\nWhich one stays?".to_string(),
+            vec![
+                "ours: keep the new parser".to_string(),
+                "theirs".to_string()
+            ]
+        ))
+    );
+    // Only the last block of "- " lines are options: a hunk in the
+    // question keeps its removed lines, indentation and blank lines.
+    write_file(
+        &path,
+        "STATUS: question\n\nBoth sides changed:\n\n-    let x = 1;\n+    let x = 2;\n- a note\n\nWhich stays?\n- ours\n- theirs\n\n",
+    );
+    assert_eq!(
+        read_question(&path),
+        Some((
+            "Both sides changed:\n\n-    let x = 1;\n+    let x = 2;\n- a note\n\nWhich stays?"
+                .to_string(),
+            vec!["ours".to_string(), "theirs".to_string()]
+        ))
+    );
+    write_file(&path, "STATUS: done\n- ours\n");
+    assert_eq!(read_question(&path), None, "a done result asks nothing");
 }
 
 #[test]

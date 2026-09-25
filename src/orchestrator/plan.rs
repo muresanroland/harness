@@ -499,7 +499,7 @@ impl Orchestrator {
     /// Gives the session the settle ticks to leave `was`: herdr's status is
     /// a moment behind keys and prompts, and the Stage loop would take the
     /// stale one for another prompt, or for a Stage idle without a result.
-    fn settle(&self, pane: &str, was: &[&str]) {
+    pub(super) fn settle(&self, pane: &str, was: &[&str]) {
         for _ in 0..SETTLE_TICKS {
             let still = self
                 .agent_status(pane)
