@@ -141,13 +141,14 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
 }
 
 /// A wait as the Apps print it: "~45 min", "12 minutes", "3h 12m", "2
-/// days 3 hours"; seconds alone are none.
+/// days 3 hours"; seconds alone are none, and so is any other unit, "2
+/// months".
 // ponytail: counted from when it is read, so an old line still in the last
 // lines holds again rather than Wakes, as a reset-less one does; the pane's
 // own timestamps if that bites.
 fn from_now(text: &str) -> Option<Duration> {
     let re = Regex::new(
-        r"(?i)^~?(?:(?P<d>\d+)\s*d[a-z]*\s*)?(?:(?P<h>\d+)\s*h[a-z]*\s*)?(?:(?P<m>\d+)\s*m[a-z]*)?",
+        r"(?i)^~?(?:(?P<d>\d+)\s*(?:d|days?)\s*)?(?:(?P<h>\d+)\s*(?:h|hrs?|hours?)\s*)?(?:(?P<m>\d+)\s*(?:m|mins?|minutes?)\s*)?(?:\d+\s*(?:s|secs?|seconds?))?$",
     )
     .unwrap();
     let caps = re.captures(text)?;

@@ -233,6 +233,11 @@ fn a_past_reset_an_old_line_or_another_apps_text_is_no_limit() {
             "opencode",
             format!("5-hour usage limit reached. It will reset in 3 hours 12 minutes.\n{newer}"),
         ),
+        // A unit it does not know is no wait: not "2 m(inutes)".
+        (
+            "opencode",
+            "Monthly usage limit reached. It will reset in 2 months.".to_string(),
+        ),
         // A retry in seconds is no limit's.
         (
             "opencode",
