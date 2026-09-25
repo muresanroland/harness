@@ -125,7 +125,7 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
 /// the repo too, as trusting the parent folder records it; opencode trusts
 /// every directory.
 #[test]
-fn a_trusted_ancestor_covers_a_worktree_on_pi_copilot_and_cursor() {
+fn a_trusted_ancestor_covers_a_worktree_and_opencode_trusts_any() {
     let parent = TempDir::new();
     let repo = parent.path().join("repo");
     let worktree = repo.join(".harness/worktrees/hx-1");

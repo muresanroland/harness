@@ -6,7 +6,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use chrono::{DateTime, Datelike, Duration, Local, Month, NaiveDate, NaiveTime, TimeZone, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, Local, Month, Months, NaiveDate, NaiveTime, TimeZone, Utc,
+    Weekday,
+};
 use regex::Regex;
 
 use super::app::{app, fallback_row, stage_row, App, Row};
@@ -85,6 +88,12 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
     if let Some(wait) = text.strip_prefix("in ") {
         return from_now(wait).map(|wait| (now + wait, false));
     }
+    // copilot's monthly credits: 00:00 UTC on the 1st.
+    if text == "for the month" {
+        let first = now.with_timezone(&Utc).date_naive().with_day(1)? + Months::new(1);
+        let reset = first.and_hms_opt(0, 0, 0)?.and_utc().with_timezone(&Local);
+        return Some((reset, true));
+    }
     let re = Regex::new(
         r"(?i)^(?:(?P<wd>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?P<mon>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(?P<year>\d{4}),?\s+)?)?(?:at\s+)?(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)",
     )
@@ -131,18 +140,25 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, boo
         .map(|r| (r, false))
 }
 
-/// A wait as the Apps print it: "~45 min", "12 minutes", "3h 12m", "3
-/// hours 12 minutes"; seconds alone are none.
+/// A wait as the Apps print it: "~45 min", "12 minutes", "3h 12m", "2
+/// days 3 hours"; seconds alone are none.
 // ponytail: counted from when it is read, so an old line still in the last
 // lines holds again rather than Wakes, as a reset-less one does; the pane's
 // own timestamps if that bites.
 fn from_now(text: &str) -> Option<Duration> {
-    let re = Regex::new(r"(?i)^~?(?:(?P<h>\d+)\s*h[a-z]*\s*)?(?:(?P<m>\d+)\s*m[a-z]*)?").unwrap();
+    let re = Regex::new(
+        r"(?i)^~?(?:(?P<d>\d+)\s*d[a-z]*\s*)?(?:(?P<h>\d+)\s*h[a-z]*\s*)?(?:(?P<m>\d+)\s*m[a-z]*)?",
+    )
+    .unwrap();
     let caps = re.captures(text)?;
     let num = |name: &str| caps.name(name).and_then(|m| m.as_str().parse::<i64>().ok());
-    match (num("h"), num("m")) {
-        (None, None) => None,
-        (h, m) => Some(Duration::hours(h.unwrap_or(0)) + Duration::minutes(m.unwrap_or(0))),
+    match (num("d"), num("h"), num("m")) {
+        (None, None, None) => None,
+        (d, h, m) => Some(
+            Duration::days(d.unwrap_or(0))
+                + Duration::hours(h.unwrap_or(0))
+                + Duration::minutes(m.unwrap_or(0)),
+        ),
     }
 }
 

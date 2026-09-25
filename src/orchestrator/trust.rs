@@ -114,7 +114,7 @@ pub(super) fn cursor_records(home: &Path, dir: &Path) -> Option<bool> {
 /// The name cursor keeps a directory's project under.
 // ponytail: the research names <slug> without its rule; this is claude's
 // (every other character a dash) without the leading one, unverified.
-pub(crate) fn cursor_slug(dir: &Path) -> String {
+pub(super) fn cursor_slug(dir: &Path) -> String {
     let slug: String = dir
         .to_string_lossy()
         .chars()

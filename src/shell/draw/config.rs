@@ -11,7 +11,9 @@ use ratatui::Frame;
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
-use crate::shell::config::{distinct, family, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
+use crate::shell::config::{
+    distinct, family_label, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS,
+};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 
@@ -251,7 +253,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
             vec![shown, muted("  no fallback".into())]
         }
         Field::Model | Field::Plan => match app {
-            Some(app) => vec![shown, muted(format!("  {}", family(app, &v)))],
+            Some(app) => vec![shown, muted(format!("  {}", family_label(app, &v)))],
             None => vec![shown],
         },
         Field::Effort => match app {

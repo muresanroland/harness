@@ -796,8 +796,8 @@ pub(crate) fn preflight(
         let Some(row) = row else {
             continue;
         };
-        let name = row.app.name;
-        if tools.run(repo, &["which", row.app.bin]).is_err() {
+        let name = row.app.bin;
+        if tools.run(repo, &["which", name]).is_err() {
             missing.push(format!("{key} runs on {name}, which is not on PATH"));
         }
     }

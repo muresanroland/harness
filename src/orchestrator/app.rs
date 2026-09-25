@@ -294,12 +294,10 @@ pub(crate) static APPS: [App; 6] = [
         home: "https://github.com/features/copilot/cli",
         // No listing but in a live session: default and 'type an id…'.
         models: |_, _| Ok(Vec::new()),
-        // ponytail: its monthly credits reset at 00:00 UTC on the 1st but
-        // say no reset, so they are looked at again every hour; compute the
-        // 1st when a run that long bites.
+        // Its monthly credits reset at 00:00 UTC on the 1st.
         limits: &[
             r"(?:You['’]ve (?:hit|reached) (?:your|the) (?P<what>(?:\w+ )?rate limit).*?)?Please wait for your limit to reset (?P<reset>in \d+ minutes?|on .+?) or switch",
-            r"You['’]ve run out of your included (?P<what>AI credits)",
+            r"You['’]ve run out of your included (?P<what>AI credits) (?P<reset>for the month)",
         ],
         mention: "",
         built_in: &[],
@@ -689,10 +687,19 @@ pub(crate) fn row_in(doc: &Value, key: &str, path: &Path) -> Result<Row, String>
             path.display()
         ));
     }
+    let effort = field("effort")?;
+    if app.effort == [ON_MODEL] && effort != "default" && model == "default" {
+        return Err(format!(
+            "{}: {key} effort {effort} on {}'s default model: {} puts its effort on a named model",
+            path.display(),
+            app.name,
+            app.name
+        ));
+    }
     Ok(Row {
         app,
         model,
-        effort: field("effort")?,
+        effort,
         plan_model,
     })
 }
@@ -719,12 +726,14 @@ pub(crate) fn full_id(model: &str) -> String {
 /// anthropic/claude-opus-5-5, claude-opus-5-5[1m] and pi's
 /// claude-opus-5-5:high are claude-opus-5-5.
 pub(crate) fn canonical(model: &str) -> String {
-    let m = model.rsplit('/').next().unwrap_or(model).to_lowercase();
-    let m = m
-        .split(['[', ':'])
-        .next()
-        .unwrap_or_default()
-        .replace('.', "-");
+    let lower = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    let m = lower.split('[').next().unwrap_or_default();
+    // pi's model:level; any other tag names a model of its own.
+    let m = match m.rsplit_once(':') {
+        Some((head, level)) if PI_THINKING.contains(&level) => head,
+        _ => m,
+    };
+    let m = m.replace('.', "-");
     let m = match m.rsplit_once('-') {
         Some((head, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => head,
         _ => &m,

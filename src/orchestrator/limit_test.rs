@@ -146,12 +146,23 @@ fn each_apps_limit_text_is_a_limit_until_its_reset() {
             false,
             "usage limit",
         ),
+        // Monthly credits reset at 00:00 UTC on the 1st.
         (
             "copilot",
             "You've run out of your included AI credits for the month. Upgrade or wait for next month.",
-            at(25, 15, 0),
-            false,
+            chrono::Utc
+                .with_ymd_and_hms(2026, 10, 1, 0, 0, 0)
+                .unwrap()
+                .with_timezone(&Local),
+            true,
             "AI credits",
+        ),
+        (
+            "opencode",
+            "Weekly usage limit reached. It will reset in 2 days 3 hours. Upgrade to continue.",
+            at(27, 17, 0),
+            true,
+            "Weekly usage limit",
         ),
         (
             "cursor",

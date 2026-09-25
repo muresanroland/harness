@@ -319,6 +319,11 @@ fn an_unreadable_config_or_a_stage_codex_cannot_run_wakes_the_stage_that_reads_i
             "debate 1",
             "Side B's family cannot be told from its model: name one",
         ),
+        (
+            r#"{"implement": {"app": "cursor", "effort": "high"}}"#,
+            "implement",
+            "{file}: implement effort high on cursor's default model: cursor puts its effort on a named model",
+        ),
     ] {
         let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
         config(&w, body);
@@ -520,6 +525,8 @@ fn a_model_has_one_name_across_apps() {
         ("haiku", "claude-haiku-4-5"),
         ("openai/gpt-5.5", "gpt-5-5"),
         ("anthropic/claude-opus-5-5:high", "claude-opus-5-5"),
+        // Only pi's thinking level goes: a tag names another model.
+        ("qwen3:32b", "qwen3:32b"),
         ("gpt-6-sol", "gpt-6-sol"),
     ] {
         assert_eq!(canonical(model), want, "{model}");
