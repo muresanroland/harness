@@ -886,27 +886,17 @@ fn a_pick_list_marks_each_model_that_would_break_a_rule() {
     );
 }
 
-/// herdr's integrations as `herdr integration status` prints them.
-const STATUS: &str = "pi: not installed (/home/u/.pi/agent/extensions/herdr-agent-state.ts)
-claude: current (v10) (/home/u/.claude/hooks/herdr-agent-state.sh)
-codex: current (v8) (/home/u/.codex/herdr-agent-state.sh)
-opencode: not installed (/home/u/.config/opencode/plugins/herdr-agent-state.js)
-letta (experimental): not installed (/home/u/.letta/hooks/herdr-agent-session.sh)
-";
-
 /// Fake Tools where codex is not on PATH and claude says its version.
 fn codex_missing() -> Arc<Fake> {
     Fake::new(|_, argv| match argv.join(" ").as_str() {
         "which codex" => Err("codex not found".to_string()),
         "claude --version" => Ok("2.1.282 (Claude Code)\n".to_string()),
-        "herdr integration status" => Ok(STATUS.to_string()),
         _ => Ok(String::new()),
     })
 }
 
 /// The Apps page: each App of the table installed with its version, or
-/// greyed not installed with its homepage; herdr's other Apps greyed, not
-/// supported yet.
+/// greyed not installed with its homepage.
 #[test]
 fn the_apps_page_renders_each_app_installed_or_not() {
     let repo = TempDir::new();
@@ -919,7 +909,7 @@ fn the_apps_page_renders_each_app_installed_or_not() {
     assert_eq!(text(&buf, 12, 69, 97), "▸ Apps      1 of 2 installed");
     s.key(key(KeyCode::Enter));
     let buf = render(&s, 160, 45);
-    let right: Vec<String> = (1..12).map(|y| text(&buf, y, 99, 158)).collect();
+    let right: Vec<String> = (1..8).map(|y| text(&buf, y, 99, 158)).collect();
     assert_eq!(
         right,
         [
@@ -930,21 +920,16 @@ fn the_apps_page_renders_each_app_installed_or_not() {
             "▸ claude      installed      2.1.282 (Claude Code)",
             "  codex       not installed  https://developers.openai.com…",
             "",
-            "  pi          not supported yet",
-            "  opencode    not supported yet",
-            "  letta       not supported yet",
-            "",
         ]
     );
     let (x, y) = find(&buf, "codex       not installed").unwrap();
     assert_eq!(buf[(x, y)].fg, super::logo::MUTED);
 }
 
-/// An App not installed is greyed in an App list; picking it opens a
-/// window with its homepage, which Enter opens through Tools and Esc
-/// closes. So does Enter on it on the Apps page.
+/// An App not installed is greyed in an App list; picking it says where
+/// to get it and changes nothing. So does Enter on it on the Apps page.
 #[test]
-fn an_app_not_installed_opens_a_window_that_opens_its_homepage() {
+fn an_app_not_installed_says_where_to_get_it() {
     let repo = TempDir::new();
     let tools = codex_missing();
     let mut s = screen_at(tools.clone(), repo.path());
@@ -959,29 +944,16 @@ fn an_app_not_installed_opens_a_window_that_opens_its_homepage() {
         "{:#?}",
         rows(&buf)
     );
-    s.key(key(KeyCode::Enter));
-    let buf = render(&s, 160, 45);
-    assert!(
-        find(&buf, " codex is not installed ").is_some(),
-        "{:#?}",
-        rows(&buf)
-    );
-    assert!(
-        find(&buf, "https://developers.openai.com/codex").is_some(),
-        "{:#?}",
-        rows(&buf)
-    );
-    assert!(
-        find(&buf, "harness init again").is_some(),
-        "{:#?}",
-        rows(&buf)
-    );
     let calls = tools.calls().len();
-    s.key(key(KeyCode::Esc));
-    assert!(s.settings.as_ref().unwrap().home.is_none());
+    s.key(key(KeyCode::Enter));
+    let where_ = "codex is not on PATH: get it at https://developers.openai.com/codex";
+    assert_eq!(note(&s), where_);
+    assert!(s.settings.as_ref().unwrap().pick.is_none());
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, where_).is_some(), "{:#?}", rows(&buf));
     assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
 
-    // From the Apps page: Enter opens the homepage and closes the window.
+    // From the Apps page.
     keys(
         &mut s,
         &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down],
@@ -990,18 +962,8 @@ fn an_app_not_installed_opens_a_window_that_opens_its_homepage() {
         &mut s,
         &[KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter],
     );
-    assert!(s.settings.as_ref().unwrap().home.is_some());
-    s.key(key(KeyCode::Enter));
-    let open = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    assert_eq!(
-        tools.calls().last().unwrap(),
-        &format!("{open} https://developers.openai.com/codex")
-    );
-    assert!(s.settings.as_ref().unwrap().home.is_none());
+    assert_eq!(note(&s), where_);
+    assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
     assert!(!repo.path().join(".harness/config.json").exists());
 }
 

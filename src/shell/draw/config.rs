@@ -2,18 +2,16 @@
 //! the left, the picked one's page or a pick list on the right, two lines of
 //! foot under a rule.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
-use crate::orchestrator::app::{App, APPS};
-use crate::shell::config::{
-    distinct, family_label, sign, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS,
-};
+use crate::orchestrator::app::APPS;
+use crate::shell::config::{distinct, sign, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 
@@ -59,50 +57,10 @@ pub(super) fn config(f: &mut Frame, s: &Screen) {
     // the cursor's line in view
     let top = (at + 2).saturating_sub(right.height as usize);
     f.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), right);
-    if let Some(app) = st.home {
-        window(f, rect, app);
-    }
-}
-
-/// The window on an App not installed, over the dock: where to get it.
-fn window(f: &mut Frame, over: Rect, app: &App) {
-    let (w, h) = (64.min(over.width.saturating_sub(4)), 9.min(over.height));
-    let rect = Rect::new(
-        over.x + over.width.saturating_sub(w) / 2,
-        over.y + over.height.saturating_sub(h) / 2,
-        w,
-        h,
-    );
-    f.render_widget(Clear, rect);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(fg(ORANGE))
-        .title(Span::styled(
-            format!(" {} is not installed ", app.name),
-            bold(ORANGE),
-        ))
-        .title_bottom(Span::styled(" Enter opens it · Esc closes ", fg(MUTED)))
-        .padding(Padding::new(2, 2, 1, 0));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    let text = format!(
-        "{} is not on PATH. Install it from its homepage, then run harness init again.",
-        app.name
-    );
-    let mut lines = wrap_spans(
-        vec![(text, fg(TEXT))],
-        inner.width as usize,
-        "",
-        "",
-        fg(TEXT),
-    );
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(app.home, bold(CYAN))));
-    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The Apps page: each App of the table, installed with its version or
-/// greyed with its homepage; herdr's other Apps, not supported yet.
+/// greyed with its homepage.
 fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let mut lines = vec![Line::from(vec![
         Span::styled("Apps", bold(TEXT)),
@@ -120,15 +78,15 @@ fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let mut at = 0;
     for (i, app) in APPS.iter().enumerate() {
         let selected = st.open && i == st.setting;
-        let on = st.installed[i];
+        let on = st.installed[i].is_some();
         let name = match (on, selected) {
             (false, _) => fg(MUTED),
             (true, true) => bold(TEXT),
             (true, false) => fg(TEXT),
         };
-        let (state, color, detail) = match on {
-            true => ("installed", GREEN, st.versions[i].clone()),
-            false => ("not installed", MUTED, app.home.to_string()),
+        let (state, color, detail) = match &st.installed[i] {
+            Some(version) => ("installed", GREEN, version.clone()),
+            None => ("not installed", MUTED, app.home.to_string()),
         };
         let spans = vec![
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
@@ -142,16 +100,6 @@ fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         } else {
             lines.push(Line::from(spans));
         }
-    }
-    if !st.others.is_empty() {
-        lines.push(Line::default());
-    }
-    for name in &st.others {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(pad(name, 12), fg(MUTED)),
-            Span::styled("not supported yet", fg(MUTED)),
-        ]));
     }
     (lines, at)
 }
@@ -172,11 +120,7 @@ fn filled(mut spans: Vec<Span<'static>>, width: usize, bg: Color) -> Line<'stati
 /// last save.
 fn badges(s: &Screen, st: &Settings) -> Vec<Span<'static>> {
     let mut badges = Vec::new();
-    let broken = st
-        .checks(None)
-        .iter()
-        .filter(|c| c.holds != Some(true))
-        .count();
+    let broken = st.checks(None).iter().filter(|c| !c.holds).count();
     if broken > 0 {
         let s = if broken == 1 { "" } else { "s" };
         badges.push(Span::styled(format!("✗ {broken} check{s}"), bold(RED)));
@@ -204,7 +148,6 @@ fn badges(s: &Screen, st: &Settings) -> Vec<Span<'static>> {
 
 fn hint(st: &Settings) -> &'static str {
     match st {
-        _ if st.home.is_some() => "Enter opens it · Esc closes",
         _ if st.probe.is_some() => "probing… · Esc drops it",
         _ if st.typing.is_some() => "Enter probes and saves · Esc cancels",
         _ if st.pick.is_some() => "↑↓ move · type to filter · Enter picks · Esc back",
@@ -298,7 +241,7 @@ fn value(st: &Settings, row: usize, field: Field) -> Vec<Span<'static>> {
             vec![shown, muted("  no fallback".into())]
         }
         Field::Model | Field::Plan => match app {
-            Some(app) => vec![shown, muted(format!("  {}", family_label(app, &v)))],
+            Some(app) => vec![shown, muted(format!("  {}", app.family))],
             None => vec![shown],
         },
         Field::Effort => match app {
@@ -357,11 +300,7 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     }
     for check in checks {
         let (mark, color) = sign(check.holds);
-        let text = if check.holds == Some(true) {
-            MUTED
-        } else {
-            color
-        };
+        let text = if check.holds { MUTED } else { color };
         let text = vec![(format!("{}.", check.text), fg(text))];
         let mark = format!("  {mark} ");
         lines.extend(wrap_spans(text, width, &mark, "    ", bold(color)));

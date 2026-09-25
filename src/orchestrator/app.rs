@@ -37,10 +37,11 @@ pub(crate) struct App {
     /// Where the App records the directories it trusts: Some(trusted) when
     /// dir is recorded.
     pub(crate) trust: fn(&Path, &Path) -> Option<bool>,
-    /// Its models' family; None for an App that runs several, where only
-    /// a named model's name tells.
-    pub(crate) family: Option<&'static str>,
-    /// Where to get it, for /config's window on an App not installed.
+    /// Its models' family.
+    // ponytail: one family per App; a family per model, told from its name,
+    // when an App that runs several (pi) joins APPS.
+    pub(crate) family: &'static str,
+    /// Where to get it, for /config on an App not installed.
     pub(crate) home: &'static str,
     /// The models /config offers besides default, run in the given dir.
     pub(crate) models: fn(&dyn Tools, &Path) -> Result<Vec<Model>, String>,
@@ -115,7 +116,7 @@ pub(crate) static APPS: [App; 2] = [
             "-p",
         ],
         trust: claude_records,
-        family: Some("Anthropic"),
+        family: "Anthropic",
         home: "https://claude.com/product/claude-code",
         models: |_, _| {
             let efforts = ["low", "medium", "high", "xhigh", "max"].map(String::from);
@@ -143,7 +144,7 @@ pub(crate) static APPS: [App; 2] = [
         resume: &["resume", "{}"],
         side: &["codex", "exec", "--sandbox", "read-only"],
         trust: codex_records,
-        family: Some("OpenAI"),
+        family: "OpenAI",
         home: "https://developers.openai.com/codex",
         models: codex_models,
         // U+2019 in You’ve; "Try again later." gives no reset
@@ -268,8 +269,8 @@ pub(crate) fn debate_inputs(
     limited: impl Fn(&str) -> Option<String>,
 ) -> Result<(Inputs, &'static App), String> {
     let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
-    let sides = debate((a.app, &a.model), (b.app, &b.model));
-    if sides.holds != Some(true) {
+    let sides = debate(a.app, b.app);
+    if !sides.holds {
         return Err(sides.text);
     }
     let mut inputs = vec![
@@ -480,71 +481,36 @@ pub(crate) fn canonical(model: &str) -> String {
     }
 }
 
-/// What a model's name tells of its family, on an App of no one family.
-// ponytail: a substring guess; each App's own model listing with families
-// when one names a model this misreads.
-const FAMILIES: [(&str, &str); 8] = [
-    ("claude", "Anthropic"),
-    ("fable", "Anthropic"),
-    ("opus", "Anthropic"),
-    ("sonnet", "Anthropic"),
-    ("haiku", "Anthropic"),
-    ("gpt", "OpenAI"),
-    ("gemini", "Google"),
-    ("grok", "xAI"),
-];
-
-/// The family of model on app: the App's own, else what the model's name
-/// tells; None when neither does, as for a default there.
-pub(crate) fn family(app: &App, model: &str) -> Option<&'static str> {
-    let m = model.to_lowercase();
-    app.family.or_else(|| {
-        FAMILIES
-            .iter()
-            .find(|(name, _)| m.contains(name))
-            .map(|(_, family)| *family)
-    })
-}
-
-/// A model as the rules compare it: its one name, or the App's default,
-/// which cannot be told on an App of no one family.
+/// A model as the rules compare it: its one name, or the App's default.
 // ponytail: an App's default counts as a model of its own, though
 // claude's may be opus; resolve it with the probe when that bites.
-fn model_id(app: &App, model: &str) -> Option<String> {
+fn model_id(app: &App, model: &str) -> String {
     match model {
-        "default" => app.family.map(|_| format!("{}'s default", app.name)),
-        _ => Some(canonical(model)),
+        "default" => format!("{}'s default", app.name),
+        _ => canonical(model),
     }
 }
 
-/// A rule config.json's rows keep: the rows it reads, whether it holds
-/// (None: a family or model that cannot be told, which counts as broken),
+/// A rule config.json's rows keep: the rows it reads, whether it holds,
 /// and what it says.
 pub(crate) struct Check {
     pub(crate) rows: &'static [&'static str],
-    pub(crate) holds: Option<bool>,
+    pub(crate) holds: bool,
     pub(crate) text: String,
 }
 
-/// The Debate's rule: its sides from two families, each told.
-fn debate(a: (&App, &str), b: (&App, &str)) -> Check {
-    let (holds, text) = match (family(a.0, a.1), family(b.0, b.1)) {
-        (Some(x), Some(y)) if x != y => (
-            Some(true),
+/// The Debate's rule: its sides from two families.
+fn debate(a: &App, b: &App) -> Check {
+    let (x, y) = (a.family, b.family);
+    let (holds, text) = match x != y {
+        true => (
+            true,
             format!("The sides come from two families: {x} and {y}"),
         ),
-        (Some(x), Some(_)) => (
-            Some(false),
+        false => (
+            false,
             format!("Both sides would be {x}: the Debate needs two families"),
         ),
-        (x, _) => {
-            let (side, (app, model)) = if x.is_none() { ("A", a) } else { ("B", b) };
-            let text = format!(
-                "side {side}'s family can't be told ({} {model}): pick a model that names it",
-                app.name
-            );
-            (None, text)
-        }
     };
     Check {
         rows: &["side_a", "side_b"],
@@ -555,83 +521,50 @@ fn debate(a: (&App, &str), b: (&App, &str)) -> Check {
 
 /// The rules over a table of rows: each row's App and model by its key,
 /// "plan" giving Implement's plan model. A split plans and implements in
-/// one family; the Review and its fallback never run on Implement's model;
-/// the Debate's sides come from two families.
+/// one family, as on one App it always does; the Review and its fallback
+/// never run on Implement's model; the Debate's sides come from two
+/// families.
 pub(crate) fn rules<'a>(row: impl Fn(&str) -> Option<(&'a App, String)>) -> Vec<Check> {
     let mut out = Vec::new();
     let imp = row("implement");
     if let Some((app, model)) = &imp {
         let plan = row("plan").filter(|(_, plan)| plan != "default" && plan != model);
         if let Some((_, plan)) = plan {
-            let (holds, text) = match (family(app, &plan), family(app, model)) {
-                (Some(p), Some(i)) if p == i => (
-                    Some(true),
-                    format!("Plans on {plan} and implements on {model}, both {p}"),
-                ),
-                (Some(_), Some(_)) => (
-                    Some(false),
-                    format!("The plan ({plan}) and the implementation ({model}) must be one family"),
-                ),
-                _ => (
-                    None,
-                    format!(
-                        "The plan's family or the implementation's can't be told ({} {plan}, {model}): pick models that name it",
-                        app.name
-                    ),
-                ),
-            };
             out.push(Check {
                 rows: &["implement"],
-                holds,
-                text,
+                holds: true,
+                text: format!(
+                    "Plans on {plan} and implements on {model}, both {}",
+                    app.family
+                ),
             });
         }
     }
-    let reviews: [(&'static [&str], &str, &str); 2] = [
-        (&["implement", "review"], "The Review", "The Review's"),
-        (
-            &["implement", IF_LIMITED],
-            "The Review if limited",
-            "The fallback's",
-        ),
+    let reviews: [(&'static [&str], &str); 2] = [
+        (&["implement", "review"], "The Review"),
+        (&["implement", IF_LIMITED], "The Review if limited"),
     ];
-    for (rows, who, whose) in reviews {
+    for (rows, who) in reviews {
         let (Some((ia, im)), Some((app, model))) = (&imp, row(rows[1])) else {
             continue;
         };
         if model == "none" {
             continue;
         }
-        let (holds, text) = match (model_id(ia, im), model_id(app, &model)) {
-            (Some(i), Some(r)) if i == r => (
-                Some(false),
+        let (i, r) = (model_id(ia, im), model_id(app, &model));
+        let (holds, text) = match i == r {
+            true => (
+                false,
                 format!(
                     "{who} would run on Implement's model, {i}: it must not review its own work"
                 ),
             ),
-            (Some(i), Some(r)) => (
-                Some(true),
-                format!("{who} runs on {r}, not Implement's {i}"),
-            ),
-            (None, _) => (
-                None,
-                format!(
-                    "Implement's model can't be told ({} default): pick a named model",
-                    ia.name
-                ),
-            ),
-            (_, None) => (
-                None,
-                format!(
-                    "{whose} model can't be told ({} default): pick a named model",
-                    app.name
-                ),
-            ),
+            false => (true, format!("{who} runs on {r}, not Implement's {i}")),
         };
         out.push(Check { rows, holds, text });
     }
     if let (Some(a), Some(b)) = (row("side_a"), row("side_b")) {
-        out.push(debate((a.0, &a.1), (b.0, &b.1)));
+        out.push(debate(a.0, b.0));
     }
     out
 }
@@ -655,7 +588,7 @@ pub(crate) fn checks(doc: &Value) -> Vec<Check> {
 /// starts on a config.json edited by hand.
 pub(crate) fn check(repo: &Path) -> Result<(), String> {
     let (_, doc) = read(repo)?;
-    match checks(&doc).into_iter().find(|c| c.holds != Some(true)) {
+    match checks(&doc).into_iter().find(|c| !c.holds) {
         Some(broken) => Err(broken.text),
         None => Ok(()),
     }

@@ -449,18 +449,9 @@ fn a_model_has_one_name_across_apps() {
     }
 }
 
-/// An App of no one family, as pi is: its default's family is unknown.
-fn many() -> &'static App {
-    Box::leak(Box::new(App {
-        name: "pi",
-        family: None,
-        ..APPS[0]
-    }))
-}
-
 /// Each rule over a table of rows (key, App, model), "plan" for
 /// Implement's plan model: whether it holds, and what it says.
-fn rules_of(table: &[(&str, &'static App, &str)]) -> Vec<(Option<bool>, String)> {
+fn rules_of(table: &[(&str, &'static App, &str)]) -> Vec<(bool, String)> {
     rules(|key| {
         let (_, app, model) = table.iter().find(|r| r.0 == key)?;
         Some((*app, model.to_string()))
@@ -472,7 +463,7 @@ fn rules_of(table: &[(&str, &'static App, &str)]) -> Vec<(Option<bool>, String)>
 
 #[test]
 fn the_rules_over_row_tables() {
-    let (claude, codex, pi) = (&APPS[0], &APPS[1], many());
+    let (claude, codex) = (&APPS[0], &APPS[1]);
     let base = |rows: &[(&'static str, &'static App, &'static str)]| {
         let mut table = vec![
             ("implement", claude, "default"),
@@ -487,9 +478,8 @@ fn the_rules_over_row_tables() {
         }
         rules_of(&table)
     };
-    let holds = |text: &str| (Some(true), text.to_string());
-    let broken = |text: &str| (Some(false), text.to_string());
-    let unknown = |text: &str| (None, text.to_string());
+    let holds = |text: &str| (true, text.to_string());
+    let broken = |text: &str| (false, text.to_string());
     // The defaults hold; the fallback at none is not checked.
     assert_eq!(
         base(&[]),
@@ -502,7 +492,7 @@ fn the_rules_over_row_tables() {
     assert_eq!(
         base(&[
             ("implement", claude, "opus"),
-            ("review", pi, "anthropic/claude-opus-5-5"),
+            ("review", codex, "anthropic/claude-opus-5-5"),
             (IF_LIMITED, claude, "opus-5.5"),
         ])[..2],
         [
@@ -515,51 +505,19 @@ fn the_rules_over_row_tables() {
         base(&[("review", claude, "default")])[0],
         broken("The Review would run on Implement's model, claude's default: it must not review its own work")
     );
-    // A default of no one family cannot be told apart.
-    assert_eq!(
-        base(&[("review", pi, "default")])[0],
-        unknown("The Review's model can't be told (pi default): pick a named model")
-    );
-    assert_eq!(
-        base(&[("implement", pi, "default")])[0],
-        unknown("Implement's model can't be told (pi default): pick a named model")
-    );
-    // The Debate: two families, each told.
+    // The Debate: two families, each its App's.
     assert_eq!(
         base(&[("side_b", claude, "sonnet")])[1],
         broken("Both sides would be Anthropic: the Debate needs two families")
     );
     assert_eq!(
-        base(&[("side_b", pi, "default")])[1],
-        unknown("side B's family can't be told (pi default): pick a model that names it")
+        base(&[("side_a", codex, "gpt-6-sol"), ("side_b", claude, "opus")])[1],
+        holds("The sides come from two families: OpenAI and Anthropic")
     );
-    assert_eq!(
-        base(&[("side_a", pi, "mystery-9")])[1],
-        unknown("side A's family can't be told (pi mystery-9): pick a model that names it")
-    );
-    assert_eq!(
-        base(&[("side_b", pi, "google/gemini-3-pro")])[1],
-        holds("The sides come from two families: Anthropic and Google")
-    );
-    assert_eq!(
-        base(&[("side_b", pi, "anthropic/claude-sonnet-5")])[1],
-        broken("Both sides would be Anthropic: the Debate needs two families")
-    );
-    // A split: plan and implementation one family, checked first.
+    // A split, on one App: plan and implementation one family, checked first.
     assert_eq!(
         base(&[("implement", claude, "opus"), ("plan", claude, "fable")])[0],
         holds("Plans on fable and implements on opus, both Anthropic")
-    );
-    assert_eq!(
-        base(&[
-            ("implement", pi, "anthropic/claude-opus-5-5"),
-            ("plan", pi, "openai/gpt-6-sol"),
-        ])[0],
-        broken("The plan (openai/gpt-6-sol) and the implementation (anthropic/claude-opus-5-5) must be one family")
-    );
-    assert_eq!(
-        base(&[("implement", pi, "mystery-9"), ("plan", pi, "google/gemini-3-pro")])[0],
-        unknown("The plan's family or the implementation's can't be told (pi google/gemini-3-pro, mystery-9): pick models that name it")
     );
     // A plan on Implement's model, or default, is no split.
     for plan in ["opus", "default"] {

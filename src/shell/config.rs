@@ -13,7 +13,7 @@ use crossterm::event::KeyCode;
 use ratatui::style::Color;
 use serde_json::{json, Value};
 
-use super::logo::{GREEN, MUTED, ORANGE, RED};
+use super::logo::{GREEN, MUTED, RED};
 use super::{Screen, NOTICE_WINDOW};
 use crate::orchestrator::app::{self, app, App, Check, Model, Row, APPS, IF_LIMITED};
 use crate::skills::manifest::Manifest;
@@ -196,16 +196,11 @@ pub(crate) struct Settings {
     pub(crate) doc: Value,
     /// Each App's models, as APPS orders them, read when /config opened.
     models: Vec<Result<Vec<Model>, String>>,
-    /// Whether each App, as APPS orders them, is on PATH, and the first
-    /// line its --version prints.
-    pub(crate) installed: Vec<bool>,
-    pub(crate) versions: Vec<String>,
-    /// herdr's other integrated Apps, not supported yet.
-    pub(crate) others: Vec<String>,
+    /// Each App, as APPS orders them, on PATH: the first line its
+    /// --version prints; None when not on PATH.
+    pub(crate) installed: Vec<Option<String>>,
     /// The skills installed but the Shipped ones.
     pub(crate) skills: usize,
-    /// The window on an App not installed: where to get it.
-    pub(crate) home: Option<&'static App>,
     /// The section on the left (APPS_PAGE past them), and whether the
     /// cursor is on its page.
     pub(crate) section: usize,
@@ -253,9 +248,9 @@ fn said(doc: &Value, row: usize) -> String {
     }
 }
 
-/// A model's family on app as /config labels it.
-pub(crate) fn family_label(app: &App, model: &str) -> &'static str {
-    app::family(app, model).unwrap_or("family unknown")
+/// The note on an App not on PATH: where to get it.
+fn not_on_path(app: &App) -> String {
+    format!("{} is not on PATH: get it at {}", app.name, app.home)
 }
 
 /// The rows of a section.
@@ -294,20 +289,20 @@ impl Settings {
     pub(crate) fn is_installed(&self, app: &App) -> bool {
         APPS.iter()
             .zip(&self.installed)
-            .any(|(a, &on)| on && a.name == app.name)
+            .any(|(a, on)| on.is_some() && a.name == app.name)
     }
 
     /// The Apps line on the left: "1 of 2 installed".
     pub(crate) fn apps_summary(&self) -> String {
-        let on = self.installed.iter().filter(|&&on| on).count();
+        let on = self.installed.iter().filter(|on| on.is_some()).count();
         format!("{on} of {} installed", APPS.len())
     }
 
     /// The foot's note on the Apps page's App i.
     pub(crate) fn app_note(&self, i: usize) -> String {
         match self.installed[i] {
-            true => format!("{} is on PATH: a Stage can run on it.", APPS[i].name),
-            false => format!("Not on PATH. Enter shows where to get {}.", APPS[i].name),
+            Some(_) => format!("{} is on PATH: a Stage can run on it.", APPS[i].name),
+            None => not_on_path(&APPS[i]),
         }
     }
 
@@ -323,14 +318,10 @@ impl Settings {
         checks
     }
 
-    /// A section's mark on the left: ✗ for a broken rule, else ? for one
-    /// that cannot be told.
+    /// A section's mark on the left: ✗ for a broken rule.
     pub(crate) fn mark(&self, section: usize) -> Option<(&'static str, Color)> {
-        let holds: Vec<_> = self.checks(Some(section)).iter().map(|c| c.holds).collect();
-        [Some(false), None]
-            .into_iter()
-            .find(|h| holds.contains(h))
-            .map(sign)
+        let broken = self.checks(Some(section)).iter().any(|c| !c.holds);
+        broken.then(|| sign(false))
     }
 
     /// A section's line on the left: its row's App and model; the Debate's
@@ -431,7 +422,7 @@ impl Settings {
             (Field::App, _) => {
                 for a in &APPS {
                     let detail = match self.is_installed(a) {
-                        true => family_label(a, "default"),
+                        true => a.family,
                         false => "not installed",
                     };
                     entry(a.name, detail.into(), Some(Picked::App(a)));
@@ -439,15 +430,8 @@ impl Settings {
             }
             (_, None) | (Field::Same, _) => {}
             (Field::Plan, Some(app)) => {
-                let theirs = app::family(app, &self.value(pick.row, Field::Model));
                 for (id, _) in self.listed(app) {
-                    if app::family(app, id) == theirs {
-                        entry(
-                            id,
-                            family_label(app, id).into(),
-                            Some(Picked::Value(id.clone())),
-                        );
-                    }
+                    entry(id, app.family.into(), Some(Picked::Value(id.clone())));
                 }
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
@@ -460,14 +444,14 @@ impl Settings {
                 }
                 // A split needs a named model for each half.
                 if pick.row != 0 || pick.app.is_some() || self.split().is_none() {
-                    let detail = format!("{}'s own · {}", app.name, family_label(app, "default"));
+                    let detail = format!("{}'s own · {}", app.name, app.family);
                     entry("default", detail, value("default"));
                 }
                 if let Err(err) = self.catalog(app) {
                     entry(err, String::new(), None);
                 }
                 for (id, _) in self.listed(app) {
-                    entry(id, family_label(app, id).into(), value(id));
+                    entry(id, app.family.into(), value(id));
                 }
                 let detail = "probed before it saves".to_string();
                 entry("type an id…", detail, Some(Picked::Typed));
@@ -499,17 +483,14 @@ impl Settings {
         let mut doc = self.doc.clone();
         put(&mut doc, key, &fields);
         let broken = broken_by(&self.doc, &doc)?;
-        let mark = match (broken.holds, broken.rows, key) {
-            (None, ..) => "? family unknown",
-            (_, ["implement"], _) if pick.field == Field::Plan => "✗ not Implement's family",
-            (_, ["implement"], _) => "✗ not the plan's family",
-            (_, [_, "review"], "implement") => "✗ the Review's model",
-            (_, [_, _], "implement") => "✗ the fallback's model",
-            (_, ["implement", _], _) => "✗ Implement's model",
-            (_, _, "side_a") => "✗ side B's family",
+        let mark = match (broken.rows, key) {
+            ([_, "review"], "implement") => "✗ the Review's model",
+            ([_, _], "implement") => "✗ the fallback's model",
+            (["implement", _], _) => "✗ Implement's model",
+            (_, "side_a") => "✗ side B's family",
             _ => "✗ side A's family",
         };
-        Some((mark, sign(broken.holds).1))
+        Some((mark, RED))
     }
 
     pub(crate) fn choices(&self, pick: &Pick) -> Vec<Picked> {
@@ -607,21 +588,17 @@ fn staged(
 /// mends one rule at a time.
 fn broken_by(before: &Value, after: &Value) -> Option<Check> {
     let was = app::checks(before);
-    let was_broken = |c: &Check| {
-        was.iter()
-            .any(|w| w.rows == c.rows && w.holds != Some(true))
-    };
+    let was_broken = |c: &Check| was.iter().any(|w| w.rows == c.rows && !w.holds);
     app::checks(after)
         .into_iter()
-        .find(|c| c.holds != Some(true) && !was_broken(c))
+        .find(|c| !c.holds && !was_broken(c))
 }
 
-/// How a rule's state shows: ✓ holds, ✗ broken, ? cannot be told.
-pub(crate) fn sign(holds: Option<bool>) -> (&'static str, Color) {
+/// How a rule's state shows: ✓ holds, ✗ broken.
+pub(crate) fn sign(holds: bool) -> (&'static str, Color) {
     match holds {
-        Some(true) => ("✓", GREEN),
-        Some(false) => ("✗", RED),
-        None => ("?", ORANGE),
+        true => ("✓", GREEN),
+        false => ("✗", RED),
     }
 }
 
@@ -668,28 +645,20 @@ impl Screen {
             Err(err) => return self.notice(&err, NOTICE_WINDOW),
         };
         let tools = &*self.cfg.tools;
-        let installed: Vec<bool> = APPS
+        let installed = APPS
             .iter()
-            .map(|a| tools.run(repo, &["which", a.name]).is_ok())
-            .collect();
-        let versions = APPS
-            .iter()
-            .zip(&installed)
-            .map(|(a, &on)| match on {
-                true => tools.run(repo, &[a.name, "--version"]).unwrap_or_default(),
-                false => String::new(),
+            .map(|a| {
+                tools.run(repo, &["which", a.name]).ok()?;
+                let version = tools.run(repo, &[a.name, "--version"]).unwrap_or_default();
+                Some(
+                    version
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                )
             })
-            .map(|v| v.lines().next().unwrap_or_default().trim().to_string())
-            .collect();
-        // herdr 0.9.1 prints "letta (experimental): not installed (<path>)".
-        let status = tools
-            .run(repo, &["herdr", "integration", "status"])
-            .unwrap_or_default();
-        let others = status
-            .lines()
-            .filter_map(|line| line.split([':', ' ']).next())
-            .filter(|name| !name.is_empty() && app(name).is_none())
-            .map(String::from)
             .collect();
         let skills =
             Manifest::load(repo).map_or(0, |m| m.skills.values().filter(|s| !s.shipped).count());
@@ -697,10 +666,7 @@ impl Screen {
             doc,
             models: APPS.iter().map(|a| (a.models)(tools, repo)).collect(),
             installed,
-            versions,
-            others,
             skills,
-            home: None,
             section: 0,
             open: false,
             setting: 0,
@@ -719,14 +685,6 @@ impl Screen {
     pub(super) fn config_key(&mut self, code: KeyCode, held: bool) {
         let st = self.settings.as_mut().unwrap();
         st.note = None;
-        if let Some(app) = st.home {
-            match code {
-                KeyCode::Esc => st.home = None,
-                KeyCode::Enter => self.open_home(app),
-                _ => {}
-            }
-            return;
-        }
         if st.probe.is_some() {
             if code == KeyCode::Esc {
                 st.probe = None;
@@ -796,10 +754,7 @@ impl Screen {
                 KeyCode::Up => st.setting = st.setting.saturating_sub(1),
                 KeyCode::Down => st.setting = (st.setting + 1).min(APPS.len() - 1),
                 KeyCode::Left | KeyCode::Esc => st.open = false,
-                KeyCode::Enter if st.installed[st.setting] => {
-                    st.note = Some((st.app_note(st.setting), MUTED));
-                }
-                KeyCode::Enter => st.home = Some(&APPS[st.setting]),
+                KeyCode::Enter => st.note = Some((st.app_note(st.setting), MUTED)),
                 _ => {}
             }
             return;
@@ -848,28 +803,13 @@ impl Screen {
         st.note = Some((refused, RED));
     }
 
-    /// An App's homepage, opened through Tools; the window closes.
-    fn open_home(&mut self, app: &'static App) {
-        let open = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        let opened = self.cfg.tools.run(&self.cfg.repo, &[open, app.home]);
-        let st = self.settings.as_mut().unwrap();
-        st.home = None;
-        st.note = Some(match opened {
-            Ok(_) => (format!("Opened {}.", app.home), MUTED),
-            Err(err) => (err.to_string(), RED),
-        });
-    }
-
-    /// A pick list's choice: a new App leads into its model list, one a
-    /// row cannot run on refused; a model or an effort changes the row.
+    /// A pick list's choice: a new App leads into its model list, one not
+    /// on PATH says where to get it, one a row cannot run on is refused; a
+    /// model or an effort changes the row.
     fn choose(&mut self, pick: Pick, picked: Picked) {
         let st = self.settings.as_mut().unwrap();
         match picked {
-            Picked::App(a) if !st.is_installed(a) => st.home = Some(a),
+            Picked::App(a) if !st.is_installed(a) => st.note = Some((not_on_path(a), MUTED)),
             Picked::App(a) if st.app(pick.row).is_some_and(|now| now.name == a.name) => {}
             Picked::App(a) => match app::runs_on(ROWS[pick.row].key, a) {
                 Ok(()) => st.open_pick(pick.row, Field::Model, Some(a)),
@@ -927,10 +867,12 @@ impl Screen {
         }
         // The model picked: a plan model, or the row's model.
         let has = |f: Field| fields.iter().any(|(field, _)| *field == f);
-        let picked = match () {
-            _ if has(Field::Plan) => staged.plan_model,
-            _ if has(Field::Model) => Some(staged.model),
-            _ => None,
+        let picked = if has(Field::Plan) {
+            staged.plan_model
+        } else if has(Field::Model) {
+            Some(staged.model)
+        } else {
+            None
         };
         let Some(model) = picked.filter(|m| m != "default" && m != "none") else {
             return self.save(row, &fields);
