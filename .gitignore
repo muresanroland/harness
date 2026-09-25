@@ -10,3 +10,4 @@
 .harness/
 .claude/worktrees/
 /target/
+graphify-out/
