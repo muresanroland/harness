@@ -312,14 +312,8 @@ pub(crate) fn typesafe(repo: &Path) -> bool {
 /// Keeps TypeSafe on or off in config.json, the rows as they were; a
 /// config.json that is not an object is refused, not overwritten.
 pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
-    let (path, mut doc) = read(repo)?;
-    if doc.is_null() {
-        doc = json!({});
-    }
-    let Some(fields) = doc.as_object_mut() else {
-        return Err(format!("{}: not a JSON object", path.display()));
-    };
-    fields.insert("typesafe".to_string(), Value::Bool(on));
+    let (path, mut doc) = read_object(repo)?;
+    doc["typesafe"] = Value::Bool(on);
     fs::create_dir_all(path.parent().unwrap())
         .and_then(|()| fs::write(&path, format!("{doc:#}\n")))
         .map_err(|err| format!("{}: {err}", path.display()))
@@ -354,6 +348,16 @@ pub(crate) fn read(repo: &Path) -> Result<(PathBuf, Value), String> {
         Err(err) => return Err(format!("{}: {err}", path.display())),
     };
     Ok((path, doc))
+}
+
+/// config.json to edit: missing (or null) is empty; any other non-object
+/// refuses, so a save never writes over it.
+pub(crate) fn read_object(repo: &Path) -> Result<(PathBuf, Value), String> {
+    match read(repo)? {
+        (path, Value::Null) => Ok((path, json!({}))),
+        (path, doc) if doc.is_object() => Ok((path, doc)),
+        (path, _) => Err(format!("{}: not a JSON object", path.display())),
+    }
 }
 
 /// Writes config.json whole through a temp file, so a Stage reading it as

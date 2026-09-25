@@ -527,3 +527,34 @@ fn typesafe_reads_off_while_config_json_turns_it_off() {
     let buf = render(&s, 160, 45);
     assert!(find(&buf, "TypeSafe  off").is_some(), "{:#?}", rows(&buf));
 }
+
+/// A config.json that is not an object is refused, never replaced: /config
+/// will not open on it, and a change after a hand edit to one saves nothing.
+#[test]
+fn a_config_json_not_an_object_is_refused_not_replaced() {
+    let repo = TempDir::new();
+    let file = repo.path().join(".harness/config.json");
+    write_file(&file, r#"{"fix": {"app": "gemini"}}"#);
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    write_file(&file, "[1]");
+    let fix_to_claude_default = [
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Enter,
+        KeyCode::Enter,
+        KeyCode::Enter,
+        KeyCode::Enter,
+    ];
+    keys(&mut s, &fix_to_claude_default);
+    let why = format!("{}: not a JSON object", file.display());
+    assert_eq!(note(&s), format!("Refused: {why}. Nothing changed."));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "[1]");
+    s.key(key(KeyCode::Esc));
+    s.key(key(KeyCode::Esc));
+    s.key(key(KeyCode::Esc));
+    type_line(&mut s, "/config");
+    assert!(s.settings.is_none());
+    assert_eq!(super::shell_test::notice(&s), why);
+}

@@ -418,11 +418,8 @@ fn staged(
     key: &str,
     fields: &[(Field, String)],
 ) -> Result<(PathBuf, Value, Value, Row), String> {
-    let (path, read) = app::read(repo)?;
+    let (path, read) = app::read_object(repo)?;
     let mut doc = read.clone();
-    if !doc.is_object() {
-        doc = json!({});
-    }
     if !doc[key].is_object() {
         doc[key] = json!({});
     }
@@ -435,12 +432,13 @@ fn staged(
 
 impl Screen {
     /// /config: reads config.json, each App's models and what the summaries
-    /// count. An unreadable config.json is a notice: nothing may save over it.
+    /// count. An unreadable config.json, or one not an object, is a notice:
+    /// nothing may save over it.
     // ponytail: the lists and `which` run on the screen thread (codex's
     // bundled catalog takes ~10 ms); a thread when an App's listing is slow.
     pub(super) fn open_config(&mut self) {
         let repo = &self.cfg.repo;
-        let doc = match app::read(repo) {
+        let doc = match app::read_object(repo) {
             Ok((_, doc)) => doc,
             Err(err) => return self.notice(&err, NOTICE_WINDOW),
         };
