@@ -1086,8 +1086,9 @@ impl Orchestrator {
                 None => return Some(Held::Woke("session died".to_string())),
                 Some("idle" | "done") if asked.is_some() => {}
                 Some(_) => {
-                    if asked.is_some() {
-                        // answered in the pane: no longer open, as a sent answer
+                    // answered in the pane: no longer open, as a sent answer;
+                    // a new one written since the read stays for the watch
+                    if asked.is_some() && read_question(file) == asked {
                         let _ = fs::remove_file(file);
                     }
                     if raised {

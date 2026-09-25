@@ -8,7 +8,7 @@ use super::stage::{Answer, Ask, ADDRESS, AWAY};
 use super::state::STATUS_PARKED;
 use super::world::{new_world, spawn_ticket, succeed, BdTicket};
 use super::write_file;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -129,6 +129,43 @@ fn a_question_answered_in_the_pane_left_unwritten_is_no_result_not_asked_again()
         asked, 1,
         "the question answered in the pane was asked again"
     );
+}
+
+#[test]
+fn a_question_written_while_its_status_is_read_is_kept() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    o.cfg.typesafe = Fake::down();
+    w.session(|p| match p.stage == "implement" {
+        true => (ASKS.to_string(), "idle".to_string()),
+        false => succeed(p),
+    });
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let Some(Ask::StageQuestion { pane, .. }) = w.await_event("question in implement").ask else {
+        panic!("no Question raised");
+    };
+    // answered in the pane, the session asks anew while its status is read
+    let file = o.run_dir("hx-1").join("implement.md");
+    let (get, armed) = (format!("herdr agent get {pane}"), AtomicBool::new(true));
+    let at = pane.clone();
+    w.hook(move |_, argv| {
+        if argv.join(" ") != get || !armed.swap(false, Ordering::SeqCst) {
+            return None;
+        }
+        write_file(&file, "STATUS: question\n\nWhich lexer stays?\n- ours\n");
+        let agent = serde_json::json!({ "agent_status": "working", "pane_id": at });
+        Some(Ok(
+            serde_json::json!({ "result": { "agent": agent } }).to_string()
+        ))
+    });
+    let asked = w.await_nth("question in implement", 2);
+    let Some(Ask::StageQuestion { question, .. }) = asked.ask else {
+        panic!("a question raised {:?}, not a Question", asked.ask);
+    };
+    assert_eq!(question, "Which lexer stays?");
+    o.answer("hx-1", &pane, Answer::Act(Action::Park));
+    run.wait();
 }
 
 #[test]
