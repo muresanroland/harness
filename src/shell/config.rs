@@ -488,14 +488,9 @@ impl Settings {
         let mut doc = self.doc.clone();
         put(&mut doc, key, &fields);
         let broken = broken_by(&self.doc, &doc)?;
-        // A family that cannot be told breaks a side's rule, and a default
-        // of an App that runs several the Review's.
-        let unknown = self
-            .pick_app(pick)
-            .is_some_and(|app| app::family_of(app, model).is_none())
-            && (model == "default" || matches!(key, "side_a" | "side_b"));
         let mark = match (broken.rows, key) {
-            _ if unknown => "? family unknown",
+            // Only the rules' unknown-family texts say "cannot".
+            _ if broken.text.contains("cannot") => "? family unknown",
             ([_, "review"], "implement") => "✗ the Review's model",
             ([_, _], "implement") => "✗ the fallback's model",
             (["implement", _], _) => "✗ Implement's model",

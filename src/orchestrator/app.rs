@@ -418,11 +418,10 @@ impl Row {
             None => &self.model,
         };
         let mut out = Vec::new();
-        if model != "default" {
-            out.extend(fill(self.app.model, model));
-        }
-        if self.effort != "default" {
-            out.extend(fill(self.app.effort, &self.effort));
+        for (form, value) in [(self.app.model, model), (self.app.effort, &self.effort)] {
+            if value != "default" {
+                out.extend(fill(form, value));
+            }
         }
         out
     }
