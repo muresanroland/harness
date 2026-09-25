@@ -4281,7 +4281,8 @@ fn a_ticket_added_mid_run_holds_the_summary_until_its_pr_opens() {
 }
 
 /// When the last Ticket merges and the Epic is done, a confirmation offers
-/// to close the Epic: yes runs bd close, no runs nothing.
+/// to close the Epic: yes comments each Ticket's PR on it and runs bd close
+/// with the Epic summary in the reason, no runs nothing.
 #[test]
 fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_no() {
     for (answer, want) in [('y', 1), ('n', 0)] {
@@ -4296,8 +4297,19 @@ fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_
         assert_eq!(question(&s), "close Epic hx Epic hx?");
         s.key(key(KeyCode::Char(answer)));
         assert_eq!(
+            w.called("bd comments add hx "),
+            vec!["bd comments add hx Every Ticket merged:\n- hx-1 Ticket hx-1: https://example.test/pr/hx-1"; want],
+            "answered {answer}"
+        );
+        let reason = "every Ticket merged\n\n\
+            1 PR · 0 parked\n\
+            1 Round · 0 Findings fixed · 0 skipped · 0 left on its PR · 0 parked\n\n\
+            hx-1 Ticket hx-1 ──────────────────────────────────────────────── merged\n  \
+            PR #hx-1  https://example.test/pr/hx-1\n  \
+            1 Round · 0 fixed · 0 skipped · 0 left";
+        assert_eq!(
             w.called("bd close hx "),
-            vec!["bd close hx --reason every Ticket merged"; want],
+            vec![format!("bd close hx --reason {reason}"); want],
             "answered {answer}"
         );
         assert!(!s.showing(), "the confirmation stayed");

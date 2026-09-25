@@ -1108,13 +1108,7 @@ impl Screen {
                 match pending {
                     Pending::Start { id, max, epic } => self.start(&id, max, epic, true),
                     Pending::Exit => self.quit(),
-                    Pending::Close(epic) => {
-                        let argv = ["bd", "close", &epic, "--reason", "every Ticket merged"];
-                        match self.cfg.tools.run(&self.cfg.repo, &argv) {
-                            Ok(_) => _ = self.reload_epics(),
-                            Err(err) => self.notice(&err.to_string(), NOTICE_WINDOW),
-                        }
-                    }
+                    Pending::Close(epic) => self.close_epic(&epic),
                 }
             }
             (About::Confirm(_), _) => {
@@ -1129,6 +1123,41 @@ impl Screen {
             _ => {}
         }
         self.hidden = false;
+    }
+
+    /// Closes the done Epic in bd, its summary in the reason, after a comment
+    /// that lists each Ticket with its PR, from the 'PR merged: <url>'
+    /// poll_merges closed it with.
+    fn close_epic(&mut self, epic: &str) {
+        let tickets = self
+            .epics
+            .iter()
+            .find(|e| e.id == epic)
+            .map(|e| &e.tickets[..]);
+        let lines: Vec<String> = tickets
+            .unwrap_or_default()
+            .iter()
+            .map(|t| {
+                let reason = &t.close_reason;
+                let pr = reason.strip_prefix("PR merged: ").unwrap_or(reason);
+                format!("- {} {}: {pr}", t.id, t.title)
+            })
+            .collect();
+        let comment = format!("Every Ticket merged:\n{}", lines.join("\n"));
+        let (tools, repo) = (&self.cfg.tools, &self.cfg.repo);
+        let reason = match bd_list(repo, &**tools)
+            .and_then(|issues| Summary::build(repo, &issues, &self.state, epic))
+        {
+            Ok(summary) => format!("every Ticket merged\n\n{}", draw::plain(&summary)),
+            Err(_) => "every Ticket merged".to_string(), // no evidence: the reason alone
+        };
+        let closed = tools
+            .run(repo, &["bd", "comments", "add", epic, &comment])
+            .and_then(|_| tools.run(repo, &["bd", "close", epic, "--reason", &reason]));
+        match closed {
+            Ok(_) => _ = self.reload_epics(),
+            Err(err) => self.notice(&err.to_string(), NOTICE_WINDOW),
+        }
     }
 
     /// Focuses the pane a Question is about; the Question stays.

@@ -32,9 +32,7 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
     ])
     .areas(area);
     let listed = || summary.tickets.iter().filter(|t| t.parked.is_none());
-    let count = |n: fn(&Ticket) -> usize| listed().map(n).sum::<usize>();
-    let prs = count(|t| usize::from(!t.pr.is_empty()));
-    let parked = summary.tickets.len() - listed().count();
+    let (prs, totals) = counts(summary);
     // as Screen::all_prs_open, which opens it by itself
     let done = listed().next().is_some() && listed().all(|t| !t.pr.is_empty() || t.merged);
 
@@ -44,10 +42,7 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
             format!(" {word} · {} {} ", summary.epic, summary.title),
             bold(Color::Black).bg(PURPLE),
         ),
-        Span::styled(
-            format!("  {} · {parked} parked", plural(prs, "PR")),
-            fg(GREEN),
-        ),
+        Span::styled(format!("  {prs}"), fg(GREEN)),
     ];
     if !s.questions.is_empty() {
         let text = format!(" · {} waiting", plural(s.questions.len(), "question"));
@@ -65,13 +60,6 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
         }
         false => "Not every Ticket has its PR yet.",
     };
-    let totals = format!(
-        "{} · {} Findings fixed · {} skipped · {} left on its PR · {parked} parked",
-        plural(count(|t| t.rounds), "Round"),
-        count(|t| t.fixed),
-        count(|t| t.skipped.len()),
-        count(|t| t.left.len()),
-    );
     let w = lead.width.saturating_sub(1) as usize;
     f.render_widget(
         Paragraph::new(vec![
@@ -132,6 +120,41 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
         Line::from(vec![left, Span::raw(" ".repeat(pad)), right]),
         foot,
     );
+}
+
+/// The title bar's 'N PRs · N parked' and the totals line; the totals
+/// count the Tickets with a section, not the Parked ones.
+fn counts(summary: &Summary) -> (String, String) {
+    let listed = || summary.tickets.iter().filter(|t| t.parked.is_none());
+    let count = |n: fn(&Ticket) -> usize| listed().map(n).sum::<usize>();
+    let parked = summary.tickets.len() - listed().count();
+    let prs = plural(count(|t| usize::from(!t.pr.is_empty())), "PR");
+    let totals = format!(
+        "{} · {} Findings fixed · {} skipped · {} left on its PR · {parked} parked",
+        plural(count(|t| t.rounds), "Round"),
+        count(|t| t.fixed),
+        count(|t| t.skipped.len()),
+        count(|t| t.left.len()),
+    );
+    (format!("{prs} · {parked} parked"), totals)
+}
+
+/// The summary as plain text 72 columns wide, the close reason of a done
+/// Epic: its counts, its totals, then the pager's body rows.
+pub(crate) fn plain(summary: &Summary) -> String {
+    let (prs, totals) = counts(summary);
+    let (rows, _) = sections(summary, 72);
+    let body = rows.iter().map(|row| {
+        let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+        text.trim_end().to_string()
+    });
+    [prs, totals, String::new()]
+        .into_iter()
+        .chain(body)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
 }
 
 /// The body rows `width` wide, and the row each Ticket starts on: a section
