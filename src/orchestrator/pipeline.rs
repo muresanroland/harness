@@ -55,38 +55,49 @@ impl Orchestrator {
             let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
             let review =
                 self.run_read_only(ticket, &REVIEW, round, &[], ResultRequirements::default())?;
-            self.report(
-                ticket,
-                &format!(
-                    "review {round} found {}",
-                    plural(review.findings, "finding")
-                ),
-            );
-            let verdict = self.run_read_only(
-                ticket,
-                &DEBATE,
-                round,
-                &[("Review file", &review_file.display().to_string())],
-                ResultRequirements {
-                    review_findings: review.findings,
-                    ..Default::default()
-                },
-            )?;
-            let fixes = verdict.fixes;
-            self.report(
-                ticket,
-                &format!(
-                    "debate {round} settled: {} to fix, {} skipped",
-                    fixes.len(),
-                    verdict.skips
-                ),
-            );
-            verdicts.push(
-                self.run_dir(ticket)
-                    .join(result_name(&DEBATE, round))
-                    .display()
-                    .to_string(),
-            );
+            // Its App Limited and the PR to open unreviewed: this Round's
+            // Review and Debate are skipped, and nothing is left to fix.
+            let unreviewed = review.unreviewed;
+            let fixes = if !unreviewed.is_empty() {
+                self.report(
+                    ticket,
+                    &format!("review {round} and debate {round} skipped: {unreviewed}"),
+                );
+                Vec::new()
+            } else {
+                self.report(
+                    ticket,
+                    &format!(
+                        "review {round} found {}",
+                        plural(review.findings, "finding")
+                    ),
+                );
+                let verdict = self.run_read_only(
+                    ticket,
+                    &DEBATE,
+                    round,
+                    &[("Review file", &review_file.display().to_string())],
+                    ResultRequirements {
+                        review_findings: review.findings,
+                        ..Default::default()
+                    },
+                )?;
+                self.report(
+                    ticket,
+                    &format!(
+                        "debate {round} settled: {} to fix, {} skipped",
+                        verdict.fixes.len(),
+                        verdict.skips
+                    ),
+                );
+                verdicts.push(
+                    self.run_dir(ticket)
+                        .join(result_name(&DEBATE, round))
+                        .display()
+                        .to_string(),
+                );
+                verdict.fixes
+            };
 
             // The Fix session always runs, even with nothing to fix, because
             // the last one opens the pull request. It is given only the fix
@@ -103,6 +114,9 @@ impl Orchestrator {
             if last {
                 inputs[0].1 = "yes";
                 inputs.push(("Verdict history", history.as_str()));
+            }
+            if !unreviewed.is_empty() {
+                inputs.push(("Unreviewed", unreviewed.as_str()));
             }
             let fix = self.run_stage(
                 ticket,

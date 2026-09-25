@@ -8,10 +8,10 @@ use std::sync::atomic::Ordering;
 use chrono::{DateTime, Datelike, Duration, Local, Month, NaiveDate, NaiveTime, TimeZone, Weekday};
 use regex::Regex;
 
-use super::app::{app, App};
-use super::result::{read_stage_result, ResultRequirements};
-use super::stage::{Held, Orchestrator, Stage};
-use super::state::TicketState;
+use super::app::{app, fallback_row, App, Row};
+use super::result::{read_stage_result, ResultRequirements, StageResult};
+use super::stage::{Ask, Held, Orchestrator, Stage, REVIEW};
+use super::state::{Review, TicketState};
 
 /// Only the pane's last lines are read, so an old limit line in the
 /// scrollback, or an agent quoting one, is not taken for a live limit.
@@ -140,7 +140,7 @@ pub(crate) fn holds(reset: DateTime<Local>, now: DateTime<Local>) -> bool {
 
 impl Orchestrator {
     /// When `app`'s usage limit resets, while it holds.
-    fn limited_until(&self, app: &str) -> Option<DateTime<Local>> {
+    pub(super) fn limited_until(&self, app: &str) -> Option<DateTime<Local>> {
         let reset = *self.state.lock().unwrap().limits.get(app)?;
         holds(reset, (self.cfg.clock)()).then_some(reset)
     }
@@ -170,6 +170,90 @@ impl Orchestrator {
         };
         self.update(ticket, |ts| ts.limited.clear());
         held
+    }
+
+    /// How a Review on `app` goes while it is Limited: the answer to the
+    /// Review's limit Question, which stands until the reset. Asked once
+    /// for the run, by the first Ticket that needs it, which holds, as does
+    /// every other, until the answer. None once the limit is over; Park on
+    /// /park, Stopped on /stop-work.
+    fn review_answer(&self, ticket: &str, label: &str, app: &str) -> Result<Option<Review>, Held> {
+        let answered = || self.state.lock().unwrap().reviews.get(app).copied();
+        let Some(reset) = self.limited_until(app) else {
+            return Ok(None);
+        };
+        if let Some(answer) = answered() {
+            return Ok(Some(answer));
+        }
+        let when = until(reset, (self.cfg.clock)());
+        self.log(
+            ticket,
+            &format!("{label} holds: {app} limited until {when}"),
+        );
+        self.update(ticket, |ts| ts.limited = app.to_string());
+        let mut asked = false;
+        let answer = loop {
+            if !asked && self.asked.lock().unwrap().insert(app.to_string()) {
+                asked = true;
+                let fallback = fallback_row(&self.cfg.repo).ok().flatten();
+                let ask = Ask::Limited {
+                    app: app.to_string(),
+                    fallback: fallback.filter(|f| f.app.name != app).map(|f| f.said()),
+                };
+                let text = format!("{app} limited until {when}: how do Reviews go until then?");
+                self.ask_only(ticket, &text, ask);
+            }
+            if self.consume(&format!("park-{ticket}")) {
+                break Err(Held::Park);
+            }
+            if !self.sleep() {
+                return Err(Held::Stopped);
+            }
+            if self.limited_until(app).is_none() {
+                break Ok(None);
+            }
+            if let Some(answer) = answered() {
+                break Ok(Some(answer));
+            }
+        };
+        if asked {
+            self.asked.lock().unwrap().remove(app);
+        }
+        self.update(ticket, |ts| ts.limited.clear());
+        answer
+    }
+
+    /// The row a Review starts on: its own, or while its App is Limited, as
+    /// the user answered: its own once the limit is over (wait), the
+    /// fallback's, or none, the Review skipped (unreviewed).
+    pub(super) fn review_row(&self, ticket: &str, label: &str, row: Row) -> Result<Row, Held> {
+        let app = row.app.name;
+        let Some(reset) = self.limited_until(app) else {
+            return Ok(row);
+        };
+        match self.review_answer(ticket, label, app)? {
+            Some(Review::Unreviewed) => Err(Held::Done(StageResult {
+                unreviewed: format!(
+                    "{app} was limited until {}",
+                    until(reset, (self.cfg.clock)())
+                ),
+                ..Default::default()
+            })),
+            // A fallback unset since waits for the reset.
+            Some(Review::Fallback) => match fallback_row(&self.cfg.repo) {
+                Ok(fallback) => Ok(fallback.unwrap_or(row)),
+                Err(err) => Err(Held::Woke(err)),
+            },
+            _ => Ok(row),
+        }
+    }
+
+    /// The user's answer to the Review's limit Question for `app`: it stands
+    /// for every Review on it until the reset.
+    pub(crate) fn review(&self, app: &str, answer: Review) {
+        self.change_state(|state| {
+            state.reviews.insert(app.to_string(), answer);
+        });
     }
 
     /// The usage limit the last lines of `tail`, the Stage's pane's, show
@@ -211,7 +295,12 @@ impl Orchestrator {
             long,
             ..
         } = limit;
+        let now = (self.cfg.clock)();
         self.change_state(|state| {
+            // A new limit, not one still holding, is asked about anew.
+            if !state.limits.get(app).is_some_and(|last| holds(*last, now)) {
+                state.reviews.remove(app);
+            }
             let saved = state.limits.entry(app.to_string()).or_insert(reset);
             *saved = (*saved).max(reset);
         });
@@ -220,7 +309,7 @@ impl Orchestrator {
                 session.reset = Some(reset);
             }
         });
-        let when = until(reset, (self.cfg.clock)());
+        let when = until(reset, now);
         if long {
             self.closed.store(true, Ordering::SeqCst);
             self.stop();
@@ -237,6 +326,22 @@ impl Orchestrator {
             ticket,
             &format!("{app} {what} until {when}: {label} holds {at}"),
         );
+        // A Review goes as the user answered: on wait it holds as any
+        // Stage; otherwise its session is left, and it starts again.
+        if st.name == REVIEW.name {
+            match self.review_answer(ticket, label, app) {
+                Err(held) => return held,
+                Ok(Some(Review::Fallback | Review::Unreviewed)) => {
+                    let _ = self.herdr(&["pane", "close", pane]);
+                    self.update(ticket, |ts| {
+                        ts.panes.remove(st.name);
+                        ts.sessions.remove(st.name);
+                    });
+                    return Held::Restart;
+                }
+                Ok(_) => {}
+            }
+        }
         if let Some(held) = self.wait_limit(ticket, label, app) {
             return held;
         }

@@ -1,4 +1,4 @@
-use super::state::{acquire_lock, load_state, lock_holder, Session, State, TicketState};
+use super::state::{acquire_lock, load_state, lock_holder, Review, Session, State, TicketState};
 use crate::tempdir::TempDir;
 use chrono::TimeZone;
 use std::fs;
@@ -149,6 +149,10 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
         .with_ymd_and_hms(2026, 9, 28, 0, 0, 0)
         .unwrap();
     state.limits.insert("claude".to_string(), reset);
+    // and the answer to the Review's limit Question, which stands until it
+    state
+        .reviews
+        .insert("claude".to_string(), Review::Unreviewed);
     state.save(repo.path()).unwrap();
     let raw = fs::read_to_string(repo.path().join(".harness/state.json")).unwrap();
     for field in [
@@ -163,6 +167,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
         "\"conflict_reported\"",
         "\"limited\"",
         "\"limits\"",
+        "\"reviews\"",
     ] {
         assert!(raw.contains(field), "saved state lacks {field}:\n{raw}");
     }

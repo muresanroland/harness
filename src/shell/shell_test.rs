@@ -10,8 +10,8 @@ use crate::orchestrator::plan_test::{at_dialog, noul};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
-    acquire_lock, load_state, State, TicketState, STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN,
-    STATUS_RUNNING,
+    acquire_lock, load_state, Review, State, TicketState, STATUS_MERGED, STATUS_PARKED,
+    STATUS_PR_OPEN, STATUS_RUNNING,
 };
 use crate::orchestrator::world::{new_world, set_clock, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
@@ -1276,6 +1276,62 @@ fn a_long_limit_ends_the_run_and_continue_after_the_reset_resumes_it() {
         starts.len() == 2 && starts[1].contains(&format!("--resume {id} ")),
         "{starts:?}"
     );
+}
+
+/// The Review's App at its limit is put to the user once: wait, review
+/// with the fallback once one is set, or open the PR unreviewed. The answer
+/// is the run's, kept in the State until the reset.
+#[test]
+fn the_reviews_limit_question_offers_the_fallback_and_its_answer_stands() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    write_file(
+        &w.repo.join(".harness/runs/hx-1/implement.md"),
+        "STATUS: done\n",
+    );
+    write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"review_if_limited": {"app": "claude", "model": "opus"}}"#,
+    );
+    hits(
+        &w,
+        "hx-1",
+        "review",
+        "idle",
+        "■ You’ve hit your usage limit. Try again at 3:05 PM.",
+    );
+    let mut s = shell(&w);
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 25, 14, 0, 0)
+        .unwrap();
+    set_clock(&mut s.cfg, now);
+    s.command("/start-ticket hx-1");
+    await_line(
+        &mut s,
+        "hx-1 asking you: codex limited until 3:05pm: how do Reviews go until then?",
+    );
+    assert_eq!(
+        s.options(),
+        [
+            "wait for the reset",
+            "review with claude opus",
+            "open the PR unreviewed"
+        ]
+    );
+
+    pick(&mut s, 3);
+    assert!(s.questions.is_empty(), "the answered Question stayed");
+    await_line(&mut s, "hx-1 you answered: open the PR unreviewed");
+    await_line(
+        &mut s,
+        "hx-1 review 1 and debate 1 skipped: codex was limited until 3:05pm",
+    );
+    await_line(&mut s, "hx-1 PR #hx-1 opened");
+    assert_eq!(
+        load_state(&w.repo).unwrap().reviews["codex"],
+        Review::Unreviewed
+    );
+    s.command("/stop-work");
+    await_end(&mut s);
 }
 
 /// MERGE TO UNBLOCK: a red box between RECENT (or the Question in its place)

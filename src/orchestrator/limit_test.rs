@@ -1,12 +1,13 @@
 use super::app::app;
 use super::judgment::fake::Fake as TypeSafeFake;
 use super::limit::{find, until, Limit};
-use super::stage::Orchestrator;
-use super::state::load_state;
+use super::stage::{Ask, Orchestrator};
+use super::state::{load_state, Review};
 use super::world::{
     new_world, restarted, set_clock, spawn_ticket, succeed, wait_until, BdTicket, World,
 };
 use super::write_file;
+use crate::skills::SKILLS;
 use chrono::{DateTime, Local, TimeZone};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -560,4 +561,196 @@ fn a_limit_with_no_reset_is_looked_at_again_after_an_hour() {
         .collect();
     assert!(stuck.is_empty(), "a limit Woke: {stuck:?}");
     assert!(typesafe.requests().is_empty(), "a Judgment was asked");
+}
+
+/// The Questions the Orchestrator put about a limit on the Review.
+fn review_questions(w: &World) -> Vec<(String, Option<String>)> {
+    w.events()
+        .into_iter()
+        .filter_map(|e| match e.ask {
+            Some(Ask::Limited { app, fallback }) => Some((app, fallback)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The prompt Ticket `ticket`'s `file` Stage was started with.
+fn prompt_for(w: &World, ticket: &str, file: &str) -> String {
+    let file = format!("runs/{ticket}/{file}\n");
+    w.called("herdr agent prompt")
+        .into_iter()
+        .find(|call| call.contains(&file))
+        .unwrap_or_else(|| panic!("no prompt wrote {file}"))
+}
+
+#[test]
+fn a_codex_limit_on_a_review_asks_once_and_unreviewed_skips_review_and_debate_until_the_reset() {
+    let tickets = ["hx-1", "hx-2", "hx-3"].map(BdTicket::new).to_vec();
+    let (w, mut o) = new_world(tickets);
+    let clock = clock(&mut o);
+    for ticket in ["hx-1", "hx-2", "hx-3"] {
+        write_file(&o.run_dir(ticket).join("implement.md"), "STATUS: done\n");
+    }
+    hits(&w, "hx-1", "review", "idle", CODEX);
+    let o = Arc::new(o);
+    let _one = spawn_ticket(o.clone(), "hx-1");
+    w.await_line("hx-1 codex usage limit until 3:05pm: review 1 holds (pane 1-1)");
+    // hx-2 reaches its Review meanwhile: it holds, and asks nothing
+    let _two = spawn_ticket(o.clone(), "hx-2");
+    wait_until("hx-2 held before its Review", || {
+        o.ticket("hx-2").limited == "codex"
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    assert!(w.called("herdr agent start h-hx-2-review").is_empty());
+    assert_eq!(review_questions(&w), [("codex".to_string(), None)]);
+
+    o.review("codex", Review::Unreviewed);
+    w.await_line("hx-1 review 1 and debate 1 skipped: codex was limited until 3:05pm");
+    w.await_line("hx-1 PR #hx-1 opened");
+    w.await_line("hx-2 PR #hx-2 opened");
+    for ticket in ["hx-1", "hx-2"] {
+        assert!(w
+            .called(&format!("herdr agent start h-{ticket}-debate"))
+            .is_empty());
+        let fix = prompt_for(&w, ticket, "fix-1.md");
+        for input in [
+            "- Open PR: yes\n",
+            "- Fix items: none\n",
+            "- Unreviewed: codex was limited until 3:05pm\n",
+        ] {
+            assert!(fix.contains(input), "{ticket}: {input:?} not in {fix}");
+        }
+    }
+    assert_eq!(w.called("herdr agent start h-hx-1-review").len(), 1);
+    assert!(w.called("herdr agent start h-hx-2-review").is_empty());
+    assert_eq!(review_questions(&w).len(), 1, "asked again");
+    let fix = SKILLS
+        .iter()
+        .find(|(name, _)| *name == "stage-fix")
+        .unwrap()
+        .1;
+    assert!(
+        fix.contains("**Unreviewed**"),
+        "stage-fix has no Unreviewed rule"
+    );
+
+    // After the reset Reviews start on codex again.
+    *clock.lock().unwrap() = at(25, 15, 7);
+    let _three = spawn_ticket(o.clone(), "hx-3");
+    w.await_line("hx-3 review 1 started: codex");
+}
+
+#[test]
+fn review_with_the_fallback_starts_stage_review_on_its_app_and_model() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    clock(&mut o);
+    write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"review_if_limited": {"app": "claude", "model": "opus"}}"#,
+    );
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    // the codex Review stops at its limit; every session after it is done
+    let (world, first) = (w.clone(), std::sync::atomic::AtomicBool::new(true));
+    w.session(move |p| {
+        if p.stage == "review" && first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            world.lock().tails.insert(p.pane.clone(), CODEX.to_string());
+            return (String::new(), "idle".to_string());
+        }
+        succeed(p)
+    });
+    let o = Arc::new(o);
+    let _run = spawn_ticket(o.clone(), "hx-1");
+    wait_until("the Review's limit Question", || {
+        !review_questions(&w).is_empty()
+    });
+    assert_eq!(
+        review_questions(&w),
+        [("codex".to_string(), Some("claude opus".to_string()))]
+    );
+
+    o.review("codex", Review::Fallback);
+    w.await_line("hx-1 review 1 started: claude opus (pane");
+    w.await_line("hx-1 PR #hx-1 opened");
+    let starts = w.called("herdr agent start h-hx-1-review ");
+    let worktree = o.worktree("hx-1").display().to_string();
+    assert!(
+        starts.len() == 2
+            && starts[1].contains(" --kind claude ")
+            && starts[1].contains(&format!(" --add-dir {worktree} "))
+            && starts[1].ends_with(" --model opus"),
+        "{starts:?}"
+    );
+    assert!(!w.called("herdr agent start h-hx-1-debate ").is_empty());
+}
+
+#[test]
+fn wait_holds_later_reviews_and_carries_the_pane_on_at_the_reset() {
+    let tickets = ["hx-1", "hx-2"].map(BdTicket::new).to_vec();
+    let (w, mut o) = new_world(tickets);
+    let clock = clock(&mut o);
+    for ticket in ["hx-1", "hx-2"] {
+        write_file(&o.run_dir(ticket).join("implement.md"), "STATUS: done\n");
+    }
+    hits(&w, "hx-1", "review", "idle", CODEX);
+    let o = Arc::new(o);
+    let _one = spawn_ticket(o.clone(), "hx-1");
+    wait_until("the Review's limit Question", || {
+        !review_questions(&w).is_empty()
+    });
+    o.review("codex", Review::Wait);
+    let _two = spawn_ticket(o.clone(), "hx-2");
+    wait_until("hx-2 held before its Review", || {
+        o.ticket("hx-2").limited == "codex"
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    assert!(w.called("herdr agent start h-hx-2-review").is_empty());
+    let pane = o.ticket("hx-1").panes["review"].clone();
+    assert!(w
+        .called(&format!("herdr agent prompt {pane} continue"))
+        .is_empty());
+
+    *clock.lock().unwrap() = at(25, 15, 7);
+    w.await_line("hx-1 codex usage limit over: review 1 carries on (pane 1-1)");
+    assert_eq!(
+        w.called(&format!("herdr agent prompt {pane} continue"))
+            .len(),
+        1
+    );
+    w.await_line("hx-2 review 1 started: codex");
+    w.await_line("hx-1 PR #hx-1 opened");
+    w.await_line("hx-2 PR #hx-2 opened");
+    assert_eq!(review_questions(&w).len(), 1);
+}
+
+#[test]
+fn the_moderator_is_told_which_side_is_limited() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    clock(&mut o);
+    o.state
+        .lock()
+        .unwrap()
+        .limits
+        .insert("codex".to_string(), at(25, 15, 5));
+    write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
+    write_file(
+        &o.run_dir("hx-1").join("review-1.md"),
+        "STATUS: done\n\n## Findings\n",
+    );
+    o.run_ticket("hx-1");
+
+    let inputs = prompt_for(&w, "hx-1", "verdict-1.md");
+    let inputs = inputs.split_once("## Inputs").unwrap().1;
+    assert!(
+        inputs.contains("- Side B: limited until 3:05pm\n") && !inputs.contains("- Side A: "),
+        "{inputs}"
+    );
+    let moderate = SKILLS
+        .iter()
+        .find(|(name, _)| *name == "stage-moderate")
+        .unwrap()
+        .1;
+    assert!(
+        moderate.contains("Side B: limited until"),
+        "stage-moderate has no rule for a limited side"
+    );
 }

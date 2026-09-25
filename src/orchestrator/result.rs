@@ -12,6 +12,9 @@ pub(crate) struct StageResult {
     pub(crate) fixes: Vec<String>,
     pub(crate) skips: usize,
     pub(crate) pr: String,
+    /// The Review did not run: its App was Limited and the answer was to
+    /// open the PR unreviewed. Why, for the Fix's Input.
+    pub(crate) unreviewed: String,
 }
 
 /// The Pipeline context needed to accept a result. The default requires only

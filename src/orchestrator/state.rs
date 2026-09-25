@@ -80,6 +80,22 @@ pub(crate) struct State {
     /// until then, in this run or a /continue after the Harness closed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) limits: BTreeMap<String, chrono::DateTime<chrono::Local>>,
+    /// App -> the answer to the Review's limit Question, which stands for
+    /// every Review on it while its limit holds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) reviews: BTreeMap<String, Review>,
+}
+
+/// How Reviews go while their App is Limited, as the user answered.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Review {
+    /// The Ticket holds, and its Review carries on at the reset.
+    Wait,
+    /// The Review runs on the review_if_limited row.
+    Fallback,
+    /// The Round's Review and Debate are skipped: the PR opens unreviewed.
+    Unreviewed,
 }
 
 fn is_zero(n: &usize) -> bool {
