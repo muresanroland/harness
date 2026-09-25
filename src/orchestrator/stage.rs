@@ -11,12 +11,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{debate_inputs, stage_row, App, Row};
+use super::app::{debate_inputs, fallback_row, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
-use super::result::{read_stage_result, stage_prompt, ResultRequirements, StageResult};
+use super::limit::{until, Limit, LAST_LINES};
+use super::result::{
+    read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult, ASKED,
+};
 use super::state::{load_state, Session, State, TicketState, STATUS_RUNNING};
 use super::trust::trusts;
+use crate::skills::manifest::{self, Manifest};
+use crate::skills::stage_skill;
 use crate::tools::{RunError, Tools};
 
 /// One step of the Pipeline, carried out by a fresh agent session in its own
@@ -51,6 +56,9 @@ pub(crate) enum StageError {
     Stopped,
 }
 
+/// Why a Ticket whose Stage asked while the user was Away is Parked.
+pub(crate) const AWAY: &str = "asked you while away";
+
 /// How long a just-prompted session may still look idle before an idle pane
 /// with no result counts as a Stage that did not write one.
 pub(super) const SETTLE_TICKS: u32 = 3;
@@ -63,10 +71,18 @@ pub(super) enum Held {
     Retry,
     /// /park, or park answered: the Ticket leaves the Pipeline at its Stage.
     Park,
+    /// The Stage asked while the user was Away: parked, its session left
+    /// waiting in its pane.
+    Away,
     Done(StageResult),
     Stopped,
     /// The Stage cannot advance, for this reason: a Wake.
     Woke(String),
+    /// Its session stopped at this usage limit: never a Wake.
+    Limited(Limit),
+    /// Its session gives way to a fresh one, no retry spent: a Review whose
+    /// App is Limited starts again as the user answered.
+    Restart,
 }
 
 /// What a panel line asks of the user; the Shell puts it as a Question.
@@ -99,6 +115,19 @@ pub(crate) enum Ask {
     PlanFailed {
         pane: String,
         feedback: Option<String>,
+    },
+    /// The Review's App at its usage limit: how Reviews go until the reset,
+    /// asked once for the run. The fallback row, as said, when one is set.
+    Limited {
+        app: String,
+        fallback: Option<String>,
+    },
+    /// The Stage's own question (STATUS: question): its pane, the question
+    /// and its options.
+    StageQuestion {
+        pane: String,
+        question: String,
+        options: Vec<String>,
     },
 }
 
@@ -134,8 +163,8 @@ pub(crate) struct Event {
     /// Shown on the panel; false keeps housekeeping in the log alone, and
     /// with an ask it is a Question with no line of its own.
     pub(crate) panel: bool,
-    /// The line asks the user something: a Wake, a blocked session, a plan
-    /// or a plan failure.
+    /// The line asks the user something: a Wake, a blocked session, a plan,
+    /// a plan failure or a Stage's own question.
     pub(crate) ask: Option<Ask>,
 }
 
@@ -149,7 +178,8 @@ pub(crate) struct Config {
     pub(crate) repo: PathBuf,
     /// HERDR_WORKSPACE_ID.
     pub(crate) workspace: String,
-    /// TYPESAFE_API_KEY, handed to the Debate pane and the Judgment.
+    /// TYPESAFE_API_KEY, handed to the Debate pane and the Judgment while
+    /// TypeSafe is on (typesafe_key).
     pub(crate) api_key: String,
     /// The harness binary, which Implement's plan hook runs: resolved once
     /// when the Shell opens, since after a self-update a fresh lookup can
@@ -166,10 +196,15 @@ pub(crate) struct Config {
     pub(crate) poll_prs: Duration,
     /// Tickets in the Pipeline at once.
     pub(crate) max: usize,
+    /// The user is Away: a Stage's question parks its Ticket. The Shell's
+    /// /away flips it, shared with every run; off when the Shell opens.
+    pub(crate) away: Arc<AtomicBool>,
     /// Where every event line goes.
     pub(crate) log: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Every Event, for the Shell's RECENT panel; a dropped receiver is tolerated.
     pub(crate) events: Sender<Event>,
+    /// The wall clock usage-limit resets are read against; the tests set it.
+    pub(crate) clock: Arc<dyn Fn() -> chrono::DateTime<chrono::Local> + Send + Sync>,
     /// Every Stage's deadline in the tests; None is the Stage table's.
     #[cfg(test)]
     pub(crate) timeout: Option<Duration>,
@@ -187,13 +222,20 @@ pub(crate) struct Orchestrator {
     pub(crate) state: Mutex<State>,
     /// /stop-work arrived: every sleep checks it (ADR 0003).
     pub(crate) stop: AtomicBool,
+    /// A long usage limit ended the run: each Ticket closes its tab as it
+    /// leaves.
+    pub(crate) closed: AtomicBool,
     /// The Shell's commands waiting to be consumed: retry-<ticket>,
-    /// park-<ticket>, address-<ticket>. Stop is the flag above.
+    /// park-<ticket>, address-<ticket>, continue-<ticket>. Stop is the flag
+    /// above.
     pub(crate) commands: Mutex<Vec<String>>,
     /// Answers to Questions, each for one session: (ticket, pane, answer).
     pub(crate) answers: Mutex<Vec<(String, String, Answer)>>,
     /// The Tickets running on a thread of this process.
     pub(crate) active: Mutex<BTreeSet<String>>,
+    /// The Apps whose Review limit Question is out, asked by a Ticket still
+    /// holding for its answer.
+    pub(super) asked: Mutex<BTreeSet<String>>,
     /// Each Ticket's live session's deadline, which a wait keeps.
     deadlines: Mutex<BTreeMap<String, Instant>>,
     /// The plan last judged for each Ticket's Implement session: a plan.md
@@ -214,7 +256,8 @@ impl Orchestrator {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
-        debate_inputs(&cfg.repo, "").map_err(io::Error::other)?;
+        debate_inputs(&cfg.repo, "", |_| None).map_err(io::Error::other)?;
+        fallback_row(&cfg.repo).map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -225,9 +268,11 @@ impl Orchestrator {
             cfg,
             state: Mutex::new(state),
             stop: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             commands: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
+            asked: Mutex::new(BTreeSet::new()),
             deadlines: Mutex::new(BTreeMap::new()),
             plans: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
@@ -273,7 +318,7 @@ impl Orchestrator {
     }
 
     pub(crate) fn run_dir(&self, ticket: &str) -> PathBuf {
-        self.cfg.repo.join(".harness").join("runs").join(ticket)
+        run_dir(&self.cfg.repo, ticket)
     }
 
     pub(crate) fn worktree(&self, ticket: &str) -> PathBuf {
@@ -350,8 +395,9 @@ impl Orchestrator {
         self.stop.store(true, Ordering::SeqCst);
     }
 
-    /// A command from the Shell: retry-<ticket>, park-<ticket> or
-    /// address-<ticket>, consumed by the Ticket's own waits or the scheduler.
+    /// A command from the Shell: retry-<ticket>, park-<ticket>,
+    /// address-<ticket> or continue-<ticket>, consumed by the Ticket's own
+    /// waits or the scheduler.
     pub(crate) fn command(&self, name: &str) {
         self.commands.lock().unwrap().push(name.to_string());
     }
@@ -425,15 +471,23 @@ impl Orchestrator {
 
     /// Changes one Ticket's state and writes the state file.
     pub(crate) fn update(&self, ticket: &str, change: impl FnOnce(&mut TicketState)) {
+        self.change_state(|state| {
+            change(
+                state
+                    .tickets
+                    .entry(ticket.to_string())
+                    .or_insert_with(|| TicketState {
+                        status: STATUS_RUNNING.to_string(),
+                        ..Default::default()
+                    }),
+            )
+        });
+    }
+
+    /// Changes the state and writes the state file.
+    pub(super) fn change_state(&self, change: impl FnOnce(&mut State)) {
         let mut state = self.state.lock().unwrap();
-        let ts = state
-            .tickets
-            .entry(ticket.to_string())
-            .or_insert_with(|| TicketState {
-                status: STATUS_RUNNING.to_string(),
-                ..Default::default()
-            });
-        change(ts);
+        change(&mut state);
         let saved = state.save(&self.cfg.repo);
         drop(state);
         if let Err(err) = saved {
@@ -461,6 +515,11 @@ pub(crate) fn log_line(time: chrono::DateTime<chrono::Local>, ticket: &str, text
         format!("{ticket} ")
     };
     format!("{} {id}{text}\n", time.format("%Y-%m-%d %H:%M:%S"))
+}
+
+/// A Ticket's Run directory under the Target repo.
+pub(crate) fn run_dir(repo: &Path, ticket: &str) -> PathBuf {
+    repo.join(".harness").join("runs").join(ticket)
 }
 
 /// How a Stage is named in an event: "implement", "review 1", "fix 2".
@@ -520,6 +579,7 @@ impl Orchestrator {
         let saved = self.ticket(ticket);
         let resumed = saved.stage == st.name && saved.round == round;
         self.update(ticket, |ts| {
+            ts.limited.clear(); // a hold sets it again
             if !resumed {
                 ts.stage = st.name.to_string();
                 ts.round = round;
@@ -555,13 +615,20 @@ impl Orchestrator {
                     .is_ok_and(|reply| reply.result.agent.pane_id == *pane)
         });
         // Its pane gone, it is resumed by its saved session id instead, and
-        // watched as a live one; failing that it starts fresh.
+        // watched as a live one; failing that it starts fresh. A Review on a
+        // Limited App starts fresh, as the user answers.
+        let asked = |s: &Session| st.name == REVIEW.name && self.limited_until(&s.app).is_some();
         if let Some(session) = saved
             .sessions
             .get(st.name)
-            .filter(|s| resumed && live.is_none() && !s.id.is_empty())
+            .filter(|s| resumed && live.is_none() && !s.id.is_empty() && !asked(s))
         {
-            match self.resume(ticket, st, &label, session) {
+            match self.wait_limit(ticket, &label, &session.app) {
+                Some(Held::Park) => return Err(StageError::Parked(format!("by you at {label}"))),
+                Some(_) => return Err(StageError::Stopped),
+                None => {}
+            }
+            match self.resume(ticket, st, &label, session, &file) {
                 Ok(pane) => live = Some(pane),
                 Err(err) => self.log(
                     ticket,
@@ -579,19 +646,42 @@ impl Orchestrator {
                 if self.stopping() {
                     return Err(StageError::Stopped);
                 }
-                let reason = match held {
+                let (reason, at_limit) = match held {
                     Held::Done(result) => return Ok(result),
                     Held::Stopped => return Err(StageError::Stopped),
                     Held::Park => return Err(StageError::Parked(format!("by you at {label}"))),
+                    Held::Away => return Err(StageError::Parked(AWAY.to_string())),
+                    // never a Wake: put to the user, then watched again
+                    Held::Woke(reason) if reason == ASKED => {
+                        let pane = self.ticket(ticket).panes.get(st.name).cloned();
+                        let pane = pane.unwrap_or_default(); // the pane it asked in
+                        held = self
+                            .question(ticket, st, &label, &pane, &file)
+                            .unwrap_or_else(|| {
+                                self.hold(ticket, st, &label, &pane, &file, want, true, None)
+                            });
+                        continue;
+                    }
                     Held::Retry => {
                         self.update(ticket, |ts| ts.retried = true);
                         retry = true;
                         break;
                     }
-                    Held::Woke(reason) => reason,
+                    Held::Restart => {
+                        retry = false;
+                        break;
+                    }
+                    Held::Limited(limit) => (String::new(), Some(limit)),
+                    Held::Woke(reason) => (reason, None),
                 };
                 let ts = self.ticket(ticket);
                 let pane = ts.panes.get(st.name).cloned().unwrap_or_default();
+                let tail = self.tail(&name, 120);
+                // A usage limit is never a Wake: the Ticket holds until the reset.
+                if let Some(limit) = at_limit.or_else(|| self.limit_shown(&ts, st, &tail)) {
+                    held = self.limited(ticket, st, &label, &pane, &file, want, limit);
+                    continue;
+                }
                 let alive = self.agent_status(&pane).is_some();
                 let actions = offered(&ts, &reason, alive);
                 if actions == [Action::Park] {
@@ -603,21 +693,6 @@ impl Orchestrator {
                 self.consume(&format!("retry-{ticket}"));
                 self.consume(&format!("park-{ticket}"));
                 self.take_answer(ticket, None);
-                let read = [
-                    "herdr",
-                    "agent",
-                    "read",
-                    &name,
-                    "--source",
-                    "recent-unwrapped",
-                    "--lines",
-                    "120",
-                ];
-                let tail = self
-                    .cfg
-                    .tools
-                    .run(&self.cfg.repo, &read)
-                    .unwrap_or_default();
                 let judged = self.judge(ticket, &ts, &reason, &file, &tail, &actions);
                 if self.stopping() {
                     return Err(StageError::Stopped); // a late Judgment is not acted on
@@ -682,43 +757,63 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
+        // A Review on a Limited App goes as the user answered.
+        let row = match st.name == REVIEW.name {
+            true => match self.review_row(ticket, label, file, row) {
+                Ok(row) => row,
+                Err(held) => return held,
+            },
+            false => row,
+        };
+        // No Stage starts on a Limited App.
+        if let Some(held) = self.wait_limit(ticket, label, row.app.name) {
+            return held;
+        }
         let run_dir = self.run_dir(ticket).display().to_string();
-        // The Moderator is given each Debate side's command, read now too.
-        let sides = match st.name == DEBATE.name {
-            true => match debate_inputs(&self.cfg.repo, &run_dir) {
-                Ok(sides) => sides,
+        // The Moderator is given each Debate side's command, read now too,
+        // and which side's App is Limited. Each job's Delegate skill, as the
+        // App that runs its line loads and names one: the audit, the Debate's
+        // job, runs on side A's command.
+        let now = (self.cfg.clock)();
+        let limited = |app: &str| self.limited_until(app).map(|reset| until(reset, now));
+        let (sides, runs) = match st.name == DEBATE.name {
+            true => match debate_inputs(&self.cfg.repo, &run_dir, limited) {
+                Ok(got) => got,
                 Err(err) => return Held::Woke(err),
             },
-            false => Vec::new(),
+            false => (Vec::new(), row.app),
         };
-        let mut inputs = inputs.to_vec();
-        inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
-        // Wherever init put it: a copy committed in the repo first, then the
-        // checkout's, then the user's.
         let (repo, home) = (&self.cfg.repo, &self.cfg.home);
-        let mut dirs = vec![repo.join(".agents/skills"), repo.join(".harness/skills")];
-        if !home.as_os_str().is_empty() {
-            dirs.push(home.join(".agents/skills"));
-        }
-        // Only an absent copy falls through: an unreadable one is said.
-        let found = dirs.iter().find_map(|dir| {
-            let path = dir.join(st.skill).join("SKILL.md");
-            match fs::read_to_string(&path) {
-                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-                read => Some(read.map_err(|err| format!("cannot read {}: {err}", path.display()))),
-            }
-        });
-        let skill = match found {
+        let skill = match stage_skill(repo, home, st.skill) {
             Some(Ok(skill)) => skill,
             Some(Err(err)) => return Held::Woke(err),
             None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
         };
+        let manifest = match Manifest::load(repo) {
+            Ok(manifest) => manifest,
+            Err(err) => return Held::Woke(err),
+        };
+        let have: Vec<String> = manifest::list(repo, home, &*self.cfg.tools)
+            .into_iter()
+            .filter(|(name, path)| path.parent().is_some_and(|dir| runs.loads(name, dir)))
+            .map(|(name, _)| name)
+            .collect();
+        let (skill, lacking) = manifest.fill_jobs(&skill, &have, runs.built_in, runs.mention);
+        let lacking = (!lacking.is_empty()).then(|| {
+            format!(
+                "{}: their lines are left out; say so in the result file",
+                lacking.join(", ")
+            )
+        });
+        let mut inputs = inputs.to_vec();
+        inputs.extend(sides.iter().map(|(name, value)| (*name, value.as_str())));
+        inputs.extend(lacking.as_deref().map(|value| ("Not installed", value)));
         if let Err(err) = fs::create_dir_all(file.parent().unwrap()) {
             return Held::Woke(err.to_string());
         }
         let session = Session {
             app: row.app.name.to_string(),
-            id: String::new(),
+            ..Default::default()
         };
         let pane = match self.fresh_pane(ticket, st, session) {
             Ok(pane) => pane,
@@ -865,14 +960,16 @@ impl Orchestrator {
 
     /// Resumes a stopped run's Stage whose pane is gone: its saved session
     /// in a fresh pane, by id with the Stage's own args (Implement plans
-    /// again, so its plan is judged again), told to continue. Only while
-    /// the Stage's App is unchanged; an error starts it fresh.
+    /// again, so its plan is judged again), told to continue, unless its
+    /// result `file` holds a question it waits on. Only while the Stage's
+    /// App is unchanged; an error starts it fresh.
     fn resume(
         &self,
         ticket: &str,
         st: &Stage,
         label: &str,
         session: &Session,
+        file: &Path,
     ) -> Result<String, String> {
         let row = stage_row(&self.cfg.repo, st)?;
         if row.app.name != session.app {
@@ -884,8 +981,16 @@ impl Orchestrator {
         let mut args = row.resume(&session.id);
         args.extend(self.stage_args(ticket, st, &row)?);
         let patience = Instant::now() + 6 * self.cfg.tick;
+        // A session that asked waits for its answer, not "continue": its
+        // question is put to the user again.
+        let asked = read_question(file).is_some();
         self.start_agent(ticket, st, row.app, &pane, &args, patience)
-            .and_then(|()| self.herdr(&["agent", "prompt", &pane, "continue"]))
+            .and_then(|()| match asked {
+                true => Ok(()),
+                false => self
+                    .herdr(&["agent", "prompt", &pane, "continue"])
+                    .map(drop),
+            })
             .map_err(|err| err.to_string())?;
         let at = self.locate(&pane);
         self.report(ticket, &format!("{label} resumed: {} {at}", row.said()));
@@ -970,14 +1075,19 @@ impl Orchestrator {
     }
 
     /// A blocked session: Implement at its plan dialog with a plan newer
-    /// than the last judged is a plan ready (plan.rs); anything else is the
-    /// ordinary blocked Question.
+    /// than the last judged is a plan ready (plan.rs); one at a usage limit
+    /// (Claude's options menu) is Limited; anything else is the ordinary
+    /// blocked Question.
     fn wait_unblocked(&self, ticket: &str, st: &Stage, label: &str, pane: &str) -> Option<Held> {
         self.take_answer(ticket, None); // an answer sent before this prompt is not for it
         if st.name == IMPLEMENT.name {
             if let Some(plan) = self.plan_ready(ticket, pane) {
                 return self.plan(ticket, st, label, pane, plan);
             }
+        }
+        let tail = self.tail(pane, LAST_LINES);
+        if let Some(limit) = self.limit_shown(&self.ticket(ticket), st, &tail) {
+            return Some(Held::Limited(limit));
         }
         self.blocked(ticket, st, label, pane, &self.locate(pane))
     }
@@ -1021,6 +1131,104 @@ impl Orchestrator {
         }
     }
 
+    /// A Stage's own question, its result file reading STATUS: question:
+    /// never a Wake, never judged, and no deadline runs while it waits.
+    /// Away, the Ticket parks with a bd comment asking for a manual resume,
+    /// its session left waiting in its pane; turning Away on while the
+    /// Question waits does the same. Otherwise, and always for Address,
+    /// whose Ticket has its PR open and no Parked to go to, it is a
+    /// Question, whose answer goes into the pane as a prompt. None once the
+    /// answer is sent, or the session moves on in the pane.
+    fn question(
+        &self,
+        ticket: &str,
+        st: &Stage,
+        label: &str,
+        pane: &str,
+        file: &Path,
+    ) -> Option<Held> {
+        let mut raised = false;
+        loop {
+            let asked = read_question(file);
+            match self.agent_status(pane).as_deref() {
+                None => return Some(Held::Woke("session died".to_string())),
+                Some("idle" | "done") if asked.is_some() => {}
+                Some(_) => {
+                    // answered in the pane: no longer open, as a sent answer;
+                    // a new one written since the read stays for the watch
+                    if asked.is_some() && read_question(file) == asked {
+                        let _ = fs::remove_file(file);
+                    }
+                    if raised {
+                        self.report(ticket, "carrying on"); // answered in the pane
+                    }
+                    return None;
+                }
+            }
+            let (question, options) = asked.unwrap();
+            if self.cfg.away.load(Ordering::SeqCst) && st.name != ADDRESS.name {
+                let comment = format!(
+                    "{label} asked a question while you were away and needs a manual resume: \
+                     /continue @{ticket} in the Harness Shell puts it to you, its session \
+                     still waiting in its pane.\n\n{question}\n{}",
+                    options
+                        .iter()
+                        .map(|o| format!("- {o}\n"))
+                        .collect::<String>()
+                );
+                let argv = ["bd", "comments", "add", ticket, comment.trim_end()];
+                if let Err(err) = self.cfg.tools.run(&self.cfg.repo, &argv) {
+                    self.log(ticket, &format!("no bd comment: {err}"));
+                }
+                return Some(Held::Away);
+            }
+            if !raised {
+                self.take_answer(ticket, None); // an answer sent before it is not for it
+                let at = self.locate(pane);
+                let ask = Ask::StageQuestion {
+                    pane: pane.to_string(),
+                    question,
+                    options,
+                };
+                self.asks(ticket, &format!("question in {label} {at}"), ask);
+                raised = true;
+            }
+            match self.take_answer(ticket, Some(pane)) {
+                Some(Answer::Act(Action::Park)) => return Some(Held::Park),
+                Some(Answer::Prompt(text)) => {
+                    // An answered question is no longer open: a session that
+                    // goes idle without rewriting it has no result. Removed
+                    // first, so nothing written after the prompt is taken.
+                    let kept = fs::read(file);
+                    let _ = fs::remove_file(file);
+                    if let Err(err) = self.herdr(&["agent", "prompt", pane, &text]) {
+                        // never taken, still open: put back unless written anew,
+                        // so the Wake's hold asks it again
+                        if let Ok(kept) = kept {
+                            let _ = fs::OpenOptions::new()
+                                .write(true)
+                                .create_new(true)
+                                .open(file)
+                                .and_then(|mut f| f.write_all(&kept));
+                        }
+                        return Some(Held::Woke(format!("never took your answer: {err}")));
+                    }
+                    self.report(ticket, "sent your answer");
+                    self.settle(pane, &["idle", "done"]);
+                    return None;
+                }
+                Some(other) => self.dropped(ticket, &other),
+                None => {}
+            }
+            if self.consume(&format!("park-{ticket}")) {
+                return Some(Held::Park);
+            }
+            if !self.sleep() {
+                return Some(Held::Stopped);
+            }
+        }
+    }
+
     /// Keeps a woken Ticket waiting, leaving every other Ticket running,
     /// until a retry or park arrives or a done result appears. The
     /// Judgment's answer `act`, taken ahead of anything sent meanwhile, and
@@ -1032,7 +1240,7 @@ impl Orchestrator {
     /// or runs out of time, and a prompt it stops at is a blocked session
     /// as in any Stage.
     #[allow(clippy::too_many_arguments)]
-    fn hold(
+    pub(super) fn hold(
         &self,
         ticket: &str,
         st: &Stage,
@@ -1115,6 +1323,9 @@ impl Orchestrator {
                     }
                     Some(_) => {}
                 }
+            } else if reason == ASKED && matches!(status.as_deref(), Some("idle" | "done")) {
+                // a session taken up again in its pane after a Wake asks too
+                return Held::Woke(reason);
             }
             if !self.sleep() {
                 return Held::Stopped;
@@ -1127,7 +1338,7 @@ impl Orchestrator {
     /// /continue resumes it by once the pane is gone. Saved only while herdr
     /// still names the Stage's own agent in that pane, so another agent's
     /// id is never resumed as the Stage's.
-    fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
+    pub(super) fn watch(&self, ticket: &str, st: &Stage, pane: &str) -> Option<String> {
         let agent = self.herdr(&["agent", "get", pane]).ok()?.result.agent;
         let id = agent.agent_session.map(|s| s.value).unwrap_or_default();
         if !id.is_empty()
@@ -1174,9 +1385,10 @@ impl Orchestrator {
             }
         }
         let cwd = self.stage_cwd(ticket, st).display().to_string();
-        let env = format!("TYPESAFE_API_KEY={}", self.cfg.api_key);
+        let key = self.typesafe_key();
+        let env = format!("TYPESAFE_API_KEY={key}");
         let mut placement = vec!["--cwd", cwd.as_str(), "--no-focus"];
-        if st.name == "debate" && !self.cfg.api_key.is_empty() {
+        if st.name == "debate" && !key.is_empty() {
             placement.extend(["--env", env.as_str()]);
         }
 
@@ -1266,8 +1478,10 @@ impl Config {
             tick: Duration::from_millis(1),
             poll_prs: Duration::from_millis(1),
             max: 3,
+            away: Arc::new(AtomicBool::new(false)),
             log: Arc::new(Mutex::new(Box::new(io::sink()))),
             events: std::sync::mpsc::channel().0,
+            clock: Arc::new(chrono::Local::now),
             timeout: None,
             wait: None,
         }

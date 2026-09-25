@@ -71,6 +71,10 @@ _Avoid_: Judge, Debby
 The Debate's result: every Finding marked fix or skip, with a severity and the reason. Only fix items reach the Fix Stage.
 _Avoid_: Synthesis, summary, report
 
+**Epic summary**:
+The Shell's read-only page over one Epic's run: each Ticket's pull request, Rounds and Findings fixed, skipped and left on the pull request, then the Parked Tickets with their reasons. It opens by itself once every Ticket has its pull request or is Parked, and /summary opens it again, built fresh from bd, the state file and the Run directories.
+_Avoid_: Report, recap
+
 **Wake**:
 The Orchestrator's request for judgment about a Stage that cannot advance by rule, answered by a Judgment or, failing that, by the user through a Question.
 _Avoid_: Alert, escalation
@@ -83,7 +87,7 @@ _Avoid_: LLM call, Main session
 What an Implement session writes before it may edit: the changes, tests and decisions it intends for its Ticket. A Judgment approves it when it follows the Ticket; otherwise the user reads it and answers, and the session revises it.
 
 **Question**:
-What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, a Stage's own question, or a confirmation. It holds only its Ticket, is answered from a fixed set of options or a line of the user's own text, and is never saved: on resume it is derived again from the live session or the Stage result.
+What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, a Stage's own question, the Review's App at its usage limit, or a confirmation. It holds only its Ticket (the Review's limit, every Ticket reaching the Review on that App until it is answered), is answered from a fixed set of options or a line of the user's own text, and is never saved: on resume it is derived again from the live session or the Stage result.
 _Avoid_: Prompt, dialog, alert, form, popup
 
 **Parked**:

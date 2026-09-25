@@ -1,6 +1,6 @@
 use super::manifest::{
-    add, link_checkout_skills, list, parse_source, remove, update, update_all, Added, Installed,
-    Location, Manifest, Source, JOBS, NONE,
+    add, link_checkout_skills, list, parse_source, placeholder, remove, update, update_all, Added,
+    Installed, Location, Manifest, Source, JOBS, NONE,
 };
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
@@ -909,6 +909,40 @@ fn checkout_skills_are_not_linked_through_a_linked_skills_folder() {
             fs::read_to_string(&skill).ok().as_deref(),
             Some(TDD),
             "{skill:?}"
+        );
+    }
+}
+
+/// Each job's Delegate skill is its own {{job}} line in its Stage skill, and
+/// no shipped Stage skill calls a skill as /name, which only some Apps read.
+#[test]
+fn the_shipped_stage_skills_hold_every_jobs_placeholder_and_no_slash_call() {
+    let want = [
+        ("test-first", "stage-implement"),
+        ("self-review", "stage-implement"),
+        ("working-mode", "stage-implement"),
+        ("prose", "stage-implement"),
+        ("review", "stage-review"),
+        ("audit", "stage-moderate"),
+        ("merge-conflicts", "stage-address"),
+    ];
+    assert_eq!(want.len(), JOBS.len());
+    let slash = regex::Regex::new(r"(?m)(^|[\s`(])/[a-z]").unwrap();
+    for (name, body) in crate::skills::SKILLS {
+        if !name.starts_with("stage-") {
+            continue;
+        }
+        for (job, _) in JOBS {
+            let held = body.matches(&placeholder(job)).count();
+            let expected = usize::from(want.contains(&(job, name)));
+            assert_eq!(held, expected, "{name} holds {{{{{job}}}}} {held} times");
+        }
+        assert!(
+            !slash.is_match(body),
+            "{name} calls a skill as /name: {:?}",
+            slash
+                .find(body)
+                .map(|m| &body[m.start()..(m.end() + 20).min(body.len())])
         );
     }
 }

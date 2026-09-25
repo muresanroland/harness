@@ -327,6 +327,32 @@ fn no_key_means_no_request_and_a_question() {
     );
 }
 
+/// TypeSafe off in config.json: a key or not, no request is sent and the
+/// Wake is the Question.
+#[test]
+fn typesafe_off_means_no_request_and_a_question() {
+    let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+    super::write_file(
+        &w.repo.join(".harness/config.json"),
+        r#"{"typesafe": false}"#,
+    );
+    idle_once(&w);
+    let fake = typesafe(|_, body| choose(body, "park", 1.0));
+    o.cfg.typesafe = fake.clone();
+    let o = Arc::new(o);
+    let mut run = spawn_ticket(o.clone(), "hx-1");
+
+    let (pane, actions, judged) = question(&w, 1);
+    assert_eq!(actions, Action::ALL);
+    assert_eq!(judged, None);
+    o.answer("hx-1", &pane, Answer::Act(Park));
+    run.wait();
+    assert!(
+        fake.requests().is_empty(),
+        "a request went out with TypeSafe off"
+    );
+}
+
 /// A wait Wakes the Ticket again when the wait is over, whatever herdr says
 /// of the session then; the third wait is the last one offered, and the
 /// count is kept in the state file.

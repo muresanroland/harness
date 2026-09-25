@@ -195,6 +195,7 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
         ("no", Ok(0.12), Some("plan strays from the Ticket 0.88")),
         ("error", Err("401: bad key sk-test"), None),
         ("no key", Ok(1.0), None),
+        ("TypeSafe off", Ok(1.0), None),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         plans(&w, "idle");
@@ -202,6 +203,12 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
         o.cfg.typesafe = fake.clone();
         if name == "no key" {
             o.cfg.api_key = String::new();
+        }
+        if name == "TypeSafe off" {
+            super::write_file(
+                &w.repo.join(".harness/config.json"),
+                r#"{"typesafe": false}"#,
+            );
         }
         let o = Arc::new(o);
         let mut run = spawn_ticket(o.clone(), "hx-1");
@@ -235,7 +242,7 @@ fn below_the_floor_a_no_or_no_judgment_raises_the_plan_question() {
         }
         assert_eq!(
             fake.requests().len(),
-            usize::from(name != "no key"),
+            usize::from(name != "no key" && name != "TypeSafe off"),
             "{name}"
         );
 

@@ -4,6 +4,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::orchestrator::app;
 use crate::orchestrator::stage::log_line;
 use crate::setup;
 use crate::tools::Tools;
@@ -11,7 +12,7 @@ use crate::tools::Tools;
 const USAGE: &str = "usage: harness [command]
 
   (no command)                open the Shell, which runs the Epics
-  init [--force]              install the shipped skills and every job's default, keep the TypeSafe key and preflight the Target repo
+  init [--force]              set up the Target repo (bd, docs/agents, the skills, TypeSafe, herdr's integrations) and preflight it
   --version                   print the version
 ";
 
@@ -53,8 +54,8 @@ pub fn run(
                 match setup::install_skills(repo, &home, &*tools, force, out, &mut *input, tty) {
                     Ok(false) => return 0, // cancelled at the gate: nothing else runs
                     Ok(true) => {
-                        setup::ask_typesafe_key(repo, &env("TYPESAFE_API_KEY"), out, input, tty)
-                            .and_then(|()| setup::install_defaults(repo, &home, &*tools, out))
+                        let key = env("TYPESAFE_API_KEY");
+                        setup::set_up(repo, &home, &*tools, &key, out, input, tty)
                     }
                     Err(err) => Err(err),
                 };
@@ -137,16 +138,21 @@ fn hook_input(input: &mut dyn Read) -> Result<serde_json::Value, String> {
     serde_json::from_str(&raw).map_err(|err| err.to_string())
 }
 
-/// Prints the warnings and what is missing, and returns the exit code. A
-/// missing TypeSafe key is a warning, not a failure: the run works with the
-/// user as the judge.
+/// Prints the warnings and what is missing, and returns the exit code.
+/// TypeSafe off or without a key is a warning, not a failure: the run works
+/// with the user as the judge.
 fn preflight(
     out: &mut dyn Write,
     repo: &Path,
     tools: &dyn Tools,
     env: &dyn Fn(&str) -> String,
 ) -> i32 {
-    if setup::typesafe_key(repo, env).is_none() {
+    if !app::typesafe(repo) {
+        let _ = writeln!(
+            out,
+            "preflight: TypeSafe is off: every Wake will be a Question"
+        );
+    } else if setup::typesafe_key(repo, env).is_none() {
         let _ = writeln!(
             out,
             "preflight: no TypeSafe key: every Wake will be a Question"

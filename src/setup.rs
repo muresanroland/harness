@@ -1,6 +1,7 @@
 //! The thin 'harness init': installs the shipped skills and every job's
-//! default where the user says, keeps the TypeSafe key, and preflights the
-//! Target repo.
+//! default where the user says, offers bd init, the docs/agents setup and
+//! herdr's integrations, keeps TypeSafe on or off and its key, and
+//! preflights the Target repo.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -9,8 +10,9 @@ use std::iter;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::skills::manifest::{self, Installed, Location, Manifest, Place, JOBS, NONE};
-use crate::skills::SKILLS;
+use crate::orchestrator::app::{self, APPS};
+use crate::skills::manifest::{self, Installed, Location, Manifest, Place, JOBS};
+use crate::skills::{stage_skill, SKILLS};
 use crate::tools::Tools;
 
 /// The record of every skill file init wrote, path to the text it wrote:
@@ -222,20 +224,217 @@ fn ask_location(
     Ok(locations[raw(tty, || choose(out, input, &options, default))?])
 }
 
-/// Installs every job's default the manifest lacks, where init put the
-/// skills, each pinned by its commit. At user level a skill you already have
-/// there is yours and stays, linked for Claude should it lack the link. A
-/// failure is said and init goes on: the preflight names the job.
+/// The rest of init once the skills are in: bd, the docs/agents setup,
+/// TypeSafe, every job's default, and herdr's integrations.
+pub(crate) fn set_up(
+    repo: &Path,
+    home: &Path,
+    tools: &dyn Tools,
+    env_key: &str,
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+) -> io::Result<()> {
+    bd_init(repo, tools, out, input, tty)?;
+    write_agent_docs(repo, out, input, tty)?;
+    let typesafe = ask_typesafe(repo, env_key, out, input, tty)?;
+    install_defaults(repo, home, tools, typesafe, out)?;
+    install_integrations(repo, tools, out, input, tty)
+}
+
+/// Offers herdr's integration, which reports each session's id, for every
+/// App on PATH whose integration herdr says is not installed or outdated:
+/// what each install writes, then one question. Declined, or nobody
+/// answering, those Stages cannot be resumed by id.
+fn install_integrations(
+    repo: &Path,
+    tools: &dyn Tools,
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+) -> io::Result<()> {
+    // herdr 0.9.1 prints it as text only: "codex: outdated (v7) (<path>)".
+    let status = match tools.run(repo, &["herdr", "integration", "status"]) {
+        Ok(status) => status,
+        Err(err) => {
+            write!(
+                out,
+                "init: herdr integration status failed, so no integration was offered and /continue may start Stages fresh; fix herdr and run harness init again: {err}\r\n"
+            )?;
+            return Ok(());
+        }
+    };
+    let stale: Vec<(&str, &str)> = APPS
+        .iter()
+        .filter_map(|app| {
+            let state = status
+                .lines()
+                .find_map(|line| line.strip_prefix(app.name)?.strip_prefix(": "))?;
+            if !state.starts_with("not installed") && !state.starts_with("outdated") {
+                return None;
+            }
+            tools.run(repo, &["which", app.name]).ok()?;
+            Some((app.name, state.trim_end()))
+        })
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    write!(
+        out,
+        "init: herdr's integration tells herdr each session's id, so /continue can resume a Stage; it writes a hook script and registers it in the App's settings:\r\n"
+    )?;
+    for (name, state) in &stale {
+        write!(out, "  {name}: {state}\r\n")?;
+    }
+    if yes(out, input, tty, "Install herdr's integration for these?")? == Some(true) {
+        for (name, _) in &stale {
+            match tools.run(repo, &["herdr", "integration", "install", name]) {
+                Ok(_) => write!(out, "init: installed herdr's {name} integration\r\n")?,
+                Err(err) => write!(
+                    out,
+                    "init: herdr's {name} integration not installed: {err}\r\n"
+                )?,
+            }
+        }
+    } else {
+        let names: Vec<&str> = stale.iter().map(|(name, _)| *name).collect();
+        write!(
+            out,
+            "init: skipped: Stages on {} cannot be resumed by id, so /continue starts them fresh\r\n",
+            names.join(", ")
+        )?;
+    }
+    Ok(())
+}
+
+/// With no bd workspace, offers to run bd init. Nobody answering skips it,
+/// and the preflight says it is missing.
+fn bd_init(
+    repo: &Path,
+    tools: &dyn Tools,
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+) -> io::Result<()> {
+    if repo.join(".beads").exists()
+        || yes(out, input, tty, "No bd workspace here. Run bd init now?")? != Some(true)
+    {
+        return Ok(());
+    }
+    match tools.run(repo, &["bd", "init", "--non-interactive"]) {
+        Ok(_) => write!(out, "init: bd init done\r\n"),
+        Err(err) => write!(out, "init: bd init failed: {err}\r\n"),
+    }
+}
+
+/// The beads docs/agents setup init writes, compiled in: this repo's own.
+const AGENT_DOCS: [(&str, &str); 3] = [
+    (
+        "docs/agents/issue-tracker.md",
+        include_str!("../docs/agents/issue-tracker.md"),
+    ),
+    (
+        "docs/agents/triage-labels.md",
+        include_str!("../docs/agents/triage-labels.md"),
+    ),
+    (
+        "docs/agents/domain.md",
+        include_str!("../docs/agents/domain.md"),
+    ),
+];
+
+/// The Agent skills block, modelled on this repo's AGENTS.md.
+const AGENT_SKILLS: &str = "## Agent skills
+
+### Issue tracker
+
+Issues live in beads (`bd`), not GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage roles, each a bd label of the same name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+`CONTEXT.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.
+";
+
+/// Writes what the repo lacks of the beads docs/agents setup, asked first;
+/// a non-interactive init writes it too. The Agent skills block goes into
+/// CLAUDE.md, else AGENTS.md, unless either has it already.
+fn write_agent_docs(
+    repo: &Path,
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+) -> io::Result<()> {
+    let docs: Vec<_> = AGENT_DOCS
+        .iter()
+        .filter(|(path, _)| !repo.join(path).exists())
+        .collect();
+    let has_block = ["CLAUDE.md", "AGENTS.md"].iter().any(|file| {
+        fs::read_to_string(repo.join(file)).is_ok_and(|text| text.contains("## Agent skills"))
+    });
+    if docs.is_empty() && has_block {
+        return Ok(());
+    }
+    let question = "Write the beads docs/agents setup (issue tracker, triage labels, domain, Agent skills block)?";
+    if yes(out, input, tty, question)? == Some(false) {
+        return Ok(());
+    }
+    for (path, text) in docs {
+        let at = repo.join(path);
+        fs::create_dir_all(at.parent().unwrap())?;
+        fs::write(&at, text)?;
+        write!(out, "init: wrote {path}\r\n")?;
+    }
+    if !has_block {
+        let file = if repo.join("CLAUDE.md").exists() {
+            "CLAUDE.md"
+        } else {
+            "AGENTS.md"
+        };
+        let mut text = match fs::read_to_string(repo.join(file)) {
+            Ok(text) => text,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(err),
+        };
+        if !text.is_empty() {
+            text += if text.ends_with('\n') { "\n" } else { "\n\n" };
+        }
+        fs::write(repo.join(file), text + AGENT_SKILLS)?;
+        write!(out, "init: wrote the Agent skills block into {file}\r\n")?;
+    }
+    Ok(())
+}
+
+/// The typesafe-ai skill init installs when TypeSafe is on: (name, source).
+pub(crate) const TYPESAFE_SKILL: (&str, &str) =
+    ("typesafe-ai", "typesafe-ai/skills/skills/typesafe-ai");
+
+/// Installs every job's default the manifest lacks, and the typesafe-ai
+/// skill when TypeSafe is on, where init put the skills, each pinned by its
+/// commit. At user level a skill you already have there is yours and stays,
+/// linked for Claude should it lack the link. A failure is said and init
+/// goes on: the preflight names the job.
 pub(crate) fn install_defaults(
     repo: &Path,
     home: &Path,
     tools: &dyn Tools,
+    typesafe: bool,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     let manifest = Manifest::load(repo).map_err(io::Error::other)?;
     let place = manifest.place(repo, home);
-    for (job, suggestions) in JOBS {
-        let (name, source) = suggestions[0];
+    let defaults = JOBS.iter().map(|(job, suggestions)| {
+        (
+            suggestions[0],
+            format!("the {} default", job.replace('-', " ")),
+        )
+    });
+    let typesafe = typesafe.then(|| (TYPESAFE_SKILL, "for TypeSafe".to_string()));
+    for ((name, source), what) in defaults.chain(typesafe) {
         if source.is_empty() || manifest.skills.contains_key(name) {
             continue;
         }
@@ -251,70 +450,62 @@ pub(crate) fn install_defaults(
             continue;
         }
         match manifest::add(repo, home, tools, source, Some(name)) {
-            Ok(_) => writeln!(
-                out,
-                "init: installed {name}, the {} default",
-                job.replace('-', " ")
-            )?,
+            Ok(_) => writeln!(out, "init: installed {name}, {what}")?,
             Err(err) => writeln!(out, "init: {name} not installed: {err}")?,
         }
     }
     Ok(())
 }
 
-/// Asks for the TypeSafe API key with echo off and keeps it, readable only by
-/// the user, when TYPESAFE_API_KEY (`env_key`) is unset and no key is stored.
-/// An empty answer, Ctrl-C, Ctrl-D or a silent stdin skips the question.
-pub(crate) fn ask_typesafe_key(
+/// TypeSafe's opt-in, kept on or off in config.json. TYPESAFE_API_KEY
+/// (`env_key`) set is on, unasked. Otherwise yes takes the key stored, or
+/// asks for one; no, or an empty key, is off. Nobody answering (a
+/// non-interactive init) leaves it on only where it is on with a key kept.
+/// The key stays in its own file.
+pub(crate) fn ask_typesafe(
     repo: &Path,
     env_key: &str,
     out: &mut dyn Write,
     input: &mut dyn Read,
     tty: bool,
-) -> io::Result<()> {
-    if !env_key.trim().is_empty() || repo.join(KEY_FILE).exists() {
-        return Ok(());
-    }
+) -> io::Result<bool> {
+    let question = "Use TypeSafe to judge plans, Wakes and disputed Findings?";
+    let kept = repo.join(KEY_FILE).exists();
+    let on = if !env_key.trim().is_empty() {
+        true
+    } else {
+        match yes(out, input, tty, question)? {
+            Some(true) => kept || ask_typesafe_key(repo, out, input, tty)?,
+            Some(false) => false,
+            None => kept && app::typesafe(repo),
+        }
+    };
+    app::set_typesafe(repo, on).map_err(io::Error::other)?;
+    write!(out, "init: TypeSafe {}\r\n", if on { "on" } else { "off" })?;
+    Ok(on)
+}
+
+/// Asks for the TypeSafe API key with echo off and keeps it, readable only
+/// by the user: whether one was kept. An empty answer, Ctrl-C, Ctrl-D or a
+/// silent stdin keeps none.
+fn ask_typesafe_key(
+    repo: &Path,
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+) -> io::Result<bool> {
     write!(
         out,
         "init: TypeSafe API key, kept in {KEY_FILE} (enter to skip): "
     )?;
     out.flush()?;
-    let key = raw(tty, || {
-        let mut key = Vec::new();
-        let mut byte = [0u8; 1];
-        while let Ok(1) = input.read(&mut byte) {
-            match byte[0] {
-                b'\r' | b'\n' => break,
-                3 | 4 => {
-                    // Ctrl-C or Ctrl-D: skip
-                    key.clear();
-                    break;
-                }
-                0x7f | 0x08 => {
-                    key.pop();
-                }
-                0x1b => {
-                    // An escape sequence, an arrow key say: skipped whole.
-                    if let Ok(1) = input.read(&mut byte) {
-                        if byte[0] == b'[' {
-                            while let Ok(1) = input.read(&mut byte) {
-                                if (0x40..=0x7e).contains(&byte[0]) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                b if b < 0x20 => {}
-                b => key.push(b),
-            }
-        }
-        Ok(String::from_utf8_lossy(&key).trim().to_string())
-    })?;
+    let key = match raw(tty, || read_line(out, input, false))? {
+        Line::Text(key) => key,
+        Line::Cancel | Line::End => String::new(),
+    };
     write!(out, "\r\n")?;
     if key.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     fs::create_dir_all(repo.join(".harness"))?;
     File::options()
@@ -325,7 +516,79 @@ pub(crate) fn ask_typesafe_key(
         .open(repo.join(KEY_FILE))?
         .write_all(format!("{key}\n").as_bytes())?;
     write!(out, "init: TypeSafe key kept in {KEY_FILE}\r\n")?;
-    Ok(())
+    Ok(true)
+}
+
+/// Puts a [Y/n] question: enter or y is yes, Ctrl-C, Ctrl-D or any other
+/// answer no. None when the input ends unanswered: a non-interactive init.
+/// A line, not a key, so the enter after a y never answers the next one.
+fn yes(
+    out: &mut dyn Write,
+    input: &mut dyn Read,
+    tty: bool,
+    question: &str,
+) -> io::Result<Option<bool>> {
+    write!(out, "init: {question} [Y/n] ")?;
+    out.flush()?;
+    let answer = raw(tty, || read_line(out, input, true))?;
+    write!(out, "\r\n")?;
+    Ok(match answer {
+        Line::Text(a) => Some(a.is_empty() || a.starts_with(['y', 'Y'])),
+        Line::Cancel => Some(false),
+        Line::End => None,
+    })
+}
+
+/// What read_line read.
+enum Line {
+    Text(String),
+    /// Ctrl-C or Ctrl-D.
+    Cancel,
+    /// The input ended with nothing typed: nobody is there to answer.
+    End,
+}
+
+/// Reads a line, echoing it when `echo`.
+fn read_line(out: &mut dyn Write, input: &mut dyn Read, echo: bool) -> io::Result<Line> {
+    let text = |line: &[u8]| Line::Text(String::from_utf8_lossy(line).trim().to_string());
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while let Ok(1) = input.read(&mut byte) {
+        match byte[0] {
+            b'\r' | b'\n' => return Ok(text(&line)),
+            3 | 4 => return Ok(Line::Cancel),
+            0x7f | 0x08 => {
+                if line.pop().is_some() && echo {
+                    write!(out, "\x08 \x08")?;
+                }
+            }
+            0x1b => {
+                // An escape sequence, an arrow key say: skipped whole.
+                if let Ok(1) = input.read(&mut byte) {
+                    if byte[0] == b'[' {
+                        while let Ok(1) = input.read(&mut byte) {
+                            if (0x40..=0x7e).contains(&byte[0]) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            b if b < 0x20 => {}
+            b => {
+                line.push(b);
+                if echo {
+                    out.write_all(&[b])?;
+                }
+            }
+        }
+        out.flush()?;
+    }
+    Ok(if line.is_empty() {
+        Line::End
+    } else {
+        text(&line)
+    })
 }
 
 /// The TypeSafe key for a Judgment: TYPESAFE_API_KEY when set, else the key
@@ -478,23 +741,36 @@ pub(crate) fn preflight(
         missing.push("no git remote: add one with 'git remote add origin <url>'".to_string());
     }
     let home = PathBuf::from(env("HOME"));
-    let have: Vec<String> = manifest::list(repo, &home, tools)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    if !have.iter().any(|name| name == "create-pr") {
+    let found = manifest::list(repo, &home, tools);
+    if !found.iter().any(|(name, _)| name == "create-pr") {
         missing
             .push("no create-pr skill: run 'harness init' to install the shipped one".to_string());
     }
-    // Each job's pick, but none and one built into its App.
+    // Each job's pick, but none, as the App its row runs on loads or has
+    // built in one.
     match Manifest::load(repo) {
         Ok(manifest) => {
             for (job, suggestions) in JOBS {
                 let pick = manifest.pick(job);
-                let built_in = suggestions
+                // The row running the job's line: the audit is side A's.
+                let key = match *job {
+                    "review" => "review",
+                    "audit" => "side_a",
+                    "merge-conflicts" => "address",
+                    _ => "implement",
+                };
+                // A row that cannot be read is the Orchestrator's to refuse.
+                let Ok(row) = app::row(repo, key) else {
+                    continue;
+                };
+                let have: Vec<String> = found
                     .iter()
-                    .any(|&(name, source)| name == pick && source.is_empty());
-                if pick != NONE && !built_in && !have.iter().any(|name| name == pick) {
+                    .filter(|(name, path)| {
+                        path.parent().is_some_and(|dir| row.app.loads(name, dir))
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                if manifest::lacks(pick, &have, row.app.built_in) {
                     // init installs only the default
                     let fix = if pick == suggestions[0].0 {
                         "harness init installs it, or /config picks another"
@@ -510,6 +786,21 @@ pub(crate) fn preflight(
         }
         Err(err) => missing.push(err),
     }
+    // A row that cannot be read is the Orchestrator's to refuse; the
+    // Review's fallback, unset, runs nothing.
+    for key in app::ROWS {
+        let row = match key {
+            app::IF_LIMITED => app::fallback_row(repo).ok().flatten(),
+            _ => app::row(repo, key).ok(),
+        };
+        let Some(row) = row else {
+            continue;
+        };
+        let name = row.app.name;
+        if tools.run(repo, &["which", name]).is_err() {
+            missing.push(format!("{key} runs on {name}, which is not on PATH"));
+        }
+    }
     if env("HERDR_ENV") != "1" {
         missing.push("HERDR_ENV is not 1: run the Harness from a pane inside herdr".to_string());
     }
@@ -518,7 +809,8 @@ pub(crate) fn preflight(
 
 /// What the preflight warns of without failing: a personal skill that shadows
 /// one the Harness installed, since Claude Code runs a personal skill over a
-/// project one of the same name, and the superpowers plugin.
+/// project one of the same name, the superpowers plugin, and an installed
+/// Stage skill that lost a job's placeholder, which the shipped one holds.
 pub(crate) fn warnings(
     repo: &Path,
     tools: &dyn Tools,
@@ -537,6 +829,20 @@ pub(crate) fn warnings(
                 .exists()
             {
                 warn.push(format!("your personal ~/.claude/skills/{name} shadows the installed {name}: Claude Code runs a personal skill over a project one"));
+            }
+        }
+    }
+    for (name, shipped) in SKILLS {
+        let Some(Ok(installed)) = stage_skill(repo, &home, name) else {
+            continue;
+        };
+        for (job, _) in JOBS {
+            let held = manifest::placeholder(job);
+            if shipped.contains(&held) && !installed.contains(&held) {
+                warn.push(format!(
+                    "the installed {name} lacks {held}: the {} skill you pick never runs there; put the line back, or refresh it with harness init",
+                    job.replace('-', " ")
+                ));
             }
         }
     }

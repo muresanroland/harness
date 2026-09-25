@@ -3,6 +3,8 @@
 //! styled; under 110 columns it folds to a box over the dimmed Shell. The
 //! frame is its own, for anything else that docks.
 
+use std::cell::Cell;
+
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -167,18 +169,11 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     // scrollbar's.
     let (rows, heads) = md(plan, body.width.saturating_sub(1) as usize);
     let (total, h) = (rows.len(), body.height as usize);
-    s.page.set(h.saturating_sub(2).max(1));
-    *s.heads.borrow_mut() = heads;
-    let from = q.scroll.get().min(total.saturating_sub(h));
-    q.scroll.set(from);
-    let shown: Vec<Line> = rows.into_iter().skip(from).take(h).collect();
-    f.render_widget(
-        Paragraph::new(shown),
-        Rect {
-            width: body.width.saturating_sub(1),
-            ..body
-        },
-    );
+    let text = Rect {
+        width: body.width.saturating_sub(1),
+        ..body
+    };
+    let from = scrolled(f, s, rows, heads, &q.scroll, text);
     if total > h {
         let mut state = ScrollbarState::new(total - h).position(from);
         let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -246,6 +241,26 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
             .collect()
     };
     f.render_widget(Paragraph::new(lines), foot);
+}
+
+/// The rows in `area` from the scroll row, kept inside; the page and the
+/// heads left for Screen::scroll_rows. The first row shown.
+pub(super) fn scrolled(
+    f: &mut Frame,
+    s: &Screen,
+    rows: Vec<Line>,
+    heads: Vec<usize>,
+    scroll: &Cell<usize>,
+    area: Rect,
+) -> usize {
+    let h = area.height as usize;
+    s.page.set(h.saturating_sub(2).max(1));
+    *s.heads.borrow_mut() = heads;
+    let from = scroll.get().min(rows.len().saturating_sub(h));
+    scroll.set(from);
+    let shown: Vec<Line> = rows.into_iter().skip(from).take(h).collect();
+    f.render_widget(Paragraph::new(shown), area);
+    from
 }
 
 /// The plan's markdown as rows `width` wide, and the rows its headings

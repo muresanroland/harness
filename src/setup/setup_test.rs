@@ -1,6 +1,7 @@
-use super::{ask_typesafe_key, install_skills, preflight, typesafe_key, warnings};
+use super::{ask_typesafe, install_skills, preflight, typesafe_key, warnings};
 use crate::orchestrator::write_file;
 use crate::skills::manifest::{Installed, Location, Manifest, JOBS, NONE};
+use crate::skills::SKILLS;
 use crate::tempdir::TempDir;
 use crate::tools::fake::Fake;
 use std::collections::BTreeMap;
@@ -352,7 +353,8 @@ fn install_skills_cancel_and_a_closed_stdin_touch_nothing() {
 
 fn ask_key(repo: &Path, env: &str, typed: &str) -> String {
     let mut out = Vec::new();
-    ask_typesafe_key(repo, env, &mut out, &mut typed.as_bytes(), false).unwrap();
+    let typed = format!("y\n{typed}"); // yes to TypeSafe, then the key
+    ask_typesafe(repo, env, &mut out, &mut typed.as_bytes(), false).unwrap();
     String::from_utf8(out).unwrap()
 }
 
@@ -441,6 +443,29 @@ fn picks_missing(repo: &Path, home: &Path) -> Vec<String> {
         .collect()
 }
 
+/// A pick counts only where the App running its line loads it: the Review,
+/// on codex by default, never reads .claude/skills.
+#[test]
+fn preflight_counts_a_pick_only_where_its_app_loads_it() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let mut manifest = Manifest::default();
+    for (job, _) in JOBS {
+        manifest.picks.insert(job.to_string(), NONE.to_string());
+    }
+    manifest.picks.insert("review".into(), "rcr".into());
+    manifest.save(repo.path()).unwrap();
+    write_file(&repo.path().join(".claude/skills/rcr/SKILL.md"), "claude's");
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        ["the review skill rcr is missing: /config installs it, or picks another"]
+    );
+    write_file(&repo.path().join(".agents/skills/rcr/SKILL.md"), "codex's");
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
     let (repo, home) = (TempDir::new(), TempDir::new());
@@ -467,6 +492,16 @@ fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
         picks_missing(repo.path(), home.path()),
         Vec::<String>::new()
     );
+    // Only codex has it: a Review on claude lacks it.
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"review": {"app": "claude"}}"#,
+    );
+    assert_eq!(
+        picks_missing(repo.path(), home.path()),
+        ["the review skill review-agent is missing: /config installs it, or picks another"]
+    );
+    fs::remove_file(repo.path().join(".harness/config.json")).unwrap();
 
     // A pick you have anywhere, at user level here, is there. One not a
     // job's default is /config's to install.
@@ -536,5 +571,64 @@ fn preflight_warns_of_a_personal_copy_shadowing_an_installed_skill_and_of_superp
     assert_eq!(
         warnings(repo.path(), &*plugins(false), &env),
         Vec::<String>::new()
+    );
+}
+
+#[test]
+fn preflight_names_each_row_whose_app_is_not_on_path() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let no_codex = Fake::new(|_, argv| match argv.join(" ").as_str() {
+        "which codex" => Err("codex not found".to_string()),
+        _ => Ok(String::new()),
+    });
+    let got: Vec<String> = preflight(repo.path(), &*no_codex, &home_env(home.path()))
+        .into_iter()
+        .filter(|m| m.contains("PATH"))
+        .collect();
+    // The defaults: the Review and Debate side B on codex, the rest on claude.
+    assert_eq!(
+        got,
+        [
+            "review runs on codex, which is not on PATH",
+            "side_b runs on codex, which is not on PATH",
+        ]
+    );
+    // The Review's fallback once its key is set, no model needed; unset, it
+    // runs nothing.
+    let config = repo.path().join(".harness/config.json");
+    crate::orchestrator::write_file(&config, r#"{"review_if_limited": {"app": "codex"}}"#);
+    let got = preflight(repo.path(), &*no_codex, &home_env(home.path()));
+    assert!(
+        got.contains(&"review_if_limited runs on codex, which is not on PATH".to_string()),
+        "{got:?}"
+    );
+}
+
+/// An installed Stage skill edited to lose a job's placeholder never runs
+/// that job's pick: the preflight warns, naming both.
+#[test]
+fn preflight_warns_of_a_stage_skill_that_lost_a_placeholder() {
+    let (repo, home) = (TempDir::new(), TempDir::new());
+    let env = home_env(home.path());
+    let shipped = SKILLS
+        .iter()
+        .find(|(name, _)| *name == "stage-implement")
+        .unwrap()
+        .1;
+    let at = repo.path().join(".agents/skills/stage-implement/SKILL.md");
+    write_file(&at, shipped);
+    assert_eq!(
+        warnings(repo.path(), &*Fake::quiet(), &env),
+        Vec::<String>::new()
+    );
+
+    let edited: Vec<&str> = shipped
+        .lines()
+        .filter(|line| !line.contains("{{test-first}}"))
+        .collect();
+    write_file(&at, &edited.join("\n"));
+    assert_eq!(
+        warnings(repo.path(), &*Fake::quiet(), &env),
+        ["the installed stage-implement lacks {{test-first}}: the test first skill you pick never runs there; put the line back, or refresh it with harness init"]
     );
 }

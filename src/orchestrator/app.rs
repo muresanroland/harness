@@ -41,6 +41,29 @@ pub(crate) struct App {
     pub(crate) family: &'static str,
     /// The models /config offers besides default, run in the given dir.
     pub(crate) models: fn(&dyn Tools, &Path) -> Result<Vec<Model>, String>,
+    /// What its pane shows at a usage limit: regexes, with the reset in
+    /// the group "reset" and which limit in "what" when the App says.
+    pub(crate) limits: &'static [&'static str],
+    /// What a Stage skill's "Use the {} skill" puts before a job's pick.
+    pub(crate) mention: &'static str,
+    /// The skills built into it: a pick of one needs nothing installed here,
+    /// and is not installed on another App.
+    pub(crate) built_in: &'static [&'static str],
+    /// Its own skills folder, at the repo and at home; it loads
+    /// .harness/skills too, where the checkout's skills are linked from.
+    pub(crate) skill_dir: &'static str,
+    /// Whether it loads its enabled plugins' skills, named plugin:skill.
+    pub(crate) plugins: bool,
+}
+
+impl App {
+    /// Whether it loads a skill manifest::list found: the name list gives
+    /// it, and the folder it is in.
+    pub(crate) fn loads(&self, name: &str, dir: &Path) -> bool {
+        (self.plugins && name.contains(':'))
+            || dir.ends_with(self.skill_dir)
+            || dir.ends_with(".harness/skills")
+    }
 }
 
 pub(crate) static APPS: [App; 2] = [
@@ -96,6 +119,15 @@ pub(crate) static APPS: [App; 2] = [
                 .map(|m| (m.to_string(), efforts.to_vec()))
                 .to_vec())
         },
+        limits: &[
+            r"You['’]ve hit your (?P<what>.*?limit) · resets (?P<reset>.+)",
+            r"Usage limit reached · continuing automatically at (?P<reset>.+?)(?: · |$)",
+        ],
+        // In words, a plugin's skill plugin-qualified as the pick names it.
+        mention: "",
+        built_in: &[],
+        skill_dir: ".claude/skills",
+        plugins: true,
     },
     App {
         name: "codex",
@@ -109,6 +141,17 @@ pub(crate) static APPS: [App; 2] = [
         trust: codex_records,
         family: "OpenAI",
         models: codex_models,
+        // U+2019 in You’ve; "Try again later." gives no reset
+        limits: &[
+            r"You['’]ve hit your (?P<what>usage limit)\..*?[Tt]ry again (?:at (?P<reset>.+?)|later)\.",
+        ],
+        // $name, which a skill with implicit invocation off (review-agent)
+        // needs.
+        mention: "$",
+        built_in: &["review-agent"],
+        // Never Claude's .claude/skills or its plugins.
+        skill_dir: ".agents/skills",
+        plugins: false,
     },
 ];
 
@@ -206,13 +249,19 @@ fn fill(form: &[&str], value: &str) -> Vec<String> {
     form.iter().map(|arg| arg.replace("{}", value)).collect()
 }
 
+/// Inputs as (name, value).
+type Inputs = Vec<(&'static str, String)>;
+
 /// The Moderator's Inputs, read as the Debate starts: each side's command
-/// from its row, the two on Apps of different families. The audit runs on
-/// side A's.
+/// from its row, the two on Apps of different families, and "limited until
+/// <t>" for a side whose App `limited` says is, the audit running on side
+/// A's, and TypeSafe when off. With them side A's App, which runs the
+/// audit's line.
 pub(crate) fn debate_inputs(
     repo: &Path,
     run_dir: &str,
-) -> Result<Vec<(&'static str, String)>, String> {
+    limited: impl Fn(&str) -> Option<String>,
+) -> Result<(Inputs, &'static App), String> {
     let (a, b) = (row(repo, "side_a")?, row(repo, "side_b")?);
     if a.app.family == b.app.family {
         return Err(format!(
@@ -220,10 +269,25 @@ pub(crate) fn debate_inputs(
             a.app.family
         ));
     }
-    Ok(vec![
+    let mut inputs = vec![
         ("Side A command", a.side_command(run_dir)),
         ("Side B command", b.side_command(run_dir)),
-    ])
+    ];
+    for (side, row) in [("Side A", &a), ("Side B", &b)] {
+        if let Some(when) = limited(row.app.name) {
+            inputs.push((side, format!("limited until {when}")));
+        }
+    }
+    if !typesafe(repo) {
+        inputs.push(("TypeSafe", "off".to_string()));
+    }
+    Ok((inputs, a.app))
+}
+
+/// The Review's fallback row; None while its model is none, as it is while
+/// config.json has no review_if_limited.
+pub(crate) fn fallback_row(repo: &Path) -> Result<Option<Row>, String> {
+    row(repo, IF_LIMITED).map(|row| Some(row).filter(|row| row.model != "none"))
 }
 
 /// The Stage's row, read from .harness/config.json as the Stage starts, so a
@@ -238,8 +302,43 @@ pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
     row(repo, key)
 }
 
+/// Whether TypeSafe is on: config.json's "typesafe", read at each use so a
+/// change reaches the next Judgment and Debate. Unset, or a config.json that
+/// cannot be read, is on: the key alone decides, as before init asked.
+pub(crate) fn typesafe(repo: &Path) -> bool {
+    read(repo).map_or(true, |(_, doc)| doc["typesafe"] != false)
+}
+
+/// Keeps TypeSafe on or off in config.json, the rows as they were; a
+/// config.json that is not an object is refused, not overwritten.
+pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
+    let (path, mut doc) = read(repo)?;
+    if doc.is_null() {
+        doc = json!({});
+    }
+    let Some(fields) = doc.as_object_mut() else {
+        return Err(format!("{}: not a JSON object", path.display()));
+    };
+    fields.insert("typesafe".to_string(), Value::Bool(on));
+    fs::create_dir_all(path.parent().unwrap())
+        .and_then(|()| fs::write(&path, format!("{doc:#}\n")))
+        .map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// The key of every row of config.json.
+pub(crate) const ROWS: [&str; 8] = [
+    "implement",
+    "review",
+    IF_LIMITED,
+    "moderator",
+    "side_a",
+    "side_b",
+    "fix",
+    "address",
+];
+
 /// The row under key: a Stage's, or a Debate side's (side_a, side_b).
-fn row(repo: &Path, key: &str) -> Result<Row, String> {
+pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
     let (path, doc) = read(repo)?;
     row_in(&doc, key, &path)
 }
@@ -269,12 +368,13 @@ pub(crate) fn write(path: &Path, doc: &Value) -> Result<(), String> {
 }
 
 /// A field of the row under key: missing or empty, its default (the row's
-/// App, the fallback's none, else default); not a string refuses.
+/// App, the fallback's none while config.json has no fallback row, else
+/// default); not a string refuses.
 pub(crate) fn field(doc: &Value, key: &str, name: &str) -> Result<String, String> {
     let default = match name {
         "app" if matches!(key, "review" | "side_b") => "codex",
         "app" => "claude",
-        "model" if key == IF_LIMITED => "none",
+        "model" if key == IF_LIMITED && doc[key].is_null() => "none",
         _ => "default",
     };
     match &doc[key][name] {

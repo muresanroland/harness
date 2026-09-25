@@ -132,7 +132,7 @@ fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'s
         lines.push(row(short, st.summary(i), i == st.section));
     }
     lines.push(divider(width));
-    let typesafe = if s.cfg.api_key.is_empty() {
+    let typesafe = if s.cfg.api_key.is_empty() || st.doc["typesafe"] == false {
         "off"
     } else {
         "on"

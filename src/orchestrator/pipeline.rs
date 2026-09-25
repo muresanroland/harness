@@ -8,13 +8,13 @@ use serde_json::json;
 
 use super::result::{read_stage_result, ResultRequirements, StageResult};
 use super::stage::{
-    plural, pr_ref, result_name, stage_label, Orchestrator, Stage, StageError, DEBATE, FIX,
+    plural, pr_ref, result_name, stage_label, Orchestrator, Stage, StageError, AWAY, DEBATE, FIX,
     IMPLEMENT, REVIEW,
 };
 use super::state::{STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 use crate::skills::manifest::link_checkout_skills;
 
-const MAX_ROUNDS: usize = 3;
+pub(crate) const MAX_ROUNDS: usize = 3;
 
 /// What a run keeps for whoever reads it later: the Stages' result files,
 /// diffs and debate transcripts, all flat text.
@@ -28,7 +28,8 @@ impl Orchestrator {
     /// stopped.
     pub(crate) fn run_ticket(&self, ticket: &str) {
         match self.pipeline(ticket) {
-            Ok(()) | Err(StageError::Stopped) => {}
+            Ok(()) => {}
+            Err(StageError::Stopped) => self.close_on_limit(ticket),
             Err(StageError::Parked(reason)) => {
                 self.update(ticket, |ts| {
                     ts.status = STATUS_PARKED.to_string();
@@ -54,38 +55,49 @@ impl Orchestrator {
             let review_file = self.run_dir(ticket).join(result_name(&REVIEW, round));
             let review =
                 self.run_read_only(ticket, &REVIEW, round, &[], ResultRequirements::default())?;
-            self.report(
-                ticket,
-                &format!(
-                    "review {round} found {}",
-                    plural(review.findings, "finding")
-                ),
-            );
-            let verdict = self.run_read_only(
-                ticket,
-                &DEBATE,
-                round,
-                &[("Review file", &review_file.display().to_string())],
-                ResultRequirements {
-                    review_findings: review.findings,
-                    ..Default::default()
-                },
-            )?;
-            let fixes = verdict.fixes;
-            self.report(
-                ticket,
-                &format!(
-                    "debate {round} settled: {} to fix, {} skipped",
-                    fixes.len(),
-                    verdict.skips
-                ),
-            );
-            verdicts.push(
-                self.run_dir(ticket)
-                    .join(result_name(&DEBATE, round))
-                    .display()
-                    .to_string(),
-            );
+            // Its App Limited and the PR to open unreviewed: this Round's
+            // Review and Debate are skipped, and nothing is left to fix.
+            let unreviewed = review.unreviewed;
+            let fixes = if !unreviewed.is_empty() {
+                self.report(
+                    ticket,
+                    &format!("review {round} and debate {round} skipped: {unreviewed}"),
+                );
+                Vec::new()
+            } else {
+                self.report(
+                    ticket,
+                    &format!(
+                        "review {round} found {}",
+                        plural(review.findings, "finding")
+                    ),
+                );
+                let verdict = self.run_read_only(
+                    ticket,
+                    &DEBATE,
+                    round,
+                    &[("Review file", &review_file.display().to_string())],
+                    ResultRequirements {
+                        review_findings: review.findings,
+                        ..Default::default()
+                    },
+                )?;
+                self.report(
+                    ticket,
+                    &format!(
+                        "debate {round} settled: {} to fix, {} skipped",
+                        verdict.fixes.len(),
+                        verdict.skips.len()
+                    ),
+                );
+                verdicts.push(
+                    self.run_dir(ticket)
+                        .join(result_name(&DEBATE, round))
+                        .display()
+                        .to_string(),
+                );
+                verdict.fixes
+            };
 
             // The Fix session always runs, even with nothing to fix, because
             // the last one opens the pull request. It is given only the fix
@@ -102,6 +114,9 @@ impl Orchestrator {
             if last {
                 inputs[0].1 = "yes";
                 inputs.push(("Verdict history", history.as_str()));
+            }
+            if !unreviewed.is_empty() {
+                inputs.push(("Unreviewed", unreviewed.as_str()));
             }
             let fix = self.run_stage(
                 ticket,
@@ -152,7 +167,8 @@ impl Orchestrator {
     /// the Stage first runs, so a resumed or retried Stage, or one parked by
     /// its guard and continued, is compared with the tree it started from. A
     /// Stage already done with no snapshot is not guarded: the tree may hold
-    /// a later Stage's work.
+    /// a later Stage's work. One parked for asking while the user was Away
+    /// keeps its session and snapshot: /continue @ticket watches it again.
     fn run_read_only(
         &self,
         ticket: &str,
@@ -176,7 +192,11 @@ impl Orchestrator {
             }
         }
         let result = self.run_stage(ticket, st, round, inputs, want);
-        if let Err(StageError::Parked(reason)) = &result {
+        let parked = match &result {
+            Err(StageError::Parked(reason)) if reason != AWAY => Some(reason),
+            _ => None,
+        };
+        if let Some(reason) = parked {
             // a parked Ticket may never continue: end its session, which
             // could still write, and put its tree back now. Once back, the
             // snapshot goes: a parked tree is the user's to edit, and a

@@ -513,3 +513,17 @@ fn a_row_on_an_unknown_app_can_be_moved_to_a_listed_one() {
         json!({"fix": {"app": "claude", "model": "default"}})
     );
 }
+
+/// TypeSafe reads off while config.json turns it off, the key set or not.
+#[test]
+fn typesafe_reads_off_while_config_json_turns_it_off() {
+    let repo = TempDir::new();
+    write_file(
+        &repo.path().join(".harness/config.json"),
+        r#"{"typesafe": false}"#,
+    );
+    let mut s = screen_at(apps(""), repo.path());
+    type_line(&mut s, "/config");
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, "TypeSafe  off").is_some(), "{:#?}", rows(&buf));
+}

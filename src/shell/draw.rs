@@ -1,8 +1,11 @@
 //! The layout: header, status row, Overall, the TICKETS sections, RECENT
 //! under its rule newest at the bottom (a Question takes its place when one
-//! shows), the MERGE TO UNBLOCK box, the / or @ list, a notice line and the
-//! input line. A plan Question docks the Shell beside it (draw/modal.rs), and
-//! so does /config (draw/config.rs).
+//! shows), the MERGE TO UNBLOCK box, the LIMITED box, the / or @ list, a
+//! notice line and the input line. A plan Question docks the Shell beside it
+//! (draw/modal.rs), and so does /config (draw/config.rs); the Epic summary
+//! takes the whole terminal (draw/pager.rs).
+
+use std::sync::atomic::Ordering;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -15,6 +18,7 @@ use super::logo::{
     PURPLE, RED, REST, TEXT, TICKET_COLORS,
 };
 use super::{suffix, About, Epic, Screen};
+use crate::orchestrator::limit::{holds, until};
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::Ask;
 use crate::orchestrator::stage::{plural, pr_ref, Event};
@@ -22,6 +26,7 @@ use crate::orchestrator::state::{STATUS_MERGED, STATUS_PARKED, STATUS_PR_OPEN, S
 
 mod config;
 mod modal;
+mod pager;
 
 const PLACEHOLDER: &str = "  / for a command, @ for an Epic or Ticket";
 const COMPOSING: &str = "  your prompt, Enter sends it, Esc goes back";
@@ -64,9 +69,12 @@ pub(crate) fn ticket_color(id: &str) -> Color {
     TICKET_COLORS[n.wrapping_sub(1) % TICKET_COLORS.len()]
 }
 
-/// The Shell over the whole terminal, or docked beside a plan Question.
+/// The Shell over the whole terminal, or docked beside a plan Question;
+/// the Epic summary over both.
 pub(crate) fn draw(f: &mut Frame, s: &Screen) {
-    if s.settings.is_some() {
+    if let Some(summary) = &s.summary {
+        pager::pager(f, s, summary);
+    } else if s.settings.is_some() {
         config::config(f, s);
     } else if s.modal() {
         modal::plan(f, s);
@@ -83,25 +91,29 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
 
 /// The Shell drawn into `area`: header, status row, Overall, the TICKETS
 /// sections, RECENT (newest at the bottom), the boxed QUESTION (a plan
-/// docks in the modal instead), the red MERGE TO UNBLOCK box, the / or @
-/// list, notice, input. The row from which the list, a notice and the input
-/// line show, for the fold to leave.
+/// docks in the modal instead), the red MERGE TO UNBLOCK box, the amber
+/// LIMITED box, the / or @ list, notice, input. The row from which the list,
+/// a notice and the input line show, for the fold to leave.
 fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
     let tree = sections(s, area.width.saturating_sub(2) as usize);
     let head_h = header_height(area);
     let unblock = unblock_lines(s);
-    let unblock_h = match unblock.len() {
+    let limited = limited_lines(s);
+    let boxed_h = |lines: &[Line]| match lines.len() {
         0 => 0,
         n => n as u16 + 2,
     };
-    // MERGE TO UNBLOCK takes its rows first, then the / or @ list, leaving
+    let (unblock_h, limited_h) = (boxed_h(&unblock), boxed_h(&limited));
+    // MERGE TO UNBLOCK and LIMITED take their rows first, then the / or @ list, leaving
     // TICKETS its three. The TICKETS tree takes its rows and RECENT keeps at
     // least four, its rule and three lines. A Question takes RECENT's space,
     // its pane tail cut first; TICKETS gives up rows only when the question
     // and its options do not fit, and on a screen too short for even that
     // the Question's bottom is cut. A taller tree scrolls (PageUp, PageDown
     // with the input empty).
-    let free = area.height.saturating_sub(head_h + 5 + unblock_h);
+    let free = area
+        .height
+        .saturating_sub(head_h + 5 + unblock_h + limited_h);
     let list = list_lines(
         s,
         area.width.saturating_sub(2) as usize,
@@ -122,7 +134,7 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
         (lines, height)
     });
     let asked_h = asked.as_ref().map_or(0, |(_, h)| *h);
-    let [head, top, over, _, tickets, recent, question, merge, lists, notice, input] =
+    let [head, top, over, _, tickets, recent, question, merge, limit, lists, notice, input] =
         Layout::vertical([
             Constraint::Length(head_h),
             Constraint::Length(1),
@@ -132,6 +144,7 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
             Constraint::Min(0),
             Constraint::Length(asked_h),
             Constraint::Length(unblock_h),
+            Constraint::Length(limited_h),
             Constraint::Length(list_h),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -170,6 +183,12 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
         f.render_widget(
             Paragraph::new(unblock).block(boxed("MERGE TO UNBLOCK").border_style(fg(RED))),
             merge,
+        );
+    }
+    if !limited.is_empty() {
+        f.render_widget(
+            Paragraph::new(limited).block(boxed("LIMITED").border_style(fg(ORANGE))),
+            limit,
         );
     }
     f.render_widget(Paragraph::new(list), inset(lists));
@@ -298,6 +317,42 @@ fn unblock_lines(s: &Screen) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// LIMITED's lines: each App whose usage limit still holds, and when it
+/// resumes, 'CLAUDE LIMITED until 3:45pm · resumes by itself'.
+fn limited_lines(s: &Screen) -> Vec<Line<'static>> {
+    let now = (s.cfg.clock)();
+    let how = match s.running {
+        true => "resumes by itself",
+        false => "/continue after the reset",
+    };
+    s.state
+        .limits
+        .iter()
+        .filter(|(_, reset)| holds(**reset, now))
+        .map(|(app, reset)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{} LIMITED until {}",
+                        app.to_uppercase(),
+                        until(*reset, now)
+                    ),
+                    bold(ORANGE),
+                ),
+                Span::styled(format!(" · {how}"), fg(ORANGE)),
+            ])
+        })
+        .collect()
+}
+
+/// When the usage limit holding a Ticket resets, while it holds.
+fn held_until(s: &Screen, id: &str) -> Option<String> {
+    let now = (s.cfg.clock)();
+    let ts = s.state.tickets.get(id)?;
+    let reset = *s.state.limits.get(&ts.limited)?;
+    holds(reset, now).then(|| until(reset, now))
+}
+
 /// An Epic's color by its place on the tree; off the tree, the first.
 fn epic_color(s: &Screen, id: &str) -> Color {
     let i = listed(s).position(|e| e.id == id).unwrap_or(0);
@@ -385,8 +440,13 @@ fn status_line(s: &Screen, width: usize) -> Line<'static> {
     Line::from(waiting(s, spans))
 }
 
-/// The status row ends in the hidden Questions' count.
+/// The status row ends in AWAY while the user is Away, and the hidden
+/// Questions' count.
 fn waiting(s: &Screen, mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    if s.cfg.away.load(Ordering::SeqCst) {
+        spans.push(dot());
+        spans.push(Span::styled("AWAY", bold(ORANGE)));
+    }
     if s.hidden && !s.questions.is_empty() {
         spans.push(dot());
         spans.push(Span::styled(
@@ -520,6 +580,10 @@ fn sections(s: &Screen, width: usize) -> Vec<Line<'static>> {
                 (_, Some(ts)) => ts.stage.clone(),
                 (_, None) => String::new(),
             };
+            // held by a usage limit, a working Ticket says until when
+            let stage = held_until(s, &t.id)
+                .filter(|_| st == Status::Working)
+                .map_or(stage, |when| format!("limited until {when}"));
             let stage = Span::styled(format!("{stage:>16}  "), fg(MUTED));
             let label = Span::styled(format!("{label:<11}"), bold(lc));
             let right = stage.width() + label.width();
@@ -561,8 +625,9 @@ fn scrolled(s: &Screen, tree: Vec<Line<'static>>, height: usize) -> Vec<Line<'st
 }
 
 /// A Question's lines: the question, a Judgment's scores, a Wake's pane
-/// tail as far as `room` lines allow, and the numbered options with the
-/// cursor on one. Everything but the tail is always there.
+/// tail or a Stage's question as far as `room` lines allow, and the
+/// numbered options with the cursor on one. Everything but the tail or
+/// question is always there.
 fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
     let q = &s.questions[0];
     let head = match &q.ticket {
@@ -601,11 +666,20 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
         ));
     }
     let fit = room.saturating_sub(lines.len() + options.len());
-    if let About::Asked(Ask::Wake { tail, .. }) = &q.about {
-        let tail: Vec<&str> = tail.lines().collect();
-        for line in &tail[tail.len().saturating_sub(fit)..] {
-            lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
+    match &q.about {
+        About::Asked(Ask::Wake { tail, .. }) => {
+            let tail: Vec<&str> = tail.lines().collect();
+            for line in &tail[tail.len().saturating_sub(fit)..] {
+                lines.push(Line::from(Span::styled(line.to_string(), fg(MUTED))));
+            }
         }
+        About::Asked(Ask::StageQuestion { question, .. }) => {
+            let rows = question.lines().flat_map(|line| {
+                modal::wrap_spans(vec![(line.to_string(), fg(TEXT))], width, "", "", fg(TEXT))
+            });
+            lines.extend(rows.take(fit));
+        }
+        _ => {}
     }
     lines.extend(options);
     lines

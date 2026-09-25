@@ -4,6 +4,7 @@
 use super::app::app;
 use super::world::{new_world, spawn_ticket, succeed, BdTicket, World};
 use super::write_file;
+use crate::skills::manifest::{Manifest, NONE};
 use crate::skills::SKILLS;
 use crate::tempdir::TempDir;
 use std::sync::Arc;
@@ -148,6 +149,32 @@ fn the_moderators_inputs_carry_each_sides_command() {
     }
 }
 
+/// TypeSafe off: the Moderator is told so under Inputs, and its pane gets no
+/// key; on, neither changes.
+#[test]
+fn with_typesafe_off_the_moderator_gets_the_input_and_no_key() {
+    for (body, off) in [("", false), (r#"{"typesafe": false}"#, true)] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        if !body.is_empty() {
+            config(&w, body);
+        }
+        o.run_ticket("hx-1");
+
+        let prompt = w
+            .called("herdr agent prompt")
+            .into_iter()
+            .find(|call| call.contains("verdict-1.md"))
+            .unwrap();
+        let inputs = prompt.split_once("## Inputs").unwrap().1;
+        assert_eq!(inputs.contains("- TypeSafe: off\n"), off, "{inputs}");
+        let keyed = w
+            .called("herdr")
+            .iter()
+            .any(|c| c.contains("TYPESAFE_API_KEY=sk-test"));
+        assert_eq!(keyed, !off, "off {off}: the key reached a pane or not");
+    }
+}
+
 /// Running Stages keep theirs; the Stages that start after a change use it.
 #[test]
 fn config_changed_between_two_stages_reaches_the_second() {
@@ -232,4 +259,172 @@ fn an_unreadable_config_or_a_stage_off_claude_wakes_the_stage_that_reads_it() {
             "{body}"
         );
     }
+}
+
+/// Records the picks in the world's Skill manifest.
+fn pick(w: &World, picks: &[(&str, &str)]) {
+    let mut manifest = Manifest::load(&w.repo).unwrap();
+    for (job, pick) in picks {
+        manifest.picks.insert(job.to_string(), pick.to_string());
+    }
+    manifest.save(&w.repo).unwrap();
+}
+
+/// The prompt the Stage writing `file` was sent.
+fn prompt(w: &World, file: &str) -> String {
+    w.called("herdr agent prompt")
+        .into_iter()
+        .find(|call| call.contains(file))
+        .unwrap()
+}
+
+/// Each job's line names its pick in the mention form of the App it runs
+/// on: in words on claude, plugin-qualified for a plugin's skill, $name on
+/// codex. A none pick drops the line, and so does a pick not installed,
+/// which the Inputs tell the Stage to note; the generic line stays.
+#[test]
+fn a_jobs_line_names_its_pick_in_the_apps_mention_form_or_is_dropped() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    write_file(&w.repo.join(".claude/skills/tdd/SKILL.md"), "tdd");
+    let plugin = TempDir::new();
+    write_file(&plugin.path().join("skills/ponytail/SKILL.md"), "lazy");
+    let plugins = serde_json::json!([
+        {"id": "ponytail@market", "enabled": true, "installPath": plugin.path()},
+    ])
+    .to_string();
+    w.hook(move |_, argv| {
+        (argv.join(" ") == "claude plugin list --json").then(|| Ok(plugins.clone()))
+    });
+    pick(
+        &w,
+        &[
+            ("test-first", "tdd"),
+            ("working-mode", "ponytail:ponytail"),
+            ("prose", NONE),
+            ("review", "review-agent"),
+        ],
+    );
+    o.run_ticket("hx-1");
+
+    let implement = prompt(&w, "implement.md");
+    for want in [
+        "   Use the tdd skill for it.\n",
+        "   Use the ponytail:ponytail skill for all your work",
+        "test-first: a failing test, then the code.",
+        "read the diff against the acceptance criteria and fix what is missing or wrong.",
+        "- Not installed: code-review (self-review): their lines are left out; say so in the result file\n",
+    ] {
+        assert!(implement.contains(want), "{want:?} not in:\n{implement}");
+    }
+    for gone in [
+        "{{",
+        "code-review skill",
+        "for your commits and result file",
+    ] {
+        assert!(!implement.contains(gone), "{gone:?} in:\n{implement}");
+    }
+    let review = prompt(&w, "review-1.md");
+    assert!(
+        review.contains("   Use the $review-agent skill for this review"),
+        "{review}"
+    );
+    assert!(!review.contains("Not installed"), "{review}");
+}
+
+/// A pick counts as installed only where the App running its line loads
+/// it: codex, the Review's default, reads .agents/skills, never Claude's
+/// .claude/skills or its plugins.
+#[test]
+fn a_pick_only_another_app_loads_is_not_installed() {
+    for (dir, picked, installed) in [
+        (".agents/skills", "requesting-code-review", true),
+        (".claude/skills", "requesting-code-review", false),
+        ("plugin/skills", "sp:requesting-code-review", false),
+    ] {
+        let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+        write_file(
+            &w.repo.join(dir).join("requesting-code-review/SKILL.md"),
+            "review",
+        );
+        let plugins = serde_json::json!([
+            {"id": "sp@market", "enabled": true, "installPath": w.repo.join("plugin")},
+        ])
+        .to_string();
+        w.hook(move |_, argv| {
+            (argv.join(" ") == "claude plugin list --json").then(|| Ok(plugins.clone()))
+        });
+        pick(&w, &[("review", picked)]);
+        o.run_ticket("hx-1");
+
+        let review = prompt(&w, "review-1.md");
+        let line = review.contains("Use the $requesting-code-review skill");
+        let noted = review.contains(&format!("- Not installed: {picked} (review)"));
+        assert_eq!((line, noted), (installed, !installed), "{dir}:\n{review}");
+    }
+}
+
+/// A pick built into codex is not installed on claude.
+#[test]
+fn a_built_in_pick_is_not_installed_on_another_app() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    config(&w, r#"{"review": {"app": "claude"}}"#);
+    pick(&w, &[("review", "review-agent")]);
+    o.run_ticket("hx-1");
+
+    let review = prompt(&w, "review-1.md");
+    assert!(!review.contains("review-agent skill"), "{review}");
+    assert!(
+        review.contains("- Not installed: review-agent (review)"),
+        "{review}"
+    );
+}
+
+/// The audit at none: no audit line, so the Moderator skips it and notes it.
+#[test]
+fn the_audit_at_none_is_skipped_and_noted() {
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    write_file(
+        &w.repo.join(".claude/skills/ponytail-review/SKILL.md"),
+        "cut",
+    );
+    o.run_ticket("hx-1");
+    let audit = "Use the ponytail-review skill on the diff";
+    assert!(prompt(&w, "verdict-1.md").contains(audit));
+
+    let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
+    pick(&w, &[("audit", NONE)]);
+    o.run_ticket("hx-1");
+    let debate = prompt(&w, "verdict-1.md");
+    assert!(!debate.contains("Use the "), "{debate}");
+    assert!(
+        debate.contains("no over-engineering audit (none picked)"),
+        "{debate}"
+    );
+    assert!(
+        !debate.contains("audit)"),
+        "noted as not installed:\n{debate}"
+    );
+    // The Review's own default, none: its step 3 stands alone.
+    let review = prompt(&w, "review-1.md");
+    assert!(!review.contains("Use the "), "{review}");
+    assert!(
+        review.contains("3. Look for real problems only"),
+        "{review}"
+    );
+}
+
+/// The Review's fallback: unset while config.json has no row for it or its
+/// model is none; a row with no model runs its App's default.
+#[test]
+fn the_fallback_is_unset_at_none_and_runs_a_row_with_no_model() {
+    let (w, _o) = new_world(vec![BdTicket::new("hx-1")]);
+    let fallback = || super::app::fallback_row(&w.repo).unwrap().map(|r| r.said());
+    assert_eq!(fallback(), None);
+    config(
+        &w,
+        r#"{"review_if_limited": {"app": "claude", "model": "none"}}"#,
+    );
+    assert_eq!(fallback(), None);
+    config(&w, r#"{"review_if_limited": {"app": "claude"}}"#);
+    assert_eq!(fallback().as_deref(), Some("claude"));
 }

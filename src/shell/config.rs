@@ -171,7 +171,7 @@ pub(crate) struct Probe {
 
 /// /config, open.
 pub(crate) struct Settings {
-    doc: Value,
+    pub(crate) doc: Value,
     /// Each App's models, as APPS orders them, read when /config opened.
     models: Vec<Result<Vec<Model>, String>>,
     /// The Apps on PATH, and the skills installed but the Shipped ones.
