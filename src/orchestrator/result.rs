@@ -12,6 +12,9 @@ pub(crate) struct StageResult {
     pub(crate) fixes: Vec<String>,
     pub(crate) skips: Vec<String>,
     pub(crate) pr: String,
+    /// The Review did not run: its App was Limited and the answer was to
+    /// open the PR unreviewed. Why, for the Fix's Input.
+    pub(crate) unreviewed: String,
 }
 
 /// The Pipeline context needed to accept a result. The default requires only
@@ -64,6 +67,9 @@ pub(crate) fn read_stage_result(path: &Path, want: ResultRequirements) -> (Stage
             result.fixes.push(line.trim().to_string());
         } else if lower.starts_with("- [skip]") {
             result.skips.push(line.trim().to_string());
+        }
+        if let Some(why) = line.strip_prefix("UNREVIEWED:") {
+            result.unreviewed = why.trim().to_string();
         }
         // As ^PR:\s*(\S+): the whitespace may cross blank lines.
         if let Some(rest) = line.strip_prefix("PR:").filter(|_| result.pr.is_empty()) {

@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::app::{debate_inputs, stage_row, App, Row};
+use super::app::{debate_inputs, fallback_row, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
 use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
-use super::limit::{Limit, LAST_LINES};
+use super::limit::{until, Limit, LAST_LINES};
 use super::result::{
     read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult, ASKED,
 };
@@ -80,6 +80,9 @@ pub(super) enum Held {
     Woke(String),
     /// Its session stopped at this usage limit: never a Wake.
     Limited(Limit),
+    /// Its session gives way to a fresh one, no retry spent: a Review whose
+    /// App is Limited starts again as the user answered.
+    Restart,
 }
 
 /// What a panel line asks of the user; the Shell puts it as a Question.
@@ -112,6 +115,12 @@ pub(crate) enum Ask {
     PlanFailed {
         pane: String,
         feedback: Option<String>,
+    },
+    /// The Review's App at its usage limit: how Reviews go until the reset,
+    /// asked once for the run. The fallback row, as said, when one is set.
+    Limited {
+        app: String,
+        fallback: Option<String>,
     },
     /// The Stage's own question (STATUS: question): its pane, the question
     /// and its options.
@@ -224,6 +233,9 @@ pub(crate) struct Orchestrator {
     pub(crate) answers: Mutex<Vec<(String, String, Answer)>>,
     /// The Tickets running on a thread of this process.
     pub(crate) active: Mutex<BTreeSet<String>>,
+    /// The Apps whose Review limit Question is out, asked by a Ticket still
+    /// holding for its answer.
+    pub(super) asked: Mutex<BTreeSet<String>>,
     /// Each Ticket's live session's deadline, which a wait keeps.
     deadlines: Mutex<BTreeMap<String, Instant>>,
     /// The plan last judged for each Ticket's Implement session: a plan.md
@@ -244,7 +256,8 @@ impl Orchestrator {
         for st in [&IMPLEMENT, &REVIEW, &DEBATE, &FIX] {
             stage_row(&cfg.repo, st).map_err(io::Error::other)?;
         }
-        debate_inputs(&cfg.repo, "").map_err(io::Error::other)?;
+        debate_inputs(&cfg.repo, "", |_| None).map_err(io::Error::other)?;
+        fallback_row(&cfg.repo).map_err(io::Error::other)?;
         let state = load_state(&cfg.repo)?;
         Ok(Arc::new(Self::with_state(cfg, state)))
     }
@@ -259,6 +272,7 @@ impl Orchestrator {
             commands: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             active: Mutex::new(BTreeSet::new()),
+            asked: Mutex::new(BTreeSet::new()),
             deadlines: Mutex::new(BTreeMap::new()),
             plans: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
@@ -601,11 +615,13 @@ impl Orchestrator {
                     .is_ok_and(|reply| reply.result.agent.pane_id == *pane)
         });
         // Its pane gone, it is resumed by its saved session id instead, and
-        // watched as a live one; failing that it starts fresh.
+        // watched as a live one; failing that it starts fresh. A Review on a
+        // Limited App starts fresh, as the user answers.
+        let asked = |s: &Session| st.name == REVIEW.name && self.limited_until(&s.app).is_some();
         if let Some(session) = saved
             .sessions
             .get(st.name)
-            .filter(|s| resumed && live.is_none() && !s.id.is_empty())
+            .filter(|s| resumed && live.is_none() && !s.id.is_empty() && !asked(s))
         {
             match self.wait_limit(ticket, &label, &session.app) {
                 Some(Held::Park) => return Err(StageError::Parked(format!("by you at {label}"))),
@@ -649,6 +665,10 @@ impl Orchestrator {
                     Held::Retry => {
                         self.update(ticket, |ts| ts.retried = true);
                         retry = true;
+                        break;
+                    }
+                    Held::Restart => {
+                        retry = false;
                         break;
                     }
                     Held::Limited(limit) => (String::new(), Some(limit)),
@@ -737,16 +757,27 @@ impl Orchestrator {
             Ok(row) => row,
             Err(err) => return Held::Woke(err),
         };
+        // A Review on a Limited App goes as the user answered.
+        let row = match st.name == REVIEW.name {
+            true => match self.review_row(ticket, label, file, row) {
+                Ok(row) => row,
+                Err(held) => return held,
+            },
+            false => row,
+        };
         // No Stage starts on a Limited App.
         if let Some(held) = self.wait_limit(ticket, label, row.app.name) {
             return held;
         }
         let run_dir = self.run_dir(ticket).display().to_string();
-        // The Moderator is given each Debate side's command, read now too.
-        // Each job's Delegate skill, as the App that runs its line loads and
-        // names one: the audit, the Debate's job, runs on side A's command.
+        // The Moderator is given each Debate side's command, read now too,
+        // and which side's App is Limited. Each job's Delegate skill, as the
+        // App that runs its line loads and names one: the audit, the Debate's
+        // job, runs on side A's command.
+        let now = (self.cfg.clock)();
+        let limited = |app: &str| self.limited_until(app).map(|reset| until(reset, now));
         let (sides, runs) = match st.name == DEBATE.name {
-            true => match debate_inputs(&self.cfg.repo, &run_dir) {
+            true => match debate_inputs(&self.cfg.repo, &run_dir, limited) {
                 Ok(got) => got,
                 Err(err) => return Held::Woke(err),
             },
