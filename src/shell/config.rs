@@ -318,11 +318,6 @@ impl Settings {
         checks
     }
 
-    /// Whether a section is marked ✗ on the left: a rule broken.
-    pub(crate) fn mark(&self, section: usize) -> bool {
-        self.checks(Some(section)).iter().any(|c| !c.holds)
-    }
-
     /// A section's line on the left: its row's App and model; the Debate's
     /// Apps.
     pub(crate) fn summary(&self, section: usize) -> String {

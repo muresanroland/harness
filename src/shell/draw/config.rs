@@ -188,7 +188,12 @@ fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'s
         if i > 0 && height >= 17 {
             lines.push(Line::from(Span::styled("  │", fg(BORDER))));
         }
-        lines.push(row(short, st.summary(i), st.mark(i), i == st.section));
+        lines.push(row(
+            short,
+            st.summary(i),
+            st.checks(Some(i)).iter().any(|c| !c.holds),
+            i == st.section,
+        ));
     }
     lines.push(divider(width));
     let typesafe = if s.cfg.api_key.is_empty() || st.doc["typesafe"] == false {
@@ -299,12 +304,11 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         lines.push(Line::from(Span::styled("CHECKS", bold(MUTED))));
     }
     for check in checks {
-        let (mark, color) = if check.holds {
-            ("✓", GREEN)
+        let (mark, color, text) = if check.holds {
+            ("✓", GREEN, MUTED)
         } else {
-            ("✗", RED)
+            ("✗", RED, RED)
         };
-        let text = if check.holds { MUTED } else { color };
         let text = vec![(format!("{}.", check.text), fg(text))];
         let mark = format!("  {mark} ");
         lines.extend(wrap_spans(text, width, &mark, "    ", bold(color)));
