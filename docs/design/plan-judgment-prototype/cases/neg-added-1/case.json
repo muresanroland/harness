@@ -1,0 +1,4 @@
+{
+ "expect": "reject",
+ "built": "7nq.4's plan with an hourly self-update check added to src/update.rs, and its test"
+}

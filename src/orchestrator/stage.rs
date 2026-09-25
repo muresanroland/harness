@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::app::{check, debate_inputs, fallback_row, stage_row, App, Row};
 use super::herdr::{agent_name, split_target};
-use super::judgment::{offered, Action, Judged, TypeSafe, FLOOR};
+use super::judgment::{offered, Action, Judged, PlanJudged, TypeSafe, WAKE_FLOOR};
 use super::limit::{until, Limit, LAST_LINES};
 use super::result::{
     read_question, read_stage_result, stage_prompt, ResultRequirements, StageResult, ASKED, PLANNED,
@@ -102,12 +102,12 @@ pub(crate) enum Ask {
     /// A session waiting at a prompt only the user can answer.
     Blocked { pane: String },
     /// An Implement session's plan to approve: its pane, the plan, the plan
-    /// Judgment's score for yes if one was had, and the user's feedback
-    /// that could not be sent, to send again.
+    /// Judgment's scores if one was had, and the user's feedback that could
+    /// not be sent, to send again.
     Plan {
         pane: String,
         plan: String,
-        judged: Option<f64>,
+        judged: Option<PlanJudged>,
         feedback: Option<String>,
     },
     /// A plan failure, the user's alone: the session's pane, and the
@@ -704,8 +704,11 @@ impl Orchestrator {
                 let stuck = format!("stuck in {label}: {reason} {}", self.locate(&pane));
                 // At or above the floor the Judgment answers, and the hold
                 // acts on it as on the user's answer.
+                let floor = judged
+                    .as_ref()
+                    .and_then(|_| self.floor(ticket, &WAKE_FLOOR));
                 let act = match judged {
-                    Some(judged) if judged.confidence >= FLOOR => {
+                    Some(judged) if floor.is_some_and(|floor| judged.confidence >= floor) => {
                         self.report(ticket, &stuck);
                         self.report(ticket, &format!("judged: {}", judged.said()));
                         Some(Answer::Act(judged.choice))

@@ -48,7 +48,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | Away | *(harness)* away: on, a Stage's question parks its Ticket · away: off *(/away again, or /continue @ticket)* |
 | /continue @ticket refused | *(harness)* refused: Ticket 5 is not parked · *(on the Ticket, in a single-Ticket run)* continue refused: not an Epic run |
 | Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
-| /config saved during a run | *(harness)* config: Review codex → codex gpt-6-sol/high · config: Review if limited none → claude sonnet *(the row, then what it was and what it is, as the started line names them; the Stages that start after it use it)* |
+| /config saved during a run | *(harness)* config: Review codex → codex gpt-6-sol/high · config: Review if limited none → claude sonnet *(the row, then what it was and what it is, as the started line names them; the Stages that start after it use it)* · config: TypeSafe off · config: plan floor 0.60 *(the next Judgment reads it)* |
 | Epic done | *(harness)* Epic done, every Ticket closed |
 | stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
 | errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
@@ -75,20 +75,20 @@ session reported failure · went idle without a result · wrote a result file wh
 
 The last six are plan failures: a Question for the user, no Judgment asked.
 
-The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype.
+The Judgment is a TypeSafe Choice over the Ticket, the Wake reason, the result file and the pane tail; its actions, prompts and floor (0.7) were settled on the map ticket "Prototype: the Wake Judgment" (harness-7bj.13), prototype in docs/design/judgment-prototype. config.json's `wake_floor` replaces the floor; one that is not a number from 0 to 1 logs `wake_floor is not a number from 0 to 1: the Judgment is not acted on`, and the Wake is a Question.
 
 ## Plans
 
-Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks when unsure" (harness-7bj.9). Implement starts in plan mode; a hook copies the plan into the run directory as `plan.md`, and the Judgment is a TypeSafe Noul over the plan, the Ticket and any earlier feedback, floor 0.8.
+Decided on the map ticket "Plan approval: a Judgment approves, the Shell asks when unsure" (harness-7bj.9). Implement starts in plan mode; a hook copies the plan into the run directory as `plan.md`, and the Judgment is three TypeSafe Nouls over the plan, the Ticket and any earlier feedback: covers, in_scope and asks (harness-cq7, prototype in docs/design/plan-judgment-prototype). Approved when covers and in_scope reach the floor (0.65, or config.json's `plan_floor`) and asks is below 0.5. A bad `plan_floor` logs `plan_floor is not a number from 0 to 1: the Judgment is not acted on`, and the plan is a Question.
 
 Off claude (harness-7nq.12) the Plan takes two steps: the session writes `plan.md` and a Stage result `STATUS: plan`, and waits. The lines are the same; feedback goes into the pane as a prompt, and approval prompts `implement the approved plan`. A worktree the session changed before approval (HEAD moved, or the tree changed) is a plan failure.
 
 | Moment | Wording |
 |---|---|
 | plan ready | plan ready in implement (pane 2-1) |
-| Judgment, line 1 | judged: plan follows the Ticket 0.93 · judged: plan strays from the Ticket 0.88 |
+| Judgment, line 1 | judged: plan covers the Ticket 0.91, stays in scope 0.88, asks nothing 0.95 · judged: plan misses an acceptance criterion 0.81, stays in scope 0.90, asks nothing 0.93 *(each score a yes as its score, a no as one minus it: goes beyond the Ticket, asks you a question; a yes short of the floor marked: covers the Ticket 0.62 < 0.65)* |
 | Judgment, line 2 | plan approved · asking you: plan ready in implement (pane 2-1) |
-| below the floor, or no TypeSafe | asking you: plan ready in implement (pane 2-1) |
+| a Noul short of the floor, a question asked, or no TypeSafe | asking you: plan ready in implement (pane 2-1) |
 | user feedback delivered | plan sent back with your feedback |
 | feedback not delivered, no Enter sent | feedback not sent: the plan dialog is not on screen (pane 2-1) · feedback not sent: the cursor never reached Tell Claude what to change (pane 2-1) *(then the plan Question again, the feedback kept to resend)* |
 | a plan failure | stuck in implement: `reason` (pane 2-1) *(a Question for you, no Judgment asked: open the pane, park, retry, resend the feedback)* |

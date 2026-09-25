@@ -23,7 +23,7 @@ use std::thread;
 use serde_json::{json, Value};
 
 use super::app::Row;
-use super::judgment::{plan_said, Action, PLAN_FLOOR};
+use super::judgment::{Action, PlanJudged};
 use super::result::{read_stage_result, ResultRequirements, PLANNED};
 use super::stage::{result_name, Answer, Ask, Held, Orchestrator, Stage, IMPLEMENT, SETTLE_TICKS};
 use crate::tools::RunError;
@@ -220,9 +220,10 @@ impl Orchestrator {
         (!judged && plan_dialog(&self.visible(pane)).is_some()).then_some(plan)
     }
 
-    /// A plan ready: the plan Judgment approves it at or above its floor,
-    /// otherwise the user answers its Question, until the session moves on
-    /// (None) or the Stage ends. No deadline runs while the Question waits.
+    /// A plan ready: the plan Judgment approves it when its Nouls clear the
+    /// floor, otherwise the user answers its Question, until the session
+    /// moves on (None) or the Stage ends. No deadline runs while the
+    /// Question waits.
     pub(super) fn plan(
         &self,
         ticket: &str,
@@ -243,13 +244,11 @@ impl Orchestrator {
                 return Some(Held::Stopped); // a late Judgment is not acted on
             }
             self.report(ticket, &ready);
-            if let Some(score) = judged {
-                self.report(ticket, &format!("judged: {}", plan_said(score)));
+            if let Some(judged) = judged {
+                self.report(ticket, &format!("judged: {}", judged.said()));
             }
-            // At or above the floor the Judgment approves, as the user would.
-            let mut approved = judged
-                .filter(|score| *score >= PLAN_FLOOR)
-                .map(|_| Answer::Approve);
+            // Clearing the floor the Judgment approves, as the user would.
+            let mut approved = judged.filter(PlanJudged::approves).map(|_| Answer::Approve);
             let mut kept = None;
             loop {
                 let answer = match approved.take() {

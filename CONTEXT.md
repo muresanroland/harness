@@ -80,11 +80,11 @@ The Orchestrator's request for judgment about a Stage that cannot advance by rul
 _Avoid_: Alert, escalation
 
 **Judgment**:
-The Orchestrator's answer to a Wake or a Plan, taken from a typed model over the evidence: for a Wake one of a fixed set of actions with a score each, for a Plan a yes or no with a score, acted on above a confidence floor and shown on the Shell.
+The Orchestrator's answer to a Wake or a Plan, taken from a typed model over the evidence: for a Wake one of a fixed set of actions with a score each, for a Plan a yes or no score on each criterion (it covers the Ticket, it stays in scope, it asks the user a question). It is acted on at or above a confidence floor, a Wake's and a Plan's each kept in config.json, and shown on the Shell.
 _Avoid_: LLM call, Main session
 
 **Plan**:
-What an Implement session writes before it may edit: the changes, tests and decisions it intends for its Ticket. A Judgment approves it when it follows the Ticket; otherwise the user reads it and answers, and the session revises it.
+What an Implement session writes before it may edit: the changes and tests it intends for its Ticket, the decisions it made with the answer taken, and an open question only when it has one. A Judgment approves it when it covers every acceptance criterion, stays in scope and asks nothing; otherwise the user reads it and answers, and the session revises it. An open question always goes to the user.
 
 **Question**:
 What the Shell puts to the user when the Orchestrator cannot act alone: a Wake the Judgment was unsure about, a blocked session, a plan to approve, a Stage's own question, the Review's App at its usage limit, or a confirmation. It holds only its Ticket (the Review's limit, every Ticket reaching the Review on that App until it is answered), is answered from a fixed set of options or a line of the user's own text, and is never saved: on resume it is derived again from the live session or the Stage result.

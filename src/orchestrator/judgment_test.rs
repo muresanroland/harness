@@ -1,5 +1,5 @@
 use super::judgment::fake::Fake;
-use super::judgment::{offered, request, Action};
+use super::judgment::{offered, plan_request, request, Action, PlanJudged, PLAN_FLOOR};
 use super::stage::{Answer, Ask, Config, Orchestrator};
 use super::state::{load_state, State, TicketState, STATUS_PARKED, STATUS_PR_OPEN, STATUS_RUNNING};
 use super::world::{new_world, spawn_ticket, succeed, working, BdTicket, World};
@@ -729,4 +729,219 @@ fn the_prototype_cases_build_judge_pys_request() {
         seen += 1;
     }
     assert_eq!(seen, 10, "cases");
+}
+
+/// config.json's wake_floor, read at each Wake: 0.6 acts on a Judgment the
+/// default floor asks about; missing or empty is the default. One that is
+/// not a number from 0 to 1 is never acted on: even a sure Judgment is the
+/// Question, and the log says why.
+#[test]
+fn config_jsons_wake_floor_moves_the_action_and_a_bad_one_asks() {
+    for (config, confidence, acted) in [
+        ("", 0.65, false),
+        (r#"{"wake_floor": ""}"#, 0.65, false),
+        (r#"{"wake_floor": 0.6}"#, 0.65, true),
+        (r#"{"wake_floor": -1}"#, 0.99, false),
+        (r#"{"wake_floor": "low"}"#, 0.99, false),
+    ] {
+        let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
+        idle_once(&w);
+        if !config.is_empty() {
+            super::write_file(&w.repo.join(".harness/config.json"), config);
+        }
+        o.cfg.typesafe = typesafe(move |_, body| choose(body, "retry", confidence));
+        let o = Arc::new(o);
+        let mut run = spawn_ticket(o.clone(), "hx-1");
+        if !acted {
+            let (pane, _, judged) = question(&w, 1);
+            assert!(judged.is_some(), "{config}");
+            o.answer("hx-1", &pane, Answer::Act(Retry));
+        }
+        run.wait();
+        assert_eq!(o.ticket("hx-1").status, STATUS_PR_OPEN, "{config}");
+        let asked = w.events().iter().any(|e| e.ask.is_some());
+        assert_eq!(asked, !acted, "{config}");
+        let refused =
+            " hx-1 wake_floor is not a number from 0 to 1: the Judgment is not acted on\n";
+        let bad = config.contains("-1") || config.contains("low");
+        assert_eq!(w.log().contains(refused), bad, "{config}:\n{}", w.log());
+    }
+}
+
+/// A plan is approved only with covers and in_scope at or above the floor
+/// and asks below 0.5: a question goes to the user whatever else scores.
+#[test]
+fn a_plan_is_approved_with_covers_and_in_scope_at_the_floor_and_no_question() {
+    let judged = |covers, in_scope, asks| PlanJudged {
+        covers,
+        in_scope,
+        asks,
+        floor: Some(0.65),
+    };
+    for (plan, approved) in [
+        (judged(0.65, 0.65, 0.49), true),
+        (judged(1.0, 1.0, 0.0), true),
+        (judged(0.64, 1.0, 0.0), false),
+        (judged(1.0, 0.64, 0.0), false),
+        (judged(1.0, 1.0, 0.5), false),
+        (judged(1.0, 1.0, 0.9), false),
+        (
+            PlanJudged {
+                floor: None,
+                ..judged(1.0, 1.0, 0.0)
+            },
+            false,
+        ),
+    ] {
+        assert_eq!(plan.approves(), approved, "{plan:?}");
+    }
+}
+
+/// The judged line names every score, a yes as its score and a no as one
+/// minus it, a yes short of the floor marked, so a plan that reaches the
+/// user says why; on a bad floor nothing is marked.
+#[test]
+fn the_plan_judged_line_names_every_score() {
+    let yes = PlanJudged {
+        covers: 0.91,
+        in_scope: 0.88,
+        asks: 0.93,
+        floor: Some(0.65),
+    };
+    assert_eq!(
+        yes.said(),
+        "plan covers the Ticket 0.91, stays in scope 0.88, asks you a question 0.93"
+    );
+    let no = PlanJudged {
+        covers: 0.19,
+        in_scope: 0.3,
+        asks: 0.05,
+        floor: Some(0.65),
+    };
+    assert_eq!(
+        no.said(),
+        "plan misses an acceptance criterion 0.81, goes beyond the Ticket 0.70, asks nothing 0.95"
+    );
+    assert_eq!(
+        no.short(),
+        "covers 0.19 < 0.65, in scope 0.30 < 0.65, asks 0.05"
+    );
+    let short = PlanJudged {
+        covers: 0.62,
+        in_scope: 0.82,
+        asks: 0.17,
+        floor: Some(0.65),
+    };
+    assert_eq!(
+        short.said(),
+        "plan covers the Ticket 0.62 < 0.65, stays in scope 0.82, asks nothing 0.83"
+    );
+    let bad = PlanJudged {
+        floor: None,
+        ..short
+    };
+    assert_eq!(
+        bad.said(),
+        "plan covers the Ticket 0.62, stays in scope 0.82, asks nothing 0.83"
+    );
+}
+
+/// judge_plan.py's source, the reference the plan request is checked against.
+fn judge_plan_py() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/design/plan-judgment-prototype/judge_plan.py");
+    fs::read_to_string(path).unwrap()
+}
+
+/// The plan request built for every case of the plan prototype matches what
+/// judge_plan.py sends with its settled Nouls, field for field and key for
+/// key in its order; the plan floor is the one its replay settled.
+#[test]
+fn the_plan_prototype_cases_build_judge_plan_pys_request() {
+    let src = judge_plan_py();
+    let nouls = py_dict(&src, "NOULS");
+    let names: Vec<&str> = nouls.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["covers", "in_scope", "asks"]);
+    let floor: f64 = src
+        .lines()
+        .find_map(|line| line.strip_prefix("FLOOR = "))
+        .and_then(|rest| rest.split('#').next())
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(PLAN_FLOOR.default, floor);
+
+    let cases =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/design/plan-judgment-prototype/cases");
+    let mut seen = 0;
+    for case in fs::read_dir(cases).unwrap() {
+        let case = case.unwrap().path();
+        let name = case.file_name().unwrap().to_string_lossy().to_string();
+        let plan = fs::read_to_string(case.join("plan.md")).unwrap();
+        let ticket: Value =
+            serde_json::from_str(&fs::read_to_string(case.join("ticket.json")).unwrap()).unwrap();
+
+        // judge_plan.py: state_for and ask.
+        let criteria = ticket["acceptance_criteria"].as_str().unwrap_or_default();
+        let mut description = ticket["description"].as_str().unwrap().to_string();
+        if !criteria.is_empty() {
+            description += &format!("\n\nAcceptance criteria:\n{criteria}");
+        }
+        let questions: serde_json::Map<String, Value> = nouls
+            .iter()
+            .map(|(name, text)| {
+                (
+                    name.clone(),
+                    json!({ "type": "noul", "instructions": text }),
+                )
+            })
+            .collect();
+        let want = json!({
+            "model": "jev-latest",
+            "state": {
+                "plan": plan,
+                "ticket": { "id": ticket["id"], "title": ticket["title"], "description": description },
+                "prior_feedback": null,
+            },
+            "questions": questions,
+        });
+        let mut keys = vec![
+            "model",
+            "state",
+            "plan",
+            "ticket",
+            "id",
+            "title",
+            "description",
+            "prior_feedback",
+            "questions",
+        ];
+        for name in &names {
+            keys.extend([*name, "type", "instructions"]);
+        }
+
+        // The Orchestrator: the Ticket from bd, no feedback kept.
+        let repo = TempDir::new();
+        let issue = json!([{
+            "id": ticket["id"], "title": ticket["title"], "description": ticket["description"],
+            "acceptance_criteria": ticket["acceptance_criteria"],
+            "status": "closed", "issue_type": "task",
+        }])
+        .to_string();
+        let bd = crate::tools::fake::Fake::new(move |_, _| Ok(issue.clone()));
+        let o = Orchestrator::with_state(
+            Config::for_tests(bd, repo.path(), repo.path()),
+            State::default(),
+        );
+        let raw = plan_request(&o.plan_state(ticket["id"].as_str().unwrap(), &plan));
+        let got: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(got, want, "{name}");
+        assert!(
+            in_order(&raw, &keys),
+            "{name}: keys out of judge_plan.py's order"
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, 33, "cases");
 }

@@ -158,14 +158,15 @@ Every Implement starts in plan mode. When its plan is up, RECENT shows:
 
 ```
 plan ready in implement (pane 2-1)
-judged: plan follows the Ticket 0.93
+judged: plan covers the Ticket 0.91, stays in scope 0.88, asks nothing 0.95
 plan approved
 ```
 
 The Judgment sent Enter in the pane, and the pane's footer turns from
-`⏸ plan mode on` to `⏵⏵ auto mode on`. If instead it reads
-`judged: plan strays from the Ticket 0.88`, or scores below 0.75, a Question
-comes up. Handle it as in step 6: read the plan, then approve or send feedback.
+`⏸ plan mode on` to `⏵⏵ auto mode on`. If instead a score is under the floor
+(`covers the Ticket 0.62 < 0.65`), or it reads `asks you a question`, a
+Question comes up. Handle it as in step 6: read the plan, then approve or send
+feedback.
 
 For A, check the plan hook's evidence:
 

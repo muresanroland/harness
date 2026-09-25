@@ -4,9 +4,9 @@ use super::logo::{
 };
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
-use crate::orchestrator::judgment::Action;
+use crate::orchestrator::judgment::{Action, PlanJudged};
 use crate::orchestrator::limit_test::hits;
-use crate::orchestrator::plan_test::{at_dialog, noul};
+use crate::orchestrator::plan_test::{at_dialog, nouls};
 use crate::orchestrator::question_test::ASKS;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Ask, Config, Event, Orchestrator};
@@ -2984,7 +2984,7 @@ fn a_plan_question_takes_feedback_typed_in_the_modal_then_approval() {
         _ => succeed(p),
     });
     let mut s = shell(&w);
-    s.cfg.typesafe = TypeSafeFake::new(|_| Ok(noul(0.3)));
+    s.cfg.typesafe = TypeSafeFake::new(|_| Ok(nouls(0.3, 0.9, 0.1)));
     s.command("/start-epic hx");
     await_line(
         &mut s,
@@ -3003,10 +3003,11 @@ fn a_plan_question_takes_feedback_typed_in_the_modal_then_approval() {
         row(&buf, 0)
     );
     assert_eq!(
-        [inner(1), inner(2)],
+        [inner(1), inner(2), inner(3)],
         [
-            "judged: plan strays from the Ticket 0.70",
-            "plan ready in implement (pane 1-1)"
+            "",
+            "plan ready in implement (pane 1-1)",
+            "judged: plan misses an acceptance criterion 0.70, stays in scope 0.90, asks nothing 0.90",
         ]
     );
     let top = plan_body(&s);
@@ -3074,7 +3075,7 @@ fn a_plan_question_takes_feedback_typed_in_the_modal_then_approval() {
     };
     let order = [
         "hx-1 plan ready in implement (pane 1-1)",
-        "hx-1 judged: plan strays from the Ticket 0.70",
+        "hx-1 judged: plan misses an acceptance criterion 0.70, stays in scope 0.90, asks nothing 0.90",
         "hx-1 asking you: plan ready in implement (pane 1-1)",
         "hx-1 you answered: feedback",
         "hx-1 plan sent back with your feedback",
@@ -3336,7 +3337,7 @@ A lead with `inline code` and **bold words** in it.
     )
 }
 
-/// The screen with a plan Question for 11, judged 0.62, and a Wake of 10
+/// The screen with a plan Question for 11, judged covers 0.62, and a Wake of 10
 /// queued behind it.
 fn plan_screen(repo: &Path) -> Screen {
     let mut s = screen_at(Fake::quiet(), repo);
@@ -3346,7 +3347,12 @@ fn plan_screen(repo: &Path) -> Screen {
         Ask::Plan {
             pane: "w1:p7".to_string(),
             plan: sample_plan(),
-            judged: Some(0.62),
+            judged: Some(PlanJudged {
+                covers: 0.62,
+                in_scope: 0.9,
+                asks: 0.05,
+                floor: Some(0.65),
+            }),
             feedback: None,
         },
     ));
@@ -3431,9 +3437,9 @@ fn a_plan_docks_beside_the_live_shell_with_its_markdown_styled() {
     assert_eq!(
         [inner(1), inner(2), inner(3)],
         [
-            "judged: plan follows the Ticket 0.62 · 1 more waiting · 1 new on RECENT",
+            "1 more waiting · 1 new on RECENT",
             "plan ready in implement (pane 2-1)",
-            "",
+            "judged: plan covers the Ticket 0.62 < 0.65, stays in scope 0.90, asks nothing 0.95",
         ]
     );
     let at = |text: &str| find(&buf, text).unwrap_or_else(|| panic!("{text:?}: {:#?}", rows(&buf)));
@@ -3527,8 +3533,8 @@ fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
     assert_eq!(find(&buf, "╭"), Some((8, 2)), "{:#?}", rows(&buf));
     assert_eq!(find(&buf, "╯"), Some((91, 27)), "{:#?}", rows(&buf));
     assert!(row(&buf, 2).contains(" PLAN · 11 Questions "));
-    assert!(row(&buf, 3)
-        .contains("judged: plan follows the Ticket 0.62 · 1 more waiting · 1 new on RECENT"));
+    assert!(row(&buf, 3).contains("1 more waiting · 1 new on RECENT"));
+    assert!(row(&buf, 5).contains("judged: covers 0.62 < 0.65, in scope 0.90, asks 0.05"));
     assert!(
         row(&buf, 26).contains(" 1 approve   2 feedback of your own   3 park   4 open the pane "),
         "{:#?}",
@@ -3602,7 +3608,16 @@ fn badges_and_options_shorten_where_they_do_not_fit() {
     let buf = render(&s, 110, 40);
     assert!(find(&buf, "┏").is_some(), "{:#?}", rows(&buf));
     assert!(
-        find(&buf, "┃ judged 0.62 · 1 more waiting · 1 new ").is_some(),
+        find(&buf, "┃ 1 more waiting · 1 new ").is_some(),
+        "{:#?}",
+        rows(&buf)
+    );
+    assert!(
+        find(
+            &buf,
+            "┃ judged: covers 0.62 < 0.65, in scope 0.90, asks 0.05"
+        )
+        .is_some(),
         "{:#?}",
         rows(&buf)
     );

@@ -14,7 +14,6 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use super::{bold, cut, fg, shell};
-use crate::orchestrator::judgment::plan_said;
 use crate::orchestrator::stage::Ask;
 use crate::shell::logo::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::{About, Screen};
@@ -90,8 +89,8 @@ pub(super) fn divider(width: usize) -> Line<'static> {
     Line::from(Span::styled("─".repeat(width), fg(BORDER)))
 }
 
-/// The plan Question in the dock: its badges (the Judgment's score, the
-/// other Questions, the lines since it opened), its text, the plan from its
+/// The plan Question in the dock: its badges (the other Questions, the
+/// lines since it opened), its text, the Judgment's scores, the plan from its
 /// scroll row with a scrollbar, and its options at the foot (docked a list,
 /// folded one row), or the feedback being typed in that option's place.
 pub(super) fn plan(f: &mut Frame, s: &Screen) {
@@ -122,16 +121,18 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
 
     let opened = *q.opened.get_or_init(chrono::Local::now);
     let new = s.events.iter().filter(|e| e.time >= opened).count();
-    // Where the long ones do not fit, the badges shorten.
+    // The badges shorten where the long ones do not fit; the Judgment has
+    // the line under the text, each score named, shortened where it does
+    // not fit.
+    let judged = judged.map(|judged| {
+        let text = match format!("judged: {}", judged.said()) {
+            text if text.chars().count() <= inner.width as usize => text,
+            _ => format!("judged: {}", judged.short()),
+        };
+        Line::from(Span::styled(text, fg(TEXT)))
+    });
     let badges = |short: bool| {
         let mut badges = Vec::new();
-        if let Some(score) = judged {
-            let text = match short {
-                true => format!("judged {score:.2}"),
-                false => format!("judged: {}", plan_said(*score)),
-            };
-            badges.push(Span::styled(text, fg(TEXT)));
-        }
         if s.questions.len() > 1 {
             let text = format!("{} more waiting", s.questions.len() - 1);
             badges.push(Span::styled(text, bold(ORANGE)));
@@ -160,10 +161,9 @@ pub(super) fn plan(f: &mut Frame, s: &Screen) {
     ])
     .areas(inner);
     let lead = cut(&q.text, inner.width as usize);
-    f.render_widget(
-        Paragraph::new(vec![badge_line, Line::from(Span::styled(lead, fg(MUTED)))]),
-        head,
-    );
+    let lead = Line::from(Span::styled(lead, fg(MUTED)));
+    let lines: Vec<Line> = [badge_line, lead].into_iter().chain(judged).collect();
+    f.render_widget(Paragraph::new(lines), head);
 
     // The plan from its scroll row, kept inside; the last column is the
     // scrollbar's.

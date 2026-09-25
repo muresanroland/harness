@@ -10,11 +10,11 @@ use ratatui::Frame;
 
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
-use crate::orchestrator::app::APPS;
+use crate::orchestrator::app::{Check, APPS};
 use crate::setup;
 use crate::shell::config::{
-    distinct, family_label, job_name, job_said, short, short_commit, Field, Listing, Pick,
-    Settings, Typing, APPS_PAGE, ROWS, SECTIONS, SKILLS_PAGE, TYPESAFE_PAGE,
+    distinct, family_label, floor_name, job_name, job_said, short, short_commit, Field, Listing,
+    Pick, Settings, Typing, APPS_PAGE, FLOORS, ROWS, SECTIONS, SKILLS_PAGE, TYPESAFE_PAGE,
 };
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
@@ -200,7 +200,8 @@ fn skills_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     (lines, at)
 }
 
-/// The TypeSafe page: on or off, and its key, masked.
+/// The TypeSafe page: on or off, its key, masked, and the floors, a bad one
+/// in red with its check.
 fn typesafe_page(s: &Screen, st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let key = &s.cfg.api_key;
     let on = st.typesafe(key);
@@ -242,6 +243,19 @@ fn typesafe_page(s: &Screen, st: &Settings, width: usize) -> (Vec<Line<'static>>
         vec![shown],
         width,
     );
+    for (i, floor) in FLOORS.iter().enumerate() {
+        let value = match st.floor(floor) {
+            Ok((value, true)) => vec![
+                Span::styled(format!("{value:.2}"), fg(TEXT)),
+                Span::styled("  default", fg(MUTED)),
+            ],
+            Ok((value, false)) => vec![Span::styled(format!("{value:.2}"), fg(TEXT))],
+            Err(written) => vec![Span::styled(written, fg(RED))],
+        };
+        let label = pad(&floor_name(floor), 22);
+        item(&mut lines, &mut at, selected(2 + i), label, value, width);
+    }
+    check_lines(&mut lines, st.checks(Some(TYPESAFE_PAGE)), width);
     (lines, at)
 }
 
@@ -395,7 +409,7 @@ fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'s
     lines.push(row(
         "TypeSafe",
         typesafe,
-        false,
+        st.checks(Some(TYPESAFE_PAGE)).iter().any(|c| !c.holds),
         st.section == TYPESAFE_PAGE,
     ));
     lines
@@ -478,7 +492,12 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
             width,
         );
     }
-    let checks = st.checks(Some(st.section));
+    check_lines(&mut lines, st.checks(Some(st.section)), width);
+    (lines, at)
+}
+
+/// A page's CHECKS, each held or broken.
+fn check_lines(lines: &mut Vec<Line<'static>>, checks: Vec<Check>, width: usize) {
     if !checks.is_empty() {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled("CHECKS", bold(MUTED))));
@@ -493,7 +512,6 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         let mark = format!("  {mark} ");
         lines.extend(wrap_spans(text, width, &mark, "    ", bold(color)));
     }
-    (lines, at)
 }
 
 /// A pick list: its title and filter, its entries with the current one
@@ -621,6 +639,11 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
                 "TypeSafe key › ".to_string(),
                 "•".repeat(text.chars().count()),
                 format!("Shown as dots; kept in {}, readable only by you.", setup::KEY_FILE),
+            ),
+            Typing::Floor(floor) => (
+                format!("{} › ", floor_name(floor)),
+                text.clone(),
+                "A number from 0 to 1, or nothing for the default, saved at once to .harness/config.json; the next Judgment reads it.".to_string(),
             ),
         };
         let (help, color) = st.note.clone().unwrap_or((help, MUTED));

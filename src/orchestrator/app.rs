@@ -548,6 +548,46 @@ pub(crate) fn set_typesafe(repo: &Path, on: bool) -> Result<(), String> {
     write(&path, &doc)
 }
 
+/// A Judgment's confidence floor in config.json: its key, and the value
+/// that stands for it missing or empty.
+pub(crate) struct Floor {
+    pub(crate) key: &'static str,
+    pub(crate) default: f64,
+}
+
+/// A floor as config.json has it, read at each use as "typesafe" is, so a
+/// change reaches the next Judgment. A config.json that cannot be read, or
+/// a value that is not a number from 0 to 1, refuses: the Judgment is then
+/// not acted on.
+pub(crate) fn floor(repo: &Path, floor: &Floor) -> Result<f64, String> {
+    floor_in(&read(repo)?.1, floor)
+}
+
+/// A floor in doc: missing or empty is its default.
+pub(crate) fn floor_in(doc: &Value, floor: &Floor) -> Result<f64, String> {
+    match &doc[floor.key] {
+        Value::Null => Ok(floor.default),
+        Value::String(s) if s.is_empty() => Ok(floor.default),
+        value => value
+            .as_f64()
+            .filter(|f| (0.0..=1.0).contains(f))
+            .ok_or(format!("{} is not a number from 0 to 1", floor.key)),
+    }
+}
+
+/// Keeps a floor in config.json, or with None takes it out, back to its
+/// default; the rest as it was. A config.json that is not an object is
+/// refused, as set_typesafe refuses it.
+pub(crate) fn set_floor(repo: &Path, floor: &Floor, value: Option<f64>) -> Result<(), String> {
+    let (path, mut doc) = read_object(repo)?;
+    let top = doc.as_object_mut().expect("read_object gives an object");
+    match value {
+        Some(value) => top.insert(floor.key.to_string(), json!(value)),
+        None => top.remove(floor.key),
+    };
+    write(&path, &doc)
+}
+
 /// The key of every row of config.json.
 pub(crate) const ROWS: [&str; 8] = [
     "implement",
@@ -762,7 +802,7 @@ fn model_id(app: &App, model: &str) -> Option<String> {
 }
 
 /// A rule config.json's rows keep: the rows it reads, whether it holds,
-/// and what it says.
+/// and what it says. /config flags a bad floor as one, its key for the row.
 pub(crate) struct Check {
     pub(crate) rows: &'static [&'static str],
     pub(crate) holds: bool,

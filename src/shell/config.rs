@@ -5,7 +5,8 @@
 //! running ones keep theirs. A named model is probed with a one-line prompt
 //! first, off the screen thread; it saves only if the App answers. Also each
 //! job's Delegate skill, the skills the Harness installed (harness-0sx.7),
-//! cloned off the screen thread too, and TypeSafe on or off with its key.
+//! cloned off the screen thread too, and TypeSafe on or off with its key
+//! and the Judgments' floors.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -17,7 +18,8 @@ use serde_json::{json, Value};
 
 use super::logo::{CYAN, GREEN, MUTED, ORANGE, RED};
 use super::{Screen, NOTICE_WINDOW};
-use crate::orchestrator::app::{self, app, App, Check, Model, Row, APPS, IF_LIMITED};
+use crate::orchestrator::app::{self, app, App, Check, Floor, Model, Row, APPS, IF_LIMITED};
+use crate::orchestrator::judgment::{PLAN_FLOOR, WAKE_FLOOR};
 use crate::setup;
 use crate::skills::manifest::{self, job_row, parse_source, Added, Manifest, JOBS, NONE};
 use crate::tools::{RunError, Tools};
@@ -122,6 +124,14 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 5] = [
 pub(crate) const APPS_PAGE: usize = SECTIONS.len();
 pub(crate) const SKILLS_PAGE: usize = APPS_PAGE + 1;
 pub(crate) const TYPESAFE_PAGE: usize = APPS_PAGE + 2;
+
+/// The floors the TypeSafe page shows under the key, in its order.
+pub(crate) const FLOORS: [&Floor; 2] = [&WAKE_FLOOR, &PLAN_FLOOR];
+
+/// A floor as the pages name it: "wake floor".
+pub(crate) fn floor_name(floor: &Floor) -> String {
+    floor.key.replace('_', " ")
+}
 
 /// What turning TypeSafe off changes, asked first.
 const TYPESAFE_OFF: &str = "Turn TypeSafe off? Every Wake and Plan becomes a Question; disputed Findings are skipped and listed in the PR.";
@@ -265,6 +275,8 @@ pub(crate) enum Typing {
     Source,
     /// The TypeSafe key, shown as dots.
     Key,
+    /// A floor, on the TypeSafe page.
+    Floor(&'static Floor),
 }
 
 /// The skills of a source that holds several: each name, whether it is
@@ -378,10 +390,13 @@ fn rows_of(section: usize) -> impl Iterator<Item = usize> {
     (0..ROWS.len()).filter(move |&r| ROWS[r].section == section)
 }
 
-/// The section a check shows on: its last row's.
+/// The section a check shows on: its last row's; a floor's, the TypeSafe
+/// page.
 pub(crate) fn section_of(check: &Check) -> usize {
     let key = check.rows[check.rows.len() - 1];
-    ROWS.iter().find(|r| r.key == key).unwrap().section
+    ROWS.iter()
+        .find(|r| r.key == key)
+        .map_or(TYPESAFE_PAGE, |r| r.section)
 }
 
 /// Each once, in the order first met.
@@ -482,9 +497,20 @@ impl Settings {
         split(&self.doc)
     }
 
-    /// The rules on the rows as they are, those of a section when given.
+    /// The rules on the rows as they are, and each floor that is not a
+    /// number from 0 to 1; those of a section when given. A floor is not a
+    /// rule a run refuses to start on: its Judgments ask instead.
     pub(crate) fn checks(&self, section: Option<usize>) -> Vec<Check> {
         let mut checks = app::checks(&self.doc);
+        for floor in FLOORS {
+            if let Err(err) = app::floor_in(&self.doc, floor) {
+                checks.push(Check {
+                    rows: std::slice::from_ref(&floor.key),
+                    holds: false,
+                    text: format!("{err}: its Judgments are not acted on"),
+                });
+            }
+        }
         checks.retain(|c| section.is_none_or(|s| section_of(c) == s));
         checks
     }
@@ -806,10 +832,23 @@ impl Settings {
 
     /// The foot's note on the TypeSafe page's row i.
     pub(crate) fn typesafe_note(&self, i: usize) -> String {
+        let floor = "Enter types a number from 0 to 1, or nothing for the default, saved at once: the next Judgment reads it.";
         match i {
             0 => "Judges a Wake's next step, a Plan's approval and a Finding the Debate still disputes; Enter turns it on or off.".to_string(),
-            _ => format!("Kept in {}, readable only by you; TYPESAFE_API_KEY in the environment wins over it.", setup::KEY_FILE),
+            1 => format!("Kept in {}, readable only by you; TYPESAFE_API_KEY in the environment wins over it.", setup::KEY_FILE),
+            2 => format!("At or above it a Wake's Judgment acts; below it the Wake is a Question. {floor}"),
+            _ => format!("A Plan whose covers and in scope reach it, and that asks nothing, is approved; otherwise it is a Question. {floor}"),
         }
+    }
+
+    /// A floor as the TypeSafe page shows it: its number, and whether that
+    /// is the default; or config.json's value as written, when it is not a
+    /// number from 0 to 1.
+    pub(crate) fn floor(&self, floor: &Floor) -> Result<(f64, bool), String> {
+        let set = &self.doc[floor.key];
+        app::floor_in(&self.doc, floor)
+            .map(|value| (value, set.is_null() || set == ""))
+            .map_err(|_| set.to_string())
     }
 
     /// Opens the pick list for a row's setting, the cursor on its value.
@@ -1010,6 +1049,7 @@ impl Screen {
                 KeyCode::Enter => {
                     let (typing, text) = st.typing.take().unwrap();
                     match (typing, text.trim()) {
+                        (Typing::Floor(floor), text) => self.keep_floor(floor, text.to_string()),
                         (_, "") => {
                             st.note = Some(("Nothing typed: nothing changed.".to_string(), MUTED))
                         }
@@ -1105,9 +1145,12 @@ impl Screen {
         if st.section == TYPESAFE_PAGE {
             let key = self.cfg.api_key.clone();
             match code {
-                KeyCode::Up => st.setting = 0,
-                KeyCode::Down => st.setting = 1,
+                KeyCode::Up => st.setting = st.setting.saturating_sub(1),
+                KeyCode::Down => st.setting = (st.setting + 1).min(1 + FLOORS.len()),
                 KeyCode::Left | KeyCode::Esc => st.open = false,
+                KeyCode::Enter if st.setting >= 2 => {
+                    st.typing = Some((Typing::Floor(FLOORS[st.setting - 2]), String::new()))
+                }
                 KeyCode::Enter if key.is_empty() => st.typing = Some((Typing::Key, String::new())),
                 KeyCode::Enter if st.setting == 1 => {}
                 KeyCode::Enter if st.typesafe(&key) => {
@@ -1305,6 +1348,36 @@ impl Screen {
             Ok((_, doc)) => {
                 self.settings.as_mut().unwrap().doc = doc;
                 self.done(format!("TypeSafe {}", if on { "on" } else { "off" }));
+            }
+            Err(err) => self.refused(&err),
+        }
+    }
+
+    /// A floor typed: a number from 0 to 1 saves at once, nothing puts the
+    /// default back, and the next Judgment reads it; anything else is
+    /// refused, the text kept to mend.
+    fn keep_floor(&mut self, floor: &'static Floor, text: String) {
+        let st = self.settings.as_mut().unwrap();
+        let value = match text.parse::<f64>() {
+            _ if text.is_empty() => None,
+            Ok(value) if (0.0..=1.0).contains(&value) => Some(value),
+            _ => {
+                let refused =
+                    format!("Refused: {text} is not a number from 0 to 1. Nothing changed.");
+                st.note = Some((refused, RED));
+                st.typing = Some((Typing::Floor(floor), text));
+                return;
+            }
+        };
+        let repo = &self.cfg.repo;
+        match app::set_floor(repo, floor, value).and_then(|()| app::read_object(repo)) {
+            Ok((_, doc)) => {
+                self.settings.as_mut().unwrap().doc = doc;
+                let name = floor_name(floor);
+                self.done(match value {
+                    Some(value) => format!("{name} {value:.2}"),
+                    None => format!("{name} {:.2}, its default", floor.default),
+                });
             }
             Err(err) => self.refused(&err),
         }
