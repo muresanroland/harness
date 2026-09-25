@@ -176,7 +176,7 @@ pub(crate) struct Entry {
     pub(crate) detail: String,
     pub(crate) current: bool,
     /// The rule a model picked would break: '✗ side A's family'.
-    pub(crate) mark: Option<(&'static str, Color)>,
+    pub(crate) mark: Option<&'static str>,
     /// Greyed: an App not installed.
     pub(crate) dim: bool,
     pub(crate) picks: Option<Picked>,
@@ -318,10 +318,9 @@ impl Settings {
         checks
     }
 
-    /// A section's mark on the left: ✗ for a broken rule.
-    pub(crate) fn mark(&self, section: usize) -> Option<(&'static str, Color)> {
-        let broken = self.checks(Some(section)).iter().any(|c| !c.holds);
-        broken.then(|| sign(false))
+    /// Whether a section is marked ✗ on the left: a rule broken.
+    pub(crate) fn mark(&self, section: usize) -> bool {
+        self.checks(Some(section)).iter().any(|c| !c.holds)
     }
 
     /// A section's line on the left: its row's App and model; the Debate's
@@ -474,7 +473,7 @@ impl Settings {
     }
 
     /// The rule model, picked from pick's list, would break.
-    fn mark_of(&self, pick: &Pick, model: &str) -> Option<(&'static str, Color)> {
+    fn mark_of(&self, pick: &Pick, model: &str) -> Option<&'static str> {
         let key = ROWS[pick.row].key;
         let mut fields = vec![(pick.field, model.to_string())];
         if let Some(app) = pick.app {
@@ -490,7 +489,7 @@ impl Settings {
             (_, "side_a") => "✗ side B's family",
             _ => "✗ side A's family",
         };
-        Some((mark, RED))
+        Some(mark)
     }
 
     pub(crate) fn choices(&self, pick: &Pick) -> Vec<Picked> {
@@ -592,14 +591,6 @@ fn broken_by(before: &Value, after: &Value) -> Option<Check> {
     app::checks(after)
         .into_iter()
         .find(|c| !c.holds && !was_broken(c))
-}
-
-/// How a rule's state shows: ✓ holds, ✗ broken.
-pub(crate) fn sign(holds: bool) -> (&'static str, Color) {
-    match holds {
-        true => ("✓", GREEN),
-        false => ("✗", RED),
-    }
 }
 
 /// doc with a row's fields put in. On Implement a new App, or a plan model
@@ -754,7 +745,6 @@ impl Screen {
                 KeyCode::Up => st.setting = st.setting.saturating_sub(1),
                 KeyCode::Down => st.setting = (st.setting + 1).min(APPS.len() - 1),
                 KeyCode::Left | KeyCode::Esc => st.open = false,
-                KeyCode::Enter => st.note = Some((st.app_note(st.setting), MUTED)),
                 _ => {}
             }
             return;
@@ -869,10 +859,8 @@ impl Screen {
         let has = |f: Field| fields.iter().any(|(field, _)| *field == f);
         let picked = if has(Field::Plan) {
             staged.plan_model
-        } else if has(Field::Model) {
-            Some(staged.model)
         } else {
-            None
+            has(Field::Model).then_some(staged.model)
         };
         let Some(model) = picked.filter(|m| m != "default" && m != "none") else {
             return self.save(row, &fields);

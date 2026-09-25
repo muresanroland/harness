@@ -120,8 +120,8 @@ pub(crate) static APPS: [App; 2] = [
         home: "https://claude.com/product/claude-code",
         models: |_, _| {
             let efforts = ["low", "medium", "high", "xhigh", "max"].map(String::from);
-            Ok(["fable", "opus", "sonnet", "haiku"]
-                .map(|m| (m.to_string(), efforts.to_vec()))
+            Ok(ALIASES
+                .map(|(alias, _)| (alias.to_string(), efforts.to_vec()))
                 .to_vec())
         },
         limits: &[
@@ -502,15 +502,11 @@ pub(crate) struct Check {
 /// The Debate's rule: its sides from two families.
 fn debate(a: &App, b: &App) -> Check {
     let (x, y) = (a.family, b.family);
-    let (holds, text) = match x != y {
-        true => (
-            true,
-            format!("The sides come from two families: {x} and {y}"),
-        ),
-        false => (
-            false,
-            format!("Both sides would be {x}: the Debate needs two families"),
-        ),
+    let holds = x != y;
+    let text = if holds {
+        format!("The sides come from two families: {x} and {y}")
+    } else {
+        format!("Both sides would be {x}: the Debate needs two families")
     };
     Check {
         rows: &["side_a", "side_b"],
@@ -519,27 +515,18 @@ fn debate(a: &App, b: &App) -> Check {
     }
 }
 
-/// The rules over a table of rows: each row's App and model by its key,
-/// "plan" giving Implement's plan model. A split plans and implements in
-/// one family, as on one App it always does; the Review and its fallback
-/// never run on Implement's model; the Debate's sides come from two
-/// families.
-pub(crate) fn rules<'a>(row: impl Fn(&str) -> Option<(&'a App, String)>) -> Vec<Check> {
+/// The rules over config.json: the Review and its fallback never run on
+/// Implement's model; the Debate's sides come from two families. A row that
+/// cannot be read is left out, as reading it refuses on its own.
+pub(crate) fn checks(doc: &Value) -> Vec<Check> {
+    let row = |key: &str| {
+        Some((
+            app(&field(doc, key, "app").ok()?)?,
+            field(doc, key, "model").ok()?,
+        ))
+    };
     let mut out = Vec::new();
     let imp = row("implement");
-    if let Some((app, model)) = &imp {
-        let plan = row("plan").filter(|(_, plan)| plan != "default" && plan != model);
-        if let Some((_, plan)) = plan {
-            out.push(Check {
-                rows: &["implement"],
-                holds: true,
-                text: format!(
-                    "Plans on {plan} and implements on {model}, both {}",
-                    app.family
-                ),
-            });
-        }
-    }
     let reviews: [(&'static [&str], &str); 2] = [
         (&["implement", "review"], "The Review"),
         (&["implement", IF_LIMITED], "The Review if limited"),
@@ -552,14 +539,11 @@ pub(crate) fn rules<'a>(row: impl Fn(&str) -> Option<(&'a App, String)>) -> Vec<
             continue;
         }
         let (i, r) = (model_id(ia, im), model_id(app, &model));
-        let (holds, text) = match i == r {
-            true => (
-                false,
-                format!(
-                    "{who} would run on Implement's model, {i}: it must not review its own work"
-                ),
-            ),
-            false => (true, format!("{who} runs on {r}, not Implement's {i}")),
+        let holds = i != r;
+        let text = if holds {
+            format!("{who} runs on {r}, not Implement's {i}")
+        } else {
+            format!("{who} would run on Implement's model, {i}: it must not review its own work")
         };
         out.push(Check { rows, holds, text });
     }
@@ -567,21 +551,6 @@ pub(crate) fn rules<'a>(row: impl Fn(&str) -> Option<(&'a App, String)>) -> Vec<
         out.push(debate(a.0, b.0));
     }
     out
-}
-
-/// The rules over config.json; a row that cannot be read is left out, as
-/// reading it refuses on its own.
-pub(crate) fn checks(doc: &Value) -> Vec<Check> {
-    rules(|key| {
-        let (key, name) = match key {
-            "plan" => ("implement", "plan_model"),
-            key => (key, "model"),
-        };
-        Some((
-            app(&field(doc, key, "app").ok()?)?,
-            field(doc, key, name).ok()?,
-        ))
-    })
 }
 
 /// config.json keeps every rule: the first broken one refuses, as a run

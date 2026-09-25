@@ -777,9 +777,9 @@ fn the_toggle_splits_on_a_plan_model_and_joins_again() {
             "  implement model       claude-opus-5-5  Anthropic",
             "  effort                high",
             "",
-            "CHECKS",
-            "  ✓ Plans on claude-fable-5-1 and implements on",
-            "    claude-opus-5-5, both Anthropic.",
+            "",
+            "",
+            "",
             "",
             "",
         ]
@@ -927,7 +927,7 @@ fn the_apps_page_renders_each_app_installed_or_not() {
 }
 
 /// An App not installed is greyed in an App list; picking it says where
-/// to get it and changes nothing. So does Enter on it on the Apps page.
+/// to get it and changes nothing. So does the Apps page's foot on it.
 #[test]
 fn an_app_not_installed_says_where_to_get_it() {
     let repo = TempDir::new();
@@ -958,11 +958,9 @@ fn an_app_not_installed_says_where_to_get_it() {
         &mut s,
         &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down],
     );
-    keys(
-        &mut s,
-        &[KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter],
-    );
-    assert_eq!(note(&s), where_);
+    keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Down]);
+    let buf = render(&s, 160, 45);
+    assert!(find(&buf, where_).is_some(), "{:#?}", rows(&buf));
     assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
     assert!(!repo.path().join(".harness/config.json").exists());
 }

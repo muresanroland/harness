@@ -11,7 +11,7 @@ use ratatui::Frame;
 use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::APPS;
-use crate::shell::config::{distinct, sign, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
+use crate::shell::config::{distinct, Field, Pick, Settings, APPS_PAGE, ROWS, SECTIONS};
 use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 
@@ -151,7 +151,7 @@ fn hint(st: &Settings) -> &'static str {
         _ if st.probe.is_some() => "probing… · Esc drops it",
         _ if st.typing.is_some() => "Enter probes and saves · Esc cancels",
         _ if st.pick.is_some() => "↑↓ move · type to filter · Enter picks · Esc back",
-        _ if st.open && st.section == APPS_PAGE => "↑↓ App · Enter · ← or Esc back",
+        _ if st.open && st.section == APPS_PAGE => "↑↓ App · ← or Esc back",
         _ if st.open && st.section == 0 => {
             "↑↓ setting · Enter changes · Space toggles · ← or Esc back"
         }
@@ -163,20 +163,20 @@ fn hint(st: &Settings) -> &'static str {
 /// The left: PIPELINE, each section with its summary joined by │ where
 /// there is room, a rule, then the lines whose pages come later.
 fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'static>> {
-    let row = |name: &str, summary: String, mark: Option<(&str, Color)>, selected: bool| {
+    let row = |name: &str, summary: String, mark: bool, selected: bool| {
         let (name_style, bg) = match (selected, st.open) {
             (true, false) => (bold(PURPLE), Some(SEL_BG)),
             (true, true) => (bold(TEXT), Some(REST_BG)),
             (false, _) => (fg(TEXT), None),
         };
-        let room = width.saturating_sub(if mark.is_some() { 14 } else { 12 });
+        let room = width.saturating_sub(if mark { 14 } else { 12 });
         let mut spans = vec![
             Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
             Span::styled(pad(name, 10), name_style),
             Span::styled(cut(&summary, room), fg(MUTED)),
         ];
-        if let Some((mark, color)) = mark {
-            spans.push(Span::styled(format!(" {mark}"), bold(color)));
+        if mark {
+            spans.push(Span::styled(" ✗", bold(RED)));
         }
         match bg {
             Some(bg) => filled(spans, width, bg),
@@ -199,16 +199,16 @@ fn pipeline(s: &Screen, st: &Settings, height: u16, width: usize) -> Vec<Line<'s
     lines.push(row(
         "Apps",
         st.apps_summary(),
-        None,
+        false,
         st.section == APPS_PAGE,
     ));
     lines.push(row(
         "Skills",
         format!("{} installed", st.skills),
-        None,
+        false,
         false,
     ));
-    lines.push(row("TypeSafe", typesafe.to_string(), None, false));
+    lines.push(row("TypeSafe", typesafe.to_string(), false, false));
     lines
 }
 
@@ -299,7 +299,11 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
         lines.push(Line::from(Span::styled("CHECKS", bold(MUTED))));
     }
     for check in checks {
-        let (mark, color) = sign(check.holds);
+        let (mark, color) = if check.holds {
+            ("✓", GREEN)
+        } else {
+            ("✗", RED)
+        };
         let text = if check.holds { MUTED } else { color };
         let text = vec![(format!("{}.", check.text), fg(text))];
         let mark = format!("  {mark} ");
@@ -329,7 +333,7 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
     let entries = st.entries(pick);
     let name_w = if pick.field == Field::App { 12 } else { 18 };
     let marks = entries.iter().filter_map(|e| e.mark);
-    let mark_w = marks.map(|(m, _)| m.chars().count() + 1).max().unwrap_or(0);
+    let mark_w = marks.map(|m| m.chars().count() + 1).max().unwrap_or(0);
     let detail_w = width.saturating_sub(2 + name_w + mark_w.max(10)).min(44);
     let (mut at, mut n) = (0, 0);
     for e in entries {
@@ -354,7 +358,7 @@ fn pick_lines(st: &Settings, pick: &Pick, width: usize) -> (Vec<Line<'static>>, 
             ),
             Span::styled(pad(&e.detail, detail_w), fg(MUTED)),
             match e.mark {
-                Some((mark, color)) => Span::styled(mark, fg(color)),
+                Some(mark) => Span::styled(mark, fg(RED)),
                 None if e.current => Span::styled("✓ current", fg(GREEN)),
                 None => Span::raw(""),
             },
