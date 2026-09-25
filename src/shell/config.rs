@@ -1162,14 +1162,18 @@ impl Screen {
                 Err(err) => st.note = Some((format!("Refused: {err}. Nothing changed."), RED)),
             },
             Picked::Typed => st.typing = Some((Typing::Model(pick), String::new())),
-            Picked::Install(name, source) => self.install_for(pick.field, name, source),
-            Picked::Value(value) if matches!(pick.field, Field::Job(_)) => {
-                self.set_pick(pick.field, &value);
+            Picked::Install(name, source) => {
+                if let Field::Job(j) = pick.field {
+                    self.install_for(j, name, source)
+                }
             }
-            Picked::Value(value) if matches!(pick.field, Field::Model | Field::Plan) => {
-                self.pick_model(&pick, &value)
-            }
-            Picked::Value(value) => self.change(pick.row, vec![(Field::Effort, value)]),
+            Picked::Value(value) => match pick.field {
+                Field::Job(j) => {
+                    self.set_pick(j, &value);
+                }
+                Field::Model | Field::Plan => self.pick_model(&pick, &value),
+                _ => self.change(pick.row, vec![(Field::Effort, value)]),
+            },
         }
     }
 
@@ -1371,10 +1375,7 @@ impl Screen {
     }
 
     /// A job's suggestion not installed: installed, then picked.
-    fn install_for(&mut self, field: Field, name: &'static str, source: &'static str) {
-        let Field::Job(j) = field else {
-            return;
-        };
+    fn install_for(&mut self, j: usize, name: &'static str, source: &'static str) {
         let from = parse_source(source).map_or(source.to_string(), |s| short(&s.repo).into());
         self.off_thread(
             format!("cloning {from} for {name}…"),
@@ -1386,10 +1387,7 @@ impl Screen {
 
     /// A job's pick, saved in the Skill manifest read afresh; the pick it
     /// has changes nothing. Whether it saved.
-    fn set_pick(&mut self, field: Field, name: &str) -> bool {
-        let Field::Job(j) = field else {
-            return false;
-        };
+    fn set_pick(&mut self, j: usize, name: &str) -> bool {
         let repo = &self.cfg.repo;
         let mut manifest = match Manifest::load(repo) {
             Ok(manifest) => manifest,
@@ -1449,14 +1447,15 @@ impl Screen {
             return;
         }
         let jobs = st.jobs_using(&name);
+        let those = if jobs.len() == 1 {
+            "that job"
+        } else {
+            "those jobs"
+        };
         let text = match jobs.len() {
             0 => format!("Remove {name} ({})?", short(&skill.repo)),
-            1 => format!(
-                "{name} is the Delegate skill for {}. Remove it and set that job to none?",
-                jobs[0]
-            ),
             _ => format!(
-                "{name} is the Delegate skill for {}. Remove it and set those jobs to none?",
+                "{name} is the Delegate skill for {}. Remove it and set {those} to none?",
                 jobs.join(", ")
             ),
         };
@@ -1471,10 +1470,10 @@ impl Screen {
         }
         let found = found(&self.cfg.repo, &self.cfg.home, &*self.cfg.tools);
         self.reload_skills(found);
+        let is = if jobs.len() == 1 { "is" } else { "are" };
         let text = match jobs.len() {
             0 => format!("removed {name}"),
-            1 => format!("removed {name}; {} is none", jobs[0]),
-            _ => format!("removed {name}; {} are none", jobs.join(", ")),
+            _ => format!("removed {name}; {} {is} none", jobs.join(", ")),
         };
         self.done(text);
     }
@@ -1553,7 +1552,7 @@ impl Screen {
                     return;
                 };
                 let installed = self.installed(&name);
-                if self.set_pick(Field::Job(j), &name) {
+                if self.set_pick(j, &name) {
                     self.done(format!("{installed}; {} uses it", job_said(j)));
                 } else {
                     self.done(installed);

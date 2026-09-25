@@ -70,18 +70,8 @@ pub(super) fn config(f: &mut Frame, s: &Screen) {
 /// The Apps page: each App of the table, installed with its version or
 /// greyed with its homepage.
 fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Apps", bold(TEXT)),
-        Span::styled(format!("  {}", st.apps_summary()), fg(MUTED)),
-    ])];
     let about = "The agent CLIs a Stage runs on, found on PATH when /config opened; harness init installs herdr's integration for each.";
-    lines.extend(wrap_spans(
-        vec![(about.to_string(), fg(MUTED))],
-        width,
-        "",
-        "",
-        fg(MUTED),
-    ));
+    let mut lines = head("Apps", st.apps_summary(), about, width);
     lines.push(Line::default());
     let mut at = 0;
     for (i, app) in APPS.iter().enumerate() {
@@ -463,17 +453,7 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     let (title, _, about) = SECTIONS[st.section];
     let items = st.items();
     let apps = distinct(items.iter().map(|&(row, _)| st.value(row, Field::App)));
-    let mut lines = vec![Line::from(vec![
-        Span::styled(title, bold(TEXT)),
-        Span::styled(format!("  {}", apps.join(", ")), fg(MUTED)),
-    ])];
-    lines.extend(wrap_spans(
-        vec![(about.to_string(), fg(MUTED))],
-        width,
-        "",
-        "",
-        fg(MUTED),
-    ));
+    let mut lines = head(title, apps.join(", "), about, width);
     let mut at = 0;
     for (i, &(row, field)) in items.iter().enumerate() {
         if field == Field::App {
@@ -484,20 +464,14 @@ fn page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
             lines.push(Line::from(Span::styled("DELEGATE SKILLS", bold(MUTED))));
         }
         let selected = st.open && i == st.setting;
-        let mut spans = vec![
-            Span::styled(if selected { "▸ " } else { "  " }, fg(PURPLE)),
-            Span::styled(
-                label(st, row, field),
-                if selected { bold(TEXT) } else { fg(TEXT) },
-            ),
-        ];
-        spans.extend(value(st, row, field));
-        if selected {
-            at = lines.len();
-            lines.push(filled(spans, width, SEL_BG));
-        } else {
-            lines.push(Line::from(spans));
-        }
+        item(
+            &mut lines,
+            &mut at,
+            selected,
+            label(st, row, field),
+            value(st, row, field),
+            width,
+        );
     }
     let checks = st.checks(Some(st.section));
     if !checks.is_empty() {
