@@ -174,6 +174,7 @@ fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
 fn implement_on_codex_starts_with_no_plan_mode_and_is_told_to_write_its_plan() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
     writes(&w);
+    w.hook(|_, argv| (argv == ["bd", "show", "hx-1"]).then(|| Ok("hx-1 · the Ticket\n".into())));
     let o = Arc::new(o);
     let _run = spawn_ticket(o.clone(), "hx-1");
     w.await_line("hx-1 implement started: codex (pane 1-1)");
@@ -196,6 +197,13 @@ fn implement_on_codex_starts_with_no_plan_mode_and_is_told_to_write_its_plan() {
         prompt.contains("\n- Plan: write plan.md and STATUS: plan\n"),
         "{prompt}"
     );
+    // codex's sandbox cannot run bd: its Ticket is shown in the Run directory
+    let ticket = run.join("ticket.md");
+    assert!(
+        prompt.contains(&format!("\n- Ticket file: {}\n", ticket.display())),
+        "{prompt}"
+    );
+    assert_eq!(fs::read_to_string(ticket).unwrap(), "hx-1 · the Ticket\n");
 
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
     o.run_ticket("hx-1");

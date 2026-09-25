@@ -177,8 +177,7 @@ impl Orchestrator {
         let dir = self.run_dir(ticket);
         let _ = fs::remove_file(dir.join(PLAN));
         self.plans.lock().unwrap().remove(ticket);
-        let before = json!([self.head(ticket), self.tree(ticket)]).to_string();
-        fs::write(dir.join(BEFORE), before)
+        fs::write(dir.join(BEFORE), self.snapshot(ticket))
             .map_err(|err| format!("worktree snapshot not saved: {err}"))
     }
 
@@ -209,14 +208,8 @@ impl Orchestrator {
     /// Whether the worktree is not as the two-step Plan's session found it:
     /// HEAD moved or the tree changed. No snapshot, no check.
     fn worktree_changed(&self, ticket: &str) -> bool {
-        let before = fs::read(self.run_dir(ticket).join(BEFORE));
-        let Some(before) = before
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-        else {
-            return false;
-        };
-        json!([self.head(ticket), self.tree(ticket)]) != before
+        fs::read_to_string(self.run_dir(ticket).join(BEFORE))
+            .is_ok_and(|before| before != self.snapshot(ticket))
     }
 
     /// The plan of an Implement session blocked at its plan dialog, when

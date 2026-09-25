@@ -16,7 +16,7 @@ Your plan lists what you will change, the tests you will write, and every decisi
 
 ## Do
 
-1. `bd show <Ticket>`: the description and acceptance criteria are your whole scope. Do not start on other Tickets.
+1. Read the **Ticket file**, the Ticket as `bd show <Ticket>` prints it: the description and acceptance criteria are your whole scope. Do not start on other Tickets.
 2. Read the repo's `CLAUDE.md` (or `AGENTS.md`) and `CONTEXT.md` if present, and any ADR the Ticket names. Use the repo's vocabulary and conventions.
    Use the {{working-mode}} skill for all your work: load it by name in this session. A hook may load it; do not count on it, and do not skip it because it looks active.
    Use the {{prose}} skill for your commits and result file: load it by name in this session.
@@ -24,7 +24,7 @@ Your plan lists what you will change, the tests you will write, and every decisi
    Use the {{test-first}} skill for it.
 4. Run the repo's typecheck and the tests you touched as you go, and the full test suite once at the end.
 5. Review your changes against the base branch (the remote's default branch: `git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `main`): read the diff against the acceptance criteria and fix what is missing or wrong.
-   Use the {{self-review}} skill on the changes since the base, with the Ticket as the spec (`bd show <Ticket>`) and the approved Plan (`<Run directory>/plan.md`) as what was meant to be built, and fix what it finds.
+   Use the {{self-review}} skill on the changes since the base, with the Ticket as the spec (the **Ticket file**) and the approved Plan (`<Run directory>/plan.md`) as what was meant to be built, and fix what it finds.
 6. Commit everything to the current branch. Do not push, do not open a pull request, do not close the Ticket: later Stages do that.
 7. Write the result file.
 
