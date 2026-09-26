@@ -333,7 +333,7 @@ fn no_key_means_no_request_and_a_question() {
 fn typesafe_off_means_no_request_and_a_question() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     super::write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"typesafe": false}"#,
     );
     idle_once(&w);
@@ -607,7 +607,7 @@ fn the_prototype_cases_build_judge_pys_request() {
         let line = src[from..].lines().next().unwrap();
         serde_json::from_str(line.trim_end_matches(',')).unwrap()
     };
-    let file = Path::new(".harness/runs/hx-1/implement.md");
+    let file = Path::new(".orqadence/runs/hx-1/implement.md");
     let prompts: Vec<String> = py_dict(&src, "PROMPTS")
         .into_iter()
         .map(|(_, p)| p.replace("{result_file}", &file.display().to_string()))
@@ -748,7 +748,7 @@ fn config_jsons_wake_floor_moves_the_action_and_a_bad_one_asks() {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         idle_once(&w);
         if !config.is_empty() {
-            super::write_file(&w.repo.join(".harness/config.json"), config);
+            super::write_file(&w.repo.join(".orqadence/config.json"), config);
         }
         o.cfg.typesafe = typesafe(move |_, body| choose(body, "retry", confidence));
         let o = Arc::new(o);

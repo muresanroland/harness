@@ -1,6 +1,6 @@
 ---
 name: stage-address
-description: Harness address Stage. Acts on a Ticket's pull request review comments and merge conflicts, then pushes to the same PR. Run by the Harness Orchestrator on the user's command, not by hand.
+description: Orqadence address Stage. Acts on a Ticket's pull request review comments and merge conflicts, then pushes to the same PR. Run by the Orqadence Orchestrator on the user's command, not by hand.
 ---
 
 # Address Stage

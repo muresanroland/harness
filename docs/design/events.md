@@ -1,13 +1,13 @@
 # Events: the RECENT panel and the log
 
-Every Orchestrator event is one plain-language line, the same words on the Shell's RECENT panel and in `.harness/orchestrator.log`. There is no machine-readable line; `.harness/state.json` is the machine record. Decided on the map ticket "Human-readable event vocabulary for the RECENT panel and the log" (harness-7bj.6).
+Every Orchestrator event is one plain-language line, the same words on the Shell's RECENT panel and in `.orqadence/orchestrator.log`. There is no machine-readable line; `.orqadence/state.json` is the machine record. Decided on the map ticket "Human-readable event vocabulary for the RECENT panel and the log" (harness-7bj.6).
 
 ## Line shape
 
 Panel: `HH:MM:SS  <child suffix> <title, truncated to the column>  <event>`
 Log:   `YYYY-MM-DD HH:MM:SS <bd id> <event>`
 
-Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane locations are always named, as `(pane 2-1)`, on started, resumed, retrying, stuck, waiting and blocked lines.
+Run-level lines have no Ticket; the panel's Ticket column reads `orqadence`. Pane locations are always named, as `(pane 2-1)`, on started, resumed, retrying, stuck, waiting and blocked lines.
 
 ## What shows
 
@@ -21,7 +21,7 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | Moment | Wording |
 |---|---|
 | worktree created | branch `b` created |
-| Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .harness/config.json: implement started: claude opus/high (pane 2-1) · on a split, a plan model other than Implement's: implement started: claude claude-fable-5-1→claude-opus-5-5/high (pane 2-1) |
+| Stage started | implement started: claude (pane 2-1) · review 1 started: codex (pane 2-2) · with a model and effort set in .orqadence/config.json: implement started: claude opus/high (pane 2-1) · on a split, a plan model other than Implement's: implement started: claude claude-fable-5-1→claude-opus-5-5/high (pane 2-1) |
 | Stage resumed | *a Stage /continue finds with its pane gone, by its saved session id on an unchanged App:* implement resumed: claude (pane 2-1) · *log only, when it cannot be:* implement not resumed: its App is now claude, starting it fresh |
 | Stage prompted | *log only:* implement prompted, waiting for implement.md |
 | trust dialog | waiting: claude does not trust `dir` yet, open it there once and accept (pane 2-1) |
@@ -45,13 +45,13 @@ Run-level lines have no Ticket; the panel's Ticket column reads `harness`. Pane 
 | retry command | retrying fix 1 with a fresh session (pane 2-3) |
 | address | addressed PR #12 · address failed: `err` · address gave up: `err` · address refused: no open PR · address refused: not an Epic run |
 | retry or park refused | ignored: not waiting on a Wake · refused: not a Ticket of this run |
-| Away | *(harness)* away: on, a Stage's question parks its Ticket · away: off *(/away again, or /continue @ticket)* |
-| /continue @ticket refused | *(harness)* refused: Ticket 5 is not parked · *(on the Ticket, in a single-Ticket run)* continue refused: not an Epic run |
-| Shell refuses a command | *(harness)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
-| /config saved during a run | *(harness)* config: Review codex → codex gpt-6-sol/high · config: Review if limited none → claude sonnet *(the row, then what it was and what it is, as the started line names them; the Stages that start after it use it)* · config: TypeSafe off · config: plan floor 0.60 *(the next Judgment reads it)* |
-| Epic done | *(harness)* Epic done, every Ticket closed |
-| stopped | *(harness)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
-| errors | *(harness)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
+| Away | *(orqadence)* away: on, a Stage's question parks its Ticket · away: off *(/away again, or /continue @ticket)* |
+| /continue @ticket refused | *(orqadence)* refused: Ticket 5 is not parked · *(on the Ticket, in a single-Ticket run)* continue refused: not an Epic run |
+| Shell refuses a command | *(orqadence)* refused: a run is live, /stop-work first · refused: a run is stopping · refused: no run is live, /start-epic or /continue starts one · refused: no saved Ticket to continue |
+| /config saved during a run | *(orqadence)* config: Review codex → codex gpt-6-sol/high · config: Review if limited none → claude sonnet *(the row, then what it was and what it is, as the started line names them; the Stages that start after it use it)* · config: TypeSafe off · config: plan floor 0.60 *(the next Judgment reads it)* |
+| Epic done | *(orqadence)* Epic done, every Ticket closed |
+| stopped | *(orqadence)* stopped, panes left running, /continue resumes *(once every Ticket thread has left; the status row reads STOPPING until then)* |
+| errors | *(orqadence)* state not saved: `err` · bd list failed: `err` · bd ready failed: `err` |
 
 ## Limited
 
@@ -62,7 +62,7 @@ Decided on the map tickets "Limited" (harness-0sx.8) and "Apps per Stage" (harne
 | a Stage's session hits a limit | claude session limit until 3:45pm: implement holds (pane 2-1) · codex usage limit until 3:05pm: review 1 holds (pane 2-2) |
 | a Stage about to start on an App at its limit | *log only:* review 1 holds: codex limited until 3:05pm |
 | the reset + 2 minutes | claude session limit over: implement carries on (pane 2-1) *(a pane still idle with no result is sent `continue` first)* |
-| a long limit (a reset more than a day away, or Claude's options menu) | *(harness)* claude weekly limit until Mon 12:00am: sessions saved, panes closed, /continue after the reset *(the run ends; no "stopped" line follows)* |
+| a long limit (a reset more than a day away, or Claude's options menu) | *(orqadence)* claude weekly limit until Mon 12:00am: sessions saved, panes closed, /continue after the reset *(the run ends; no "stopped" line follows)* |
 | a session that would not take the continue | Wake reason: never took the continue |
 | the Review's App at a short limit, once for the run *(Ticket 15)* | asking you: codex limited until 3:05pm: how do Reviews go until then? *(options: wait for the reset · review with claude opus, when review_if_limited is set · open the PR unreviewed; every other Ticket reaching Review holds, log only, until the answer, which stands until the reset)* |
 | the answer | you answered: wait for the reset *(the Review holds as any Stage)* · you answered: review with claude opus *(then: review 1 started: claude opus (pane 2-3))* · you answered: open the PR unreviewed |

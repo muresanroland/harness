@@ -1,4 +1,4 @@
-//! The App table, compiled in, and .harness/config.json: the App, model and
+//! The App table, compiled in, and .orqadence/config.json: the App, model and
 //! effort each Stage starts on.
 
 use std::fs;
@@ -59,7 +59,7 @@ pub(crate) struct App {
     /// and is not installed on another App.
     pub(crate) built_in: &'static [&'static str],
     /// Its own skills folder, at the repo and at home; it loads
-    /// .harness/skills too, where the checkout's skills are linked from.
+    /// .orqadence/skills too, where the checkout's skills are linked from.
     pub(crate) skill_dir: &'static str,
     /// Whether it loads its enabled plugins' skills, named plugin:skill.
     pub(crate) plugins: bool,
@@ -76,7 +76,7 @@ impl App {
     pub(crate) fn loads(&self, name: &str, dir: &Path) -> bool {
         (self.plugins && name.contains(':'))
             || dir.ends_with(self.skill_dir)
-            || dir.ends_with(".harness/skills")
+            || dir.ends_with(".orqadence/skills")
     }
 }
 
@@ -521,7 +521,7 @@ pub(crate) fn fallback_row(repo: &Path) -> Result<Option<Row>, String> {
     row(repo, IF_LIMITED).map(|row| Some(row).filter(|row| row.model != "none"))
 }
 
-/// The Stage's row, read from .harness/config.json as the Stage starts, so a
+/// The Stage's row, read from .orqadence/config.json as the Stage starts, so a
 /// change reaches the Stages that start after it. A missing file, row or
 /// field, or an empty one, is the default; a field not a string refuses.
 pub(crate) fn stage_row(repo: &Path, st: &Stage) -> Result<Row, String> {
@@ -606,9 +606,9 @@ pub(crate) fn row(repo: &Path, key: &str) -> Result<Row, String> {
     row_in(&doc, key, &path)
 }
 
-/// .harness/config.json and its path; a missing file is Null.
+/// .orqadence/config.json and its path; a missing file is Null.
 pub(crate) fn read(repo: &Path) -> Result<(PathBuf, Value), String> {
-    let path = repo.join(".harness").join("config.json");
+    let path = repo.join(".orqadence").join("config.json");
     let doc = match fs::read(&path) {
         Ok(raw) => {
             serde_json::from_slice(&raw).map_err(|err| format!("{}: {err}", path.display()))?

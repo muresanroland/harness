@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use crate::orchestrator::state::acquire_lock;
 
-const REPO: &str = "muresanroland/harness";
-/// The release asset is harness-<target>, the target fixed at compile time,
+const REPO: &str = "muresanroland/orqadence";
+/// The release asset is orqa-<target>, the target fixed at compile time,
 /// with the magic its binary starts with; any other target never checks.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) const TARGET: Option<(&str, [u8; 4])> =
@@ -36,10 +36,10 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// A release binary is a few MB; the body gets longer than the handshakes.
 const BODY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The releases of the Harness: the latest tag, and one asset of one release.
+/// The releases of Orqadence: the latest tag, and one asset of one release.
 pub(crate) trait Releases: Send + Sync {
     fn latest_tag(&self) -> Result<String, String>;
-    /// Writes the release's harness-<target> asset to `dest`, whole or not
+    /// Writes the release's orqa-<target> asset to `dest`, whole or not
     /// at all: a body shorter than its Content-Length is an error.
     fn download(&self, tag: &str, target: &str, dest: &Path) -> Result<(), String>;
 }
@@ -226,7 +226,7 @@ impl Releases for GitHub {
     }
 
     fn download(&self, tag: &str, target: &str, dest: &Path) -> Result<(), String> {
-        let url = format!("https://github.com/{REPO}/releases/download/{tag}/harness-{target}");
+        let url = format!("https://github.com/{REPO}/releases/download/{tag}/orqa-{target}");
         let mut resp = agent().get(&url).call().map_err(|err| err.to_string())?;
         let want = resp.body().content_length();
         let mut file = File::create(dest).map_err(|err| err.to_string())?;
@@ -299,7 +299,7 @@ mod tests {
 
     /// A scratch exe standing in for the running binary; never the test binary.
     fn exe(dir: &TempDir) -> PathBuf {
-        let exe = dir.path().join("harness");
+        let exe = dir.path().join("orqa");
         fs::write(&exe, b"old").unwrap();
         exe
     }
@@ -316,7 +316,7 @@ mod tests {
     fn a_greater_version_downloads_and_swaps() {
         let dir = TempDir::new();
         let exe = exe(&dir);
-        fs::write(dir.path().join("harness.new.1"), b"left by a dead process").unwrap();
+        fs::write(dir.path().join("orqa.new.1"), b"left by a dead process").unwrap();
         let releases = FakeReleases::new("v1.1.0", &binary(b"new"));
         let ready = check(&releases, "v1.0.0", &exe)
             .unwrap()
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(fs::read(&exe).unwrap(), b"old", "swapped before install");
         assert_eq!(
             temp_files(&dir),
-            [format!("harness.new.{}", std::process::id())]
+            [format!("orqa.new.{}", std::process::id())]
         );
         let mode = fs::metadata(&ready.tmp).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755, "mode {mode:o}");

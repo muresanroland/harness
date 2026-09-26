@@ -1,10 +1,10 @@
-//! /config: the App, model and effort of each row of .harness/config.json,
+//! /config: the App, model and effort of each row of .orqadence/config.json,
 //! picked in a modal docked beside the live Shell (layout C of
 //! harness-0sx.9, drawn in draw/config.rs) and saved at once. A Stage reads
 //! its row as it starts, so the Stages that start after a change use it and
 //! running ones keep theirs. A named model is probed with a one-line prompt
 //! first, off the screen thread; it saves only if the App answers. Also each
-//! job's Delegate skill, the skills the Harness installed (harness-0sx.7),
+//! job's Delegate skill, the skills Orqadence installed (harness-0sx.7),
 //! cloned off the screen thread too, and TypeSafe on or off with its key
 //! and the Judgments' floors.
 
@@ -16,7 +16,7 @@ use crossterm::event::KeyCode;
 use ratatui::style::Color;
 use serde_json::{json, Value};
 
-use super::logo::{CYAN, GREEN, MUTED, ORANGE, RED};
+use super::brand::{CYAN, GREEN, MUTED, ORANGE, RED};
 use super::{Screen, NOTICE_WINDOW};
 use crate::orchestrator::app::{self, app, App, Check, Floor, Model, Row, APPS, IF_LIMITED};
 use crate::orchestrator::judgment::{PLAN_FLOOR, WAKE_FLOOR};
@@ -453,7 +453,7 @@ impl Settings {
         out
     }
 
-    /// How app has a skill: built into it, installed by the Harness, or
+    /// How app has a skill: built into it, installed by Orqadence, or
     /// yours; with where from. None when it lacks it.
     pub(crate) fn have(&self, app: &App, name: &str) -> Option<(&'static str, Color, String)> {
         if app.built_in.contains(&name) {
@@ -825,10 +825,10 @@ impl Settings {
     pub(crate) fn skills_note(&self, i: usize) -> String {
         let names = self.skill_names();
         let Some(name) = i.checked_sub(1).map(|i| &names[i]) else {
-            return "Run harness init again to change where skills are installed.".to_string();
+            return "Run orqa init again to change where skills are installed.".to_string();
         };
         match self.manifest.skills[name].shipped {
-            true => format!("{name} is a Shipped skill: harness init installs and updates it, and it cannot be removed."),
+            true => format!("{name} is a Shipped skill: orqa init installs and updates it, and it cannot be removed."),
             false => format!("u updates {name} from its source, d removes it; a adds a skill from a source, U updates every one."),
         }
     }
@@ -1513,7 +1513,7 @@ impl Screen {
         let st = self.settings.as_mut().unwrap();
         let said = match &one {
             Some(name) if st.manifest.skills[name].shipped => {
-                let text = format!("{name} is a Shipped skill: harness init updates it.");
+                let text = format!("{name} is a Shipped skill: orqa init updates it.");
                 st.note = Some((text, RED));
                 return;
             }
@@ -1733,7 +1733,7 @@ impl Screen {
             true => format!(
                 "saved: {name} {new}. Stages that start from now use it; running ones keep theirs."
             ),
-            false => format!("saved: {name} {new}, in .harness/config.json"),
+            false => format!("saved: {name} {new}, in .orqadence/config.json"),
         };
         st.note = Some((text, GREEN));
         if live {

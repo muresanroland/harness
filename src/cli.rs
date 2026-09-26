@@ -1,4 +1,4 @@
-//! The harness command line.
+//! The orqa command line.
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,14 +11,14 @@ use crate::orchestrator::stage::log_line;
 use crate::setup;
 use crate::tools::Tools;
 
-const USAGE: &str = "usage: harness [command]
+const USAGE: &str = "usage: orqa [command]
 
   (no command)                open the Shell, which runs the Epics
   init [--force]              set up the Target repo (bd, docs/agents, the skills, TypeSafe, herdr's integrations) and preflight it
   --version                   print the version
 ";
 
-/// Runs one harness command inside the Target repo and returns the exit code.
+/// Runs one orqa command inside the Target repo and returns the exit code.
 /// `input` answers init's questions; None is the terminal's stdin.
 pub fn run(
     args: &[String],
@@ -28,22 +28,22 @@ pub fn run(
     tools: Arc<dyn Tools>,
     env: &dyn Fn(&str) -> String,
 ) -> i32 {
-    // harness alone opens the Shell (ADR 0004), once init has made .harness.
+    // orqa alone opens the Shell (ADR 0004), once init has made .orqadence.
     let Some(name) = args.first() else {
-        if !repo.join(".harness").is_dir() {
+        if !repo.join(".orqadence").is_dir() {
             let _ = write!(
                 out,
-                "\n  {} {}\n\n  Run it to set this repo up, then start the Harness again:\n\n    {}\n\n",
+                "\n  {} {}\n\n  Run it to set this repo up, then start Orqadence again:\n\n    {}\n\n",
                 "!".yellow().bold(),
-                "harness init hasn't been run in this repo".bold(),
-                "harness init".cyan().bold(),
+                "orqa init hasn't been run in this repo".bold(),
+                "orqa init".cyan().bold(),
             );
             return 1;
         }
         return match crate::shell::open(repo, tools, env) {
             Ok(()) => 0,
             Err(err) => {
-                let _ = writeln!(out, "harness: {err}");
+                let _ = writeln!(out, "orqa: {err}");
                 1
             }
         };
@@ -93,7 +93,7 @@ pub fn run(
             match hooked {
                 Ok(()) => 0,
                 Err(err) => {
-                    eprintln!("harness: {err}");
+                    eprintln!("orqa: {err}");
                     1 // never 2, which would block the tool
                 }
             }
@@ -112,7 +112,7 @@ pub fn run(
 /// Copies the plan from the hook's input on stdin to `path`, and decides
 /// nothing: no output, so the plan dialog shows as usual.
 fn plan_hook(path: Option<&String>, input: &mut dyn Read) -> Result<(), String> {
-    let path = path.ok_or("usage: harness __plan-hook <plan file>")?;
+    let path = path.ok_or("usage: orqa __plan-hook <plan file>")?;
     let call = hook_input(input)?;
     let plan = call["tool_input"]["plan"]
         .as_str()
@@ -125,7 +125,7 @@ fn plan_hook(path: Option<&String>, input: &mut dyn Read) -> Result<(), String> 
 /// the Orchestrator append theirs.
 fn switch_hook(args: &[String], input: &mut dyn Read) -> Result<(), String> {
     let [path, ticket] = args else {
-        return Err("usage: harness __switch-hook <log file> <ticket>".to_string());
+        return Err("usage: orqa __switch-hook <log file> <ticket>".to_string());
     };
     let call = hook_input(input)?;
     let model = call["to_model"]

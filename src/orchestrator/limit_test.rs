@@ -789,7 +789,7 @@ fn review_with_the_fallback_starts_stage_review_on_its_app_and_model() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     clock(&mut o);
     write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"review_if_limited": {"app": "claude", "model": "opus"}}"#,
     );
     write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");
@@ -904,7 +904,7 @@ fn a_fallback_review_at_its_own_limit_holds_and_asks_nothing_more() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     clock(&mut o);
     write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"review_if_limited": {"app": "claude", "model": "opus"}}"#,
     );
     write_file(&o.run_dir("hx-1").join("implement.md"), "STATUS: done\n");

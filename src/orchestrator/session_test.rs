@@ -219,7 +219,7 @@ fn a_changed_app_or_no_session_id_starts_the_stage_fresh() {
     for (stage, label, ids, config, app) in cases {
         let (w, stopped) = stopped_at(stage, label, ids);
         if !config.is_empty() {
-            write_file(&w.repo.join(".harness/config.json"), config);
+            write_file(&w.repo.join(".orqadence/config.json"), config);
         }
         panes_gone(&w);
         let o = restarted(&w, &stopped);

@@ -37,15 +37,15 @@ jobs:
           test "${TAG#v}" = "$version" || { echo "tag $TAG != Cargo.toml version $version"; exit 1; }
       - name: build
         env:
-          HARNESS_RELEASE: '1'
+          ORQADENCE_RELEASE: '1'
         run: |
           rustup target add ${{ matrix.target }}
           cargo build --release --locked --target ${{ matrix.target }}
-          cp -f target/${{ matrix.target }}/release/harness harness-${{ matrix.target }}
+          cp -f target/${{ matrix.target }}/release/orqa orqa-${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: harness-${{ matrix.target }}
-          path: harness-${{ matrix.target }}
+          name: orqa-${{ matrix.target }}
+          path: orqa-${{ matrix.target }}
           if-no-files-found: error
 
   release:
@@ -61,7 +61,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          assets="harness-aarch64-apple-darwin harness-x86_64-unknown-linux-gnu"
+          assets="orqa-aarch64-apple-darwin orqa-x86_64-unknown-linux-gnu"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber $assets
           else

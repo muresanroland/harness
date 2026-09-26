@@ -77,7 +77,7 @@ pub(crate) struct State {
     #[serde(default, deserialize_with = "null_is_empty")]
     pub(crate) tickets: BTreeMap<String, TicketState>,
     /// App name -> when its last usage limit resets: no Stage starts on it
-    /// until then, in this run or a /continue after the Harness closed.
+    /// until then, in this run or a /continue after Orqadence closed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) limits: BTreeMap<String, chrono::DateTime<chrono::Local>>,
     /// App -> the answer to the Review's limit Question, which stands for
@@ -110,7 +110,7 @@ fn null_is_empty<'de, D: serde::Deserializer<'de>>(
 }
 
 fn state_path(repo: &Path) -> PathBuf {
-    repo.join(".harness").join("state.json")
+    repo.join(".orqadence").join("state.json")
 }
 
 pub(crate) fn load_state(repo: &Path) -> io::Result<State> {
@@ -138,7 +138,7 @@ impl State {
 }
 
 fn lock_path(repo: &Path) -> PathBuf {
-    repo.join(".harness").join("lock")
+    repo.join(".orqadence").join("lock")
 }
 
 /// The lock on a Target repo: an advisory flock the kernel releases when the

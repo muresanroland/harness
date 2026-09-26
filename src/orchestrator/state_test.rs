@@ -13,16 +13,16 @@ const GO_RUNNING_STATE: &str = include_str!("testdata/state-running.json");
 
 fn repo_with(state: &str) -> TempDir {
     let repo = TempDir::new();
-    fs::create_dir_all(repo.path().join(".harness")).unwrap();
-    fs::write(repo.path().join(".harness/state.json"), state).unwrap();
+    fs::create_dir_all(repo.path().join(".orqadence")).unwrap();
+    fs::write(repo.path().join(".orqadence/state.json"), state).unwrap();
     repo
 }
 
 #[test]
 fn go_written_state_loads_intact_and_round_trips() {
     let repo = TempDir::new();
-    fs::create_dir_all(repo.path().join(".harness")).unwrap();
-    fs::write(repo.path().join(".harness/state.json"), GO_STATE).unwrap();
+    fs::create_dir_all(repo.path().join(".orqadence")).unwrap();
+    fs::write(repo.path().join(".orqadence/state.json"), GO_STATE).unwrap();
     let state = load_state(repo.path()).unwrap();
     assert_eq!(state.epic, "test-harness-repo-6fs");
     let ids: Vec<&String> = state.tickets.keys().collect();
@@ -57,12 +57,12 @@ fn go_written_state_loads_intact_and_round_trips() {
     // and omissions as Go's encoding, so either binary can pick up a run.
     state.save(repo.path()).unwrap();
     assert_eq!(
-        fs::read_to_string(repo.path().join(".harness/state.json")).unwrap(),
+        fs::read_to_string(repo.path().join(".orqadence/state.json")).unwrap(),
         GO_STATE
     );
     assert_eq!(load_state(repo.path()).unwrap(), state);
     assert!(
-        !repo.path().join(".harness/state.json.tmp").exists(),
+        !repo.path().join(".orqadence/state.json.tmp").exists(),
         "the temp file outlived the rename"
     );
 }
@@ -102,7 +102,7 @@ fn go_written_running_state_round_trips_every_field() {
     );
     state.save(repo.path()).unwrap();
     assert_eq!(
-        fs::read_to_string(repo.path().join(".harness/state.json")).unwrap(),
+        fs::read_to_string(repo.path().join(".orqadence/state.json")).unwrap(),
         GO_RUNNING_STATE
     );
 }
@@ -144,7 +144,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
             limited: "codex".to_string(),
         },
     );
-    // Each App's limit, kept for a /continue after the Harness closed.
+    // Each App's limit, kept for a /continue after Orqadence closed.
     let reset = chrono::Local
         .with_ymd_and_hms(2026, 9, 28, 0, 0, 0)
         .unwrap();
@@ -154,7 +154,7 @@ fn every_field_survives_a_save_and_a_missing_file_is_an_empty_state() {
         .reviews
         .insert("claude".to_string(), Review::Unreviewed);
     state.save(repo.path()).unwrap();
-    let raw = fs::read_to_string(repo.path().join(".harness/state.json")).unwrap();
+    let raw = fs::read_to_string(repo.path().join(".orqadence/state.json")).unwrap();
     for field in [
         "\"tab\"",
         "\"panes\"",
@@ -209,7 +209,7 @@ fn a_second_lock_on_the_same_repo_fails_and_names_the_holder() {
     );
 
     // A lock file left by a killed Orchestrator holds no flock: stale, taken over.
-    fs::write(repo.path().join(".harness/lock"), "999999").unwrap();
+    fs::write(repo.path().join(".orqadence/lock"), "999999").unwrap();
     assert_eq!(
         lock_holder(repo.path()),
         0,

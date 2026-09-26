@@ -107,7 +107,7 @@ fn placed(repo: &Path, home: &Path, answer: &str, name: &str) -> (PathBuf, Optio
             home.join(".agents/skills").join(name),
             Some(home.join(".claude/skills").join(name)),
         ),
-        _ => (repo.join(".harness/skills").join(name), None),
+        _ => (repo.join(".orqadence/skills").join(name), None),
     }
 }
 
@@ -196,8 +196,8 @@ fn init_installs_skills_with_working_symlinks() {
     }
     let ignore = fs::read_to_string(repo.path().join(".gitignore")).unwrap_or_default();
     assert!(
-        ignore.contains(".harness/"),
-        ".gitignore lacks .harness/: {ignore:?}"
+        ignore.contains(".orqadence/"),
+        ".gitignore lacks .orqadence/: {ignore:?}"
     );
 }
 
@@ -205,7 +205,7 @@ fn init_installs_skills_with_working_symlinks() {
 fn init_keeps_edited_skill_unless_forced() {
     let repo = prepared_repo();
     run_with(&["init"], repo.path(), ok_tools(), &herdr_env);
-    let skill = repo.path().join(".harness/skills/stage-fix/SKILL.md");
+    let skill = repo.path().join(".orqadence/skills/stage-fix/SKILL.md");
     let shipped = fs::read_to_string(&skill).unwrap();
     fs::write(&skill, "edited in the Target repo").unwrap();
     let ignore_before = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
@@ -260,7 +260,7 @@ fn init_installs_create_pr_and_keeps_the_repos_own() {
     fs::remove_dir_all(fresh.path().join(".agents/skills/create-pr")).unwrap();
     let (code, _) = run_with(&["init"], fresh.path(), ok_tools(), &herdr_env);
     assert_eq!(code, 0, "init exit {code}");
-    let got = fs::read_to_string(fresh.path().join(".harness/skills/create-pr/SKILL.md"));
+    let got = fs::read_to_string(fresh.path().join(".orqadence/skills/create-pr/SKILL.md"));
     assert!(
         got.as_ref()
             .is_ok_and(|got| got.contains("name: create-pr")),
@@ -332,7 +332,7 @@ fn init_asks_for_typesafe_and_preflight_warns_when_off() {
     let out = String::from_utf8(out).unwrap();
     assert_eq!(code, 0, "{out}");
     assert_eq!(
-        fs::read_to_string(repo.path().join(".harness/typesafe-key"))
+        fs::read_to_string(repo.path().join(".orqadence/typesafe-key"))
             .unwrap()
             .trim(),
         "sk-typed"
@@ -421,7 +421,7 @@ fn at_user_level_a_skill_of_yours_is_not_overwritten() {
     );
     for name in ["tdd", "stage-implement"] {
         assert!(
-            repo.path().join(".harness/skills").join(name).exists(),
+            repo.path().join(".orqadence/skills").join(name).exists(),
             "{name} moved"
         );
     }
@@ -456,7 +456,7 @@ fn typesafe_is_its_own_opt_in_kept_in_config_json() {
             "{case}: asked or not:\n{out}"
         );
         let config: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(repo.path().join(".harness/config.json")).unwrap(),
+            &fs::read_to_string(repo.path().join(".orqadence/config.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(config["typesafe"], on, "{case}:\n{out}");
@@ -476,7 +476,7 @@ fn typesafe_is_its_own_opt_in_kept_in_config_json() {
     let (repo, home) = (bare_repo(), TempDir::new());
     init_keys(repo.path(), home.path(), &["1", "\n", "\n", "sk-typed\n"]);
     assert_eq!(
-        fs::read_to_string(repo.path().join(".harness/typesafe-key"))
+        fs::read_to_string(repo.path().join(".orqadence/typesafe-key"))
             .unwrap()
             .trim(),
         "sk-typed"

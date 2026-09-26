@@ -107,7 +107,7 @@ fn parse_reset(text: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
         0,
     )?;
     // ponytail: Claude's "(Zone)" is its own process's zone, on this machine,
-    // so it is read as Local. A Claude pane run under another TZ than Harness
+    // so it is read as Local. A Claude pane run under another TZ than Orqadence
     // is misread; resolving the name needs chrono-tz, a new crate (a ticket).
     let local = |date: NaiveDate| Local.from_local_datetime(&date.and_time(time)).earliest();
     let today = now.date_naive();

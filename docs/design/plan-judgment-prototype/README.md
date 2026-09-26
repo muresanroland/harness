@@ -8,7 +8,7 @@ and 12 negatives built from them. `answers/` holds what Jev answered in the reco
 `first-run.txt` holds the settled Nouls' scores from the run before it.
 
 ```bash
-python3 judge_plan.py            # every case; TYPESAFE_API_KEY or .harness/typesafe-key
+python3 judge_plan.py            # every case; TYPESAFE_API_KEY or .orqadence/typesafe-key
 python3 judge_plan.py 7nq.14     # one
 python3 judge_plan.py --report   # the tables from answers/, no calls
 ```
@@ -16,7 +16,7 @@ python3 judge_plan.py --report   # the tables from answers/, no calls
 ## Cases
 
 **Positives:** the 21 judged plans of the harness-7nq run (`cases/7nq.<n>`): plan.md from
-the run's `.harness/runs`, the Ticket from `bd show <id> --json`. The user approved each
+the run's `.orqadence/runs`, the Ticket from `bd show <id> --json`. The user approved each
 one unchanged. harness-7nq.3 is left out: its plan was never judged.
 
 **Negatives:** each has a `case.json` that says how it was built.

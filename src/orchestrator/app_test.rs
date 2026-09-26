@@ -1,4 +1,4 @@
-//! The App table and .harness/config.json: each Stage's App, model and
+//! The App table and .orqadence/config.json: each Stage's App, model and
 //! effort, read when the Stage starts.
 
 use super::app::{app, canonical, checks, floor_in, Floor, IF_LIMITED};
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn config(w: &World, body: &str) {
-    write_file(&w.repo.join(".harness/config.json"), body);
+    write_file(&w.repo.join(".orqadence/config.json"), body);
 }
 
 /// The args after herdr's `--` that the Stage's session started with.
@@ -243,7 +243,7 @@ fn with_typesafe_off_the_moderator_gets_the_input_and_no_key() {
 #[test]
 fn config_changed_between_two_stages_reaches_the_second() {
     let (w, o) = new_world(vec![BdTicket::new("hx-1")]);
-    let file = w.repo.join(".harness/config.json");
+    let file = w.repo.join(".orqadence/config.json");
     w.session(move |p| {
         if p.stage == "implement" {
             write_file(&file, r#"{"review": {"model": "gpt-6-sol"}}"#);
@@ -325,7 +325,7 @@ fn an_unreadable_config_or_a_stage_codex_cannot_run_wakes_the_stage_that_reads_i
         let o = Arc::new(o);
         let _run = spawn_ticket(o.clone(), "hx-1");
 
-        let file = w.repo.join(".harness/config.json");
+        let file = w.repo.join(".orqadence/config.json");
         let reason = reason.replace("{file}", &file.display().to_string());
         w.await_line(&format!("hx-1 stuck in {label}: {reason}"));
         let stage = label.split(' ').next().unwrap();

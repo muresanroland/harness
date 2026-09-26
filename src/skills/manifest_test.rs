@@ -260,7 +260,7 @@ fn a_failed_save_leaves_update_and_remove_undone() {
     .unwrap();
     let manifest = Manifest::load(repo.path()).unwrap();
     // A folder where save writes its temp file makes every save fail.
-    fs::create_dir(repo.path().join(".harness/skills.json.tmp")).unwrap();
+    fs::create_dir(repo.path().join(".orqadence/skills.json.tmp")).unwrap();
 
     *remote.lock().unwrap() = ("def456", vec![("skills/engineering/tdd/SKILL.md", "new")]);
     update(repo.path(), NO_HOME.as_ref(), &*tools, "tdd").unwrap_err();
@@ -502,7 +502,7 @@ fn an_older_manifests_at_is_ignored() {
     write_file(&repo.path().join("src/main.rs"), "fn main() {}");
     write_file(&repo.path().join(".agents/skills/tdd/SKILL.md"), TDD);
     write_file(
-        &repo.path().join(".harness/skills.json"),
+        &repo.path().join(".orqadence/skills.json"),
         r#"{"skills": {"tdd": {"repo": "https://github.com/mattpocock/skills", "at": "src"}}}"#,
     );
     remove(repo.path(), NO_HOME.as_ref(), "tdd").unwrap();
@@ -523,7 +523,7 @@ fn a_skill_under_a_linked_agents_folder_is_neither_removed_nor_updated() {
     )
     .unwrap();
     // .agents swapped for a link out of the checkout, to a folder the
-    // Harness never wrote.
+    // Orqadence never wrote.
     let outside = TempDir::new();
     write_file(&outside.path().join("skills/tdd/SKILL.md"), "not ours");
     fs::remove_dir_all(repo.path().join(".agents")).unwrap();
@@ -581,7 +581,7 @@ fn a_skill_linked_from_a_linked_claude_folder_is_not_removed() {
     )
     .unwrap();
     // .claude swapped for a link out of the checkout, whose skills/tdd is a
-    // link the Harness never made.
+    // link Orqadence never made.
     let outside = TempDir::new();
     fs::create_dir(outside.path().join("skills")).unwrap();
     std::os::unix::fs::symlink("/elsewhere", outside.path().join("skills/tdd")).unwrap();
@@ -594,7 +594,7 @@ fn a_skill_linked_from_a_linked_claude_folder_is_not_removed() {
 }
 
 #[test]
-fn removing_a_skill_keeps_a_link_the_user_put_in_place_of_the_harness_one() {
+fn removing_a_skill_keeps_a_link_the_user_put_in_place_of_the_orqadence_one() {
     let repo = TempDir::new();
     let tools = git(&remote("abc123", TWO_SKILLS));
     add(
@@ -770,8 +770,8 @@ fn installed_at(location: Location) -> (TempDir, TempDir, Arc<Fake>) {
 #[test]
 fn relocating_relinks_the_worktrees_linked_to_the_checkouts_skills() {
     let (repo, home, tools) = installed_at(Location::Checkout);
-    let worktree = repo.path().join(".harness/worktrees/t-1");
-    let run = repo.path().join(".harness/runs/t-1");
+    let worktree = repo.path().join(".orqadence/worktrees/t-1");
+    let run = repo.path().join(".orqadence/runs/t-1");
     link_checkout_skills(repo.path(), &[&worktree, &run]).unwrap();
     let mut manifest = Manifest::load(repo.path()).unwrap();
     let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Repo);
@@ -792,8 +792,8 @@ fn relocating_relinks_the_worktrees_linked_to_the_checkouts_skills() {
 fn relocating_puts_the_skills_back_when_a_worktree_link_cannot_change() {
     use std::os::unix::fs::PermissionsExt;
     let (repo, home, tools) = installed_at(Location::Checkout);
-    let worktree = repo.path().join(".harness/worktrees/t-1");
-    let run = repo.path().join(".harness/runs/t-1");
+    let worktree = repo.path().join(".orqadence/worktrees/t-1");
+    let run = repo.path().join(".orqadence/runs/t-1");
     link_checkout_skills(repo.path(), &[&worktree, &run]).unwrap();
     let locked = worktree.join(".claude/skills");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
@@ -822,7 +822,7 @@ fn relocating_away_from_user_level_leaves_the_users_skill_for_other_checkouts() 
     let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Checkout);
     assert!(said.is_empty(), "{said:?}");
     for skill in [
-        repo.path().join(".harness/skills/tdd/SKILL.md"),
+        repo.path().join(".orqadence/skills/tdd/SKILL.md"),
         home.path().join(".agents/skills/tdd/SKILL.md"),
         home.path().join(".claude/skills/tdd/SKILL.md"),
     ] {
@@ -842,7 +842,7 @@ fn relocating_keeps_the_links_in_a_skill() {
     let mut manifest = Manifest::load(repo.path()).unwrap();
     let said = manifest.relocate(repo.path(), home.path(), &*tools, Location::Checkout);
     assert!(said.is_empty(), "{said:?}");
-    let moved = repo.path().join(".harness/skills/tdd/notes.md");
+    let moved = repo.path().join(".orqadence/skills/tdd/notes.md");
     assert_eq!(fs::read_link(&moved).unwrap(), Path::new("tests.md"));
     assert_eq!(fs::read_to_string(&moved).unwrap(), "good tests");
 }
@@ -869,7 +869,7 @@ fn relocating_puts_back_the_skills_moved_when_one_cannot_move() {
     assert!(said[0].contains("tdd could not move"), "{said:?}");
     assert_eq!(manifest.location, Some(Location::User));
     for name in ["tdd", "code-review"] {
-        assert!(!repo.path().join(".harness/skills").join(name).exists());
+        assert!(!repo.path().join(".orqadence/skills").join(name).exists());
         assert!(home
             .path()
             .join(".claude/skills")
@@ -882,7 +882,7 @@ fn relocating_puts_back_the_skills_moved_when_one_cannot_move() {
     assert!(said.is_empty(), "{said:?}");
     assert_eq!(manifest.location, Some(Location::Checkout));
     assert_eq!(
-        fs::read_to_string(repo.path().join(".harness/skills/tdd/tests.md")).unwrap(),
+        fs::read_to_string(repo.path().join(".orqadence/skills/tdd/tests.md")).unwrap(),
         "good tests"
     );
 }
@@ -891,8 +891,8 @@ fn relocating_puts_back_the_skills_moved_when_one_cannot_move() {
 fn checkout_skills_are_not_linked_through_a_linked_skills_folder() {
     let (repo, _home, _tools) = installed_at(Location::Checkout);
     let outside = TempDir::new();
-    let worktree = repo.path().join(".harness/worktrees/t-1");
-    let run = repo.path().join(".harness/runs/t-1");
+    let worktree = repo.path().join(".orqadence/worktrees/t-1");
+    let run = repo.path().join(".orqadence/runs/t-1");
     fs::create_dir_all(worktree.join(".claude")).unwrap();
     fs::create_dir_all(run.join(".agents")).unwrap();
     // The repo's own setup, and a folder shared with another checkout.

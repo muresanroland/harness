@@ -1,4 +1,4 @@
-//! The skills the Harness ships: one Stage skill per Stage, plus create-pr. 'harness init' copies them into a Target repo. A new skill
+//! The skills Orqadence ships: one Stage skill per Stage, plus create-pr. 'orqa init' copies them into a Target repo. A new skill
 //! is one more line here.
 
 use std::fs;
@@ -32,7 +32,7 @@ pub(crate) const SKILLS: &[(&str, &str)] = &[
 /// user's (no home, none). Only an absent copy falls through: one that
 /// cannot be read is said.
 pub(crate) fn stage_skill(repo: &Path, home: &Path, name: &str) -> Option<Result<String, String>> {
-    let mut dirs = vec![repo.join(".agents/skills"), repo.join(".harness/skills")];
+    let mut dirs = vec![repo.join(".agents/skills"), repo.join(".orqadence/skills")];
     if !home.as_os_str().is_empty() {
         dirs.push(home.join(".agents/skills"));
     }

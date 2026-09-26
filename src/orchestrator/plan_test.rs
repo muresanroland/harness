@@ -57,7 +57,7 @@ pub(crate) fn at_dialog(run: &Path, plan: &str) -> (String, String) {
 /// Implement plans; approved, it finishes ("idle") or settles in `then`;
 /// feedback brings the revised plan; every other Stage succeeds.
 fn plans(w: &World, then: &'static str) {
-    let run = w.repo.join(".harness/runs/hx-1");
+    let run = w.repo.join(".orqadence/runs/hx-1");
     w.session(move |p: &Prompt| match (p.stage.as_str(), p.approved) {
         ("implement", false) => at_dialog(&run, PLAN),
         ("implement", true) if then != "idle" => (String::new(), then.to_string()),
@@ -66,17 +66,17 @@ fn plans(w: &World, then: &'static str) {
     });
 }
 
-/// What the Harness prompts a two-step Plan's session with on approval.
+/// What Orqadence prompts a two-step Plan's session with on approval.
 const APPROVED: &str = "implement the approved plan";
 
 /// Implement runs on codex, whose session writes plan.md and STATUS: plan
 /// and waits; feedback brings the revised plan, approval the implementation.
 fn writes(w: &World) {
     write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"implement": {"app": "codex"}}"#,
     );
-    let run = w.repo.join(".harness/runs/hx-1");
+    let run = w.repo.join(".orqadence/runs/hx-1");
     w.session(move |p: &Prompt| {
         let plan = match (p.stage.as_str(), p.text.as_str()) {
             ("implement", _) => PLAN,
@@ -148,7 +148,7 @@ fn keys(w: &World) -> Vec<String> {
 }
 
 /// Implement starts in plan mode with its own settings file, which holds
-/// the one hook: the harness binary, as the Shell resolved it, in its
+/// the one hook: the orqa binary, as the Shell resolved it, in its
 /// hidden mode. The other claude Stages launch as before.
 #[test]
 fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
@@ -181,7 +181,7 @@ fn implement_starts_in_plan_mode_with_the_hook_in_the_run_directory() {
         settings,
         json!({ "hooks": { "PreToolUse": [{ "matcher": "ExitPlanMode", "hooks": [{
             "type": "command",
-            "command": format!("'/opt/the harness/harness' __plan-hook '{}'", run.join("plan.md").display()),
+            "command": format!("'/opt/the orqa/orqa' __plan-hook '{}'", run.join("plan.md").display()),
         }] }] } })
     );
 }
@@ -463,7 +463,7 @@ fn a_noul_short_a_question_asked_or_no_judgment_raises_the_plan_question() {
         }
         if name == "TypeSafe off" {
             super::write_file(
-                &w.repo.join(".harness/config.json"),
+                &w.repo.join(".orqadence/config.json"),
                 r#"{"typesafe": false}"#,
             );
         }
@@ -540,7 +540,7 @@ fn config_jsons_plan_floor_moves_the_approval_and_a_bad_one_asks() {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
         plans(&w, "idle");
         if !config.is_empty() {
-            write_file(&w.repo.join(".harness/config.json"), config);
+            write_file(&w.repo.join(".orqadence/config.json"), config);
         }
         let (c, i, a) = answer;
         o.cfg.typesafe = typesafe(move |_| Ok(nouls(c, i, a)));
@@ -746,7 +746,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
         ),
     ] {
         let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
-        write_file(&w.repo.join(".harness/config.json"), config);
+        write_file(&w.repo.join(".orqadence/config.json"), config);
         plans(&w, "idle");
         bd_show(&w);
         o.cfg.typesafe = typesafe(|_| Ok(covers(0.9)));
@@ -761,7 +761,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
         let settings: Value = serde_json::from_str(&settings).unwrap();
         let plan_hook = json!([{ "matcher": "ExitPlanMode", "hooks": [{
             "type": "command",
-            "command": format!("'/opt/the harness/harness' __plan-hook '{}'", run.join("plan.md").display()),
+            "command": format!("'/opt/the orqa/orqa' __plan-hook '{}'", run.join("plan.md").display()),
         }] }]);
         assert_eq!(keys(&w), want, "{config} {options:?}");
         if config == split {
@@ -769,7 +769,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
                 start.ends_with(" --model opusplan --effort high"),
                 "{start}"
             );
-            let log = w.repo.join(".harness/orchestrator.log");
+            let log = w.repo.join(".orqadence/orchestrator.log");
             assert_eq!(
                 settings,
                 json!({
@@ -782,7 +782,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
                         "PreToolUse": plan_hook,
                         "PostModelSwitch": [{ "hooks": [{
                             "type": "command",
-                            "command": format!("'/opt/the harness/harness' __switch-hook '{}' 'hx-1'", log.display()),
+                            "command": format!("'/opt/the orqa/orqa' __switch-hook '{}' 'hx-1'", log.display()),
                         }] }],
                     },
                 })
@@ -804,7 +804,7 @@ fn a_split_starts_opusplan_and_approves_by_clearing_the_context() {
 fn a_split_with_no_clear_context_option_is_a_plan_failure() {
     let (w, mut o) = new_world(vec![BdTicket::new("hx-1")]);
     write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"implement": {"model": "claude-opus-5-5", "plan_model": "claude-fable-5-1"}}"#,
     );
     plans(&w, "idle");

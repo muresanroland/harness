@@ -40,7 +40,7 @@ const fn stage(name: &'static str, skill: &'static str, minutes: u64) -> Stage {
     }
 }
 
-// The App each Stage runs on comes from .harness/config.json (app.rs).
+// The App each Stage runs on comes from .orqadence/config.json (app.rs).
 pub(crate) const IMPLEMENT: Stage = stage("implement", "stage-implement", 60);
 pub(crate) const REVIEW: Stage = stage("review", "stage-review", 30);
 pub(crate) const DEBATE: Stage = stage("debate", "stage-moderate", 30);
@@ -181,7 +181,7 @@ pub(crate) struct Config {
     /// TYPESAFE_API_KEY, handed to the Debate pane and the Judgment while
     /// TypeSafe is on (typesafe_key).
     pub(crate) api_key: String,
-    /// The harness binary, which Implement's plan hook runs: resolved once
+    /// The orqa binary, which Implement's plan hook runs: resolved once
     /// when the Shell opens, since after a self-update a fresh lookup can
     /// name the old, deleted image.
     pub(crate) exe: PathBuf,
@@ -517,12 +517,12 @@ pub(crate) fn log_line(time: chrono::DateTime<chrono::Local>, ticket: &str, text
 
 /// A Ticket's worktree under the Target repo.
 pub(crate) fn worktree(repo: &Path, ticket: &str) -> PathBuf {
-    repo.join(".harness").join("worktrees").join(ticket)
+    repo.join(".orqadence").join("worktrees").join(ticket)
 }
 
 /// A Ticket's Run directory under the Target repo.
 pub(crate) fn run_dir(repo: &Path, ticket: &str) -> PathBuf {
-    repo.join(".harness").join("runs").join(ticket)
+    repo.join(".orqadence").join("runs").join(ticket)
 }
 
 /// How a Stage is named in an event: "implement", "review 1", "fix 2".
@@ -799,7 +799,7 @@ impl Orchestrator {
         let skill = match stage_skill(repo, home, st.skill) {
             Some(Ok(skill)) => skill,
             Some(Err(err)) => return Held::Woke(err),
-            None => return Held::Woke("has no Stage skill (run 'harness init')".to_string()),
+            None => return Held::Woke("has no Stage skill (run 'orqa init')".to_string()),
         };
         let manifest = match Manifest::load(repo) {
             Ok(manifest) => manifest,
@@ -1210,7 +1210,7 @@ impl Orchestrator {
             if self.cfg.away.load(Ordering::SeqCst) && st.name != ADDRESS.name {
                 let comment = format!(
                     "{label} asked a question while you were away and needs a manual resume: \
-                     /continue @{ticket} in the Harness Shell puts it to you, its session \
+                     /continue @{ticket} in the Orqadence Shell puts it to you, its session \
                      still waiting in its pane.\n\n{question}\n{}",
                     options
                         .iter()
@@ -1516,7 +1516,7 @@ impl Config {
             repo: repo.to_path_buf(),
             workspace: "w1".to_string(),
             api_key: "sk-test".to_string(),
-            exe: PathBuf::from("/opt/the harness/harness"),
+            exe: PathBuf::from("/opt/the orqa/orqa"),
             typesafe: super::judgment::fake::Fake::down(),
             home: home.to_path_buf(),
             tick: Duration::from_millis(1),

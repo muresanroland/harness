@@ -247,7 +247,10 @@ fn started(file: &Path) -> Option<PathBuf> {
 /// Where a codex or pi session started: the cwd on its first line, codex's
 /// in its payload. Only that line is read, as every session on the machine is.
 fn opened(file: &Path) -> Option<PathBuf> {
-    let line = BufReader::new(File::open(file).ok()?).lines().next()?.ok()?;
+    let line = BufReader::new(File::open(file).ok()?)
+        .lines()
+        .next()?
+        .ok()?;
     let line: Value = serde_json::from_str(&line).ok()?;
     let cwd = line.get("cwd").or(line["payload"].get("cwd"))?;
     cwd.as_str().map(PathBuf::from)
@@ -286,11 +289,11 @@ pub(crate) struct Logged {
     pub(crate) apps: BTreeSet<String>,
 }
 
-/// Every Ticket in .harness/orchestrator.log by its id, the third field of
+/// Every Ticket in .orqadence/orchestrator.log by its id, the third field of
 /// a line 'YYYY-MM-DD HH:MM:SS <id> <text>' (stage::log_line); a line that
 /// does not parse is skipped. The file is kept across runs.
 pub(crate) fn logged(repo: &Path) -> HashMap<String, Logged> {
-    let raw = fs::read_to_string(repo.join(".harness/orchestrator.log")).unwrap_or_default();
+    let raw = fs::read_to_string(repo.join(".orqadence/orchestrator.log")).unwrap_or_default();
     let mut out: HashMap<String, Logged> = HashMap::new();
     for line in raw.lines() {
         let mut fields = line.splitn(4, ' ');

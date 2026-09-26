@@ -1,18 +1,18 @@
-# Harness
+# Orqadence
 
 Drives a beads epic through a fixed multi-agent pipeline, from tickets to open pull requests, with every agent visible in herdr.
 
 ## Language
 
-**Harness**:
+**Orqadence**:
 The globally installed tool as a whole: the Orchestrator and the Shell.
 
 **Target repo**:
-The repository whose epic is being worked on. The Harness is run from inside it; it scaffolds the repo's agent setup once, and the repo owns its conventions from then on.
+The repository whose epic is being worked on. Orqadence is run from inside it; it scaffolds the repo's agent setup once, and the repo owns its conventions from then on.
 _Avoid_: Project, host repo
 
 **Stage skill**:
-A skill owned and shipped by the Harness that holds the instructions for one Stage. Once installed for a Target repo, the installed copy is the one that runs and may be edited there.
+A skill owned and shipped by Orqadence that holds the instructions for one Stage. Once installed for a Target repo, the installed copy is the one that runs and may be edited there.
 _Avoid_: Prompt, template
 
 **Delegate skill**:
@@ -20,17 +20,17 @@ A third-party skill a Stage skill runs for one job of its Stage (test-first impl
 _Avoid_: Override, replacement, work skill
 
 **Shipped skill**:
-Any skill the Harness installs for a Target repo, at the Skill location: the Stage skills, plus create-pr, which the Fix Stage runs. A repo that already has a create-pr of its own is asked whether to keep it, replace it, or take the shipped one beside it as harness-create-pr.
+Any skill Orqadence installs for a Target repo, at the Skill location: the Stage skills, plus create-pr, which the Fix Stage runs. A repo that already has a create-pr of its own is asked whether to keep it, replace it, or take the shipped one beside it as orqadence-create-pr.
 
 **Skill manifest**:
-One checkout's record of the skills the Harness installed for it: the Shipped skills, plus third-party skills named by their source, where they were put, and which of them is each Stage's Delegate skill. It belongs to the checkout, not the repo, even when the skill files themselves are committed.
+One checkout's record of the skills Orqadence installed for it: the Shipped skills, plus third-party skills named by their source, where they were put, and which of them is each Stage's Delegate skill. It belongs to the checkout, not the repo, even when the skill files themselves are committed.
 _Avoid_: Config, lockfile
 
 **Skill location**:
-Where init puts the skills the Harness installs, as the user answers: this checkout, uncommitted (`.harness/skills`, linked into each Ticket's worktree); the repo, committed (`.agents/skills`); or user level (`~/.agents/skills`). A Shipped skill the repo already has in `.agents/skills` stays there.
+Where init puts the skills Orqadence installs, as the user answers: this checkout, uncommitted (`.orqadence/skills`, linked into each Ticket's worktree); the repo, committed (`.agents/skills`); or user level (`~/.agents/skills`). A Shipped skill the repo already has in `.agents/skills` stays there.
 
 **Epic**:
-The beads epic handed to the Harness. Its child Tickets are the whole scope of one run.
+The beads epic handed to Orqadence. Its child Tickets are the whole scope of one run.
 
 **Ticket**:
 A beads issue that is a child of the Epic, and the unit that moves through the Pipeline. It ends as one pull request and closes only when that pull request is merged.
@@ -56,7 +56,7 @@ _Avoid_: Agent, kind, CLI, provider
 The recorded outcome of a Stage, carrying its completion status and, as appropriate, Findings, a Verdict, an opened pull request, a Plan to approve, or a question the Stage needs the user to answer before it can go on. The Orchestrator uses it together with the session's state to decide whether the Stage can advance.
 
 **Run directory**:
-The Ticket's directory under `.harness/runs/`, holding its Stages' evidence: the result files, diffs and Debate transcripts, all flat text. It doubles as the Review's sandbox, so the checkout's skills are linked there and build scratch lands there too, both pruned when the pull request opens.
+The Ticket's directory under `.orqadence/runs/`, holding its Stages' evidence: the result files, diffs and Debate transcripts, all flat text. It doubles as the Review's sandbox, so the checkout's skills are linked there and build scratch lands there too, both pruned when the pull request opens.
 _Avoid_: Logs, workdir, artifacts
 
 **Finding**:
@@ -114,5 +114,5 @@ The deterministic process that owns ticket state, pane placement, and stage tran
 _Avoid_: Script, runner, daemon
 
 **Shell**:
-The full-terminal screen that `harness` alone opens: it lists the Epics, takes slash commands, runs the Orchestrator inside its own process, and is where every event and Question appears.
+The full-terminal screen that `orqa` alone opens: it lists the Epics, takes slash commands, runs the Orchestrator inside its own process, and is where every event and Question appears.
 _Avoid_: TUI, dashboard, Main session, attach

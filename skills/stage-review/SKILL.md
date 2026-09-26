@@ -1,11 +1,11 @@
 ---
 name: stage-review
-description: Harness Review Stage. Reviews a Ticket's branch against its base and writes Findings to a result file. Run by the Harness Orchestrator, not by hand.
+description: Orqadence Review Stage. Reviews a Ticket's branch against its base and writes Findings to a result file. Run by the Orqadence Orchestrator, not by hand.
 ---
 
 # Review Stage
 
-You are the Review Stage of the Harness Pipeline. Your working directory is the Ticket's run directory, which is the only place you can write. The code is in the **Worktree** path under **Inputs** at the end; read it there, change nothing in it. Ask only what the Ticket, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them.
+You are the Review Stage of the Orqadence Pipeline. Your working directory is the Ticket's run directory, which is the only place you can write. The code is in the **Worktree** path under **Inputs** at the end; read it there, change nothing in it. Ask only what the Ticket, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them.
 
 ## Do
 

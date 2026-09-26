@@ -67,7 +67,7 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
     let repo = repo.path();
     let home = trust_home(repo);
     let home = home.path();
-    let worktree = repo.join(".harness/worktrees/hx-1");
+    let worktree = repo.join(".orqadence/worktrees/hx-1");
     pi_protects(repo);
 
     // opencode has no trust dialog: it trusts every directory.
@@ -136,7 +136,7 @@ fn trust_is_read_from_what_the_agents_themselves_record() {
 fn a_trusted_ancestor_covers_a_worktree_and_opencode_trusts_any() {
     let parent = TempDir::new();
     let repo = parent.path().join("repo");
-    let worktree = repo.join(".harness/worktrees/hx-1");
+    let worktree = repo.join(".orqadence/worktrees/hx-1");
     let home = trust_home(parent.path());
     pi_protects(&repo);
     for name in ["pi", "copilot", "cursor", "opencode"] {
@@ -168,7 +168,7 @@ fn pi_trusts_a_folder_with_nothing_to_protect() {
     let home = TempDir::new();
     let home = home.path();
     let repo = home.join("repo");
-    let worktree = repo.join(".harness/worktrees/hx-1");
+    let worktree = repo.join(".orqadence/worktrees/hx-1");
     fs::create_dir_all(&worktree).unwrap();
     // Skills at the User location are no project's.
     pi_protects(home);

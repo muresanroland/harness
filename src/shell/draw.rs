@@ -10,12 +10,13 @@ use std::sync::atomic::Ordering;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Padding, Paragraph};
+use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use ratatui::Frame;
 
-use super::logo::{
-    banner, lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GRAY, GREEN, HOP, MUTED, ORANGE, PINK,
-    PURPLE, RED, REST, TEXT, TICKET_COLORS,
+use super::brand::{
+    lerp, logo_mark, quantize, BLUE, BORDER, CURSOR_ROWS, CYAN, DARK_ORANGE, FRAME, GREEN, MUTED,
+    ORANGE, PANE_COLORS, PINK, PURPLE, RED, REST, TEXT, TICKET_COLORS, WORDMARK, WORDMARK_ROWS,
+    YELLOW,
 };
 use super::{suffix, About, Epic, Screen};
 use crate::orchestrator::limit::{holds, until};
@@ -91,7 +92,8 @@ pub(crate) fn draw(f: &mut Frame, s: &Screen) {
     }
 }
 
-/// The Shell drawn into `area`: header, status row, Overall, the TICKETS
+/// The Shell drawn into `area`: header, status row and Overall (or the
+/// status box beside the header), the TICKETS
 /// sections, RECENT (newest at the bottom), the boxed QUESTION (a plan
 /// docks in the modal instead), the red MERGE TO UNBLOCK box, the amber
 /// LIMITED box, the / or @ list, notice, input. The row from which the list,
@@ -113,9 +115,11 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
     // and its options do not fit, and on a screen too short for even that
     // the Question's bottom is cut. A taller tree scrolls (PageUp, PageDown
     // with the input empty).
+    let beside = beside(area);
+    let status_h = if beside { 0 } else { 1 };
     let free = area
         .height
-        .saturating_sub(head_h + 5 + unblock_h + limited_h);
+        .saturating_sub(head_h + 2 * status_h + 3 + unblock_h + limited_h);
     let list = list_lines(
         s,
         area.width.saturating_sub(2) as usize,
@@ -139,8 +143,8 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
     let [head, top, over, _, tickets, recent, question, merge, limit, lists, notice, input] =
         Layout::vertical([
             Constraint::Length(head_h),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(status_h),
+            Constraint::Length(status_h),
             Constraint::Length(1),
             Constraint::Length(tickets_h),
             Constraint::Min(0),
@@ -152,12 +156,19 @@ fn shell(f: &mut Frame, area: Rect, s: &Screen) -> u16 {
             Constraint::Length(1),
         ])
         .areas(area);
-    header(f, head, s);
-    f.render_widget(
-        status_line(s, top.width.saturating_sub(1) as usize),
-        inset(top),
-    );
-    f.render_widget(overall(s, over.width.saturating_sub(1)), inset(over));
+    if beside {
+        let [left, right] =
+            Layout::horizontal([Constraint::Length(HEADER_W), Constraint::Min(0)]).areas(head);
+        header(f, left, s, false);
+        status_box(f, right, s);
+    } else {
+        header(f, head, s, true);
+        f.render_widget(
+            status_line(s, top.width.saturating_sub(1) as usize),
+            inset(top),
+        );
+        f.render_widget(overall(s, over.width.saturating_sub(1)), inset(over));
+    }
     f.render_widget(
         Paragraph::new(scrolled(s, tree, tickets_h as usize)),
         inset(tickets),
@@ -212,57 +223,84 @@ fn inset(r: Rect) -> Rect {
     Rect::new(r.x + 1, r.y, r.width.saturating_sub(1), r.height)
 }
 
-/// Only a tiny terminal (under 64 columns or 18 rows) drops the logo and banner for one plain line.
-fn compact(area: Rect) -> bool {
-    area.width < 64 || area.height < 18
+/// The full header's width, 88 columns inside its border, and the least
+/// the status box beside it takes.
+const HEADER_W: u16 = 90;
+const STATUS_W: u16 = 54;
+
+/// A landscape Shell (at least twice as many columns as rows) with room for
+/// both boxes puts the status in its own box beside the header; otherwise
+/// the status row and Overall stack under it.
+fn beside(area: Rect) -> bool {
+    header_height(area) == 8 && area.width >= 2 * area.height && area.width >= HEADER_W + STATUS_W
 }
 
+/// Only a short terminal (under 18 rows) folds the header to one line.
 fn header_height(area: Rect) -> u16 {
-    if compact(area) {
+    if area.height < 18 {
         1
     } else {
         8
     }
 }
 
-/// Logo left, hopping while a run is live; beside it the banner, the version in gray and the folder.
-fn header(f: &mut Frame, area: Rect, s: &Screen) {
-    if area.height < 8 || area.width < 64 {
-        let l = Line::from(vec![
-            "HARNESS ".fg(TEXT).bold(),
-            s.shown_version().fg(GRAY),
-            "  ".into(),
-            s.folder.as_str().fg(MUTED),
-        ]);
-        f.render_widget(l, Rect::new(area.x, area.y, area.width, 1));
-        return;
+/// The lit pane and whether the cursor shows. In a live run the lit pane
+/// steps clockwise every 700 ms from the run's start, the cursor on for the
+/// first half of each step; at rest the bottom right, the cursor steady.
+fn lit(s: &Screen) -> (usize, bool) {
+    if !s.running {
+        return (REST, true);
     }
-    let dy = if s.running {
-        HOP[s.ticks as usize % HOP.len()]
-    } else {
-        REST
-    };
-    s.logo.render_at(
-        Rect::new(area.x + 1, area.y, s.logo.width(), s.logo.height() + 1),
-        dy,
-        f.buffer_mut(),
-    );
-    let x = area.x + s.logo.width() + 4;
-    let w = area.right().saturating_sub(x);
-    banner(
-        "THE HARNESS",
-        Rect::new(x, area.y + 1, w, 3),
-        s.ticks,
-        f.buffer_mut(),
-    );
-    f.render_widget(
-        Line::from(s.shown_version().fg(GRAY)),
-        Rect::new(x, area.y + 4, w, 1),
-    );
-    f.render_widget(
-        Line::from(s.folder.as_str().fg(MUTED)),
-        Rect::new(x, area.y + 5, w, 1),
-    );
+    let half = s.ticks.saturating_sub(s.started) * super::TICK.as_millis() as u64 / 350;
+    ((half / 2 % 4) as usize, half.is_multiple_of(2))
+}
+
+/// A rounded box, the folder on its top edge unless the status box beside
+/// it carries it, the version on its bottom; inside, the pane mark and, as the width allows,
+/// the wordmark or the plain name, then the cursor in the lit pane's color.
+/// Shorter than the box, one line: the name and the cursor.
+pub(super) fn header(f: &mut Frame, area: Rect, s: &Screen, folder: bool) {
+    let (lit, on) = lit(s);
+    let cursor =
+        |text: &'static str| Span::styled(if on { text } else { "" }, fg(PANE_COLORS[lit]));
+    if area.height < 8 {
+        let l = Line::from(vec![Span::styled(" Orqadence ", bold(CYAN)), cursor("▁▁")]);
+        return f.render_widget(l, area);
+    }
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(FRAME))
+        .title_bottom(
+            Line::from(Span::styled(
+                format!(" {} ", s.shown_version()),
+                fg(PANE_COLORS[3]),
+            ))
+            .right_aligned(),
+        );
+    if folder {
+        let folder = Span::styled(format!(" {} ", s.folder), fg(YELLOW));
+        block = block.title(Line::from(folder).right_aligned());
+    }
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let mark = Rect::new(inner.x + 2, inner.y, 13, 6).intersection(inner);
+    f.render_widget(Paragraph::new(logo_mark(lit)), mark);
+    let x = inner.x + 18;
+    let rest = Rect::new(x, inner.y, inner.right().saturating_sub(x), inner.height);
+    if inner.width >= 88 {
+        let lines: Vec<Line> = WORDMARK_ROWS
+            .iter()
+            .zip(CURSOR_ROWS)
+            .map(|(w, c)| Line::from(vec![Span::styled(*w, fg(WORDMARK)), " ".into(), cursor(c)]))
+            .collect();
+        f.render_widget(Paragraph::new(lines), rest);
+    } else if inner.width >= 24 {
+        let l = Line::from(vec![
+            Span::styled("Orqadence ", bold(WORDMARK)),
+            cursor("▁▁"),
+        ]);
+        f.render_widget(l, Rect::new(x, inner.y + 2, rest.width, 1));
+    }
 }
 
 /// The status of a Ticket: the run's State first (a live snapshot or the
@@ -372,12 +410,18 @@ fn listed(s: &Screen) -> impl Iterator<Item = &Epic> {
     })
 }
 
-/// Live: the spinner, RUNNING (STOPPING while Ticket threads leave) and a
-/// count per label over the listed Epics' Tickets, parked only when there
-/// is one; wider than `width` the glyphs go, then the end is cut. Idle:
-/// IDLE, the open Epics and their Tickets, and the saved run when there is one.
-fn status_line(s: &Screen, width: usize) -> Line<'static> {
-    if s.running {
+/// A status part: the separator before it on the status row, and its spans.
+type Part = (Span<'static>, Vec<Span<'static>>);
+
+/// The status row's head and its parts. Live: the spinner and RUNNING
+/// (STOPPING while Ticket threads leave), then a count per label over the
+/// listed Epics' Tickets, with its glyph or not, parked only when there is
+/// one. Idle: IDLE, then the open Epics and their Tickets, and the saved run
+/// when there is one. Either way AWAY while the user is Away, and the hidden
+/// Questions' count.
+fn status_parts(s: &Screen, glyphs: bool) -> (Vec<Span<'static>>, Vec<Part>) {
+    let mut parts: Vec<Part> = Vec::new();
+    let head = if s.running {
         let all: Vec<Status> = listed(s)
             .flat_map(|e| &e.tickets)
             .map(|t| status(s, t))
@@ -389,7 +433,7 @@ fn status_line(s: &Screen, width: usize) -> Line<'static> {
         };
         // Parked before merged, so a narrow screen cuts merged, which the
         // Overall bar also carries.
-        let parts = [
+        let counts = [
             (Status::Working, "●", "working", TEXT),
             (Status::NeedsYou, "◆", "needs you", ORANGE),
             (Status::Waiting, "◇", "waiting on a merge", MUTED),
@@ -397,66 +441,105 @@ fn status_line(s: &Screen, width: usize) -> Line<'static> {
             (Status::Parked, "◌", "parked", MUTED),
             (Status::Merged, "✓", "merged", GREEN),
         ];
-        let row = |glyphs: bool| {
-            let mut spans = vec![
-                Span::styled(SPINNER[(s.ticks / 4) as usize % SPINNER.len()], bold(c)),
-                Span::styled(word, bold(c)),
-            ];
-            for (want, glyph, what, c) in parts {
-                let n = all.iter().filter(|st| **st == want).count();
-                if want == Status::Parked && n == 0 {
-                    continue;
-                }
-                spans.push(Span::raw("  "));
-                if glyphs {
-                    spans.push(Span::styled(format!("{glyph} "), bold(c)));
-                }
-                spans.push(Span::styled(format!("{n} {what}"), fg(c)));
+        for (want, glyph, what, c) in counts {
+            let n = all.iter().filter(|st| **st == want).count();
+            if want == Status::Parked && n == 0 {
+                continue;
             }
-            Line::from(waiting(s, spans))
-        };
-        let line = row(true);
-        return if line.width() > width {
-            row(false)
-        } else {
-            line
-        };
-    }
-    let tickets: usize = s.epics.iter().map(|e| e.tickets.len()).sum();
-    let mut spans = vec![
-        Span::styled("○ IDLE", bold(MUTED)),
-        Span::styled(
-            format!("    {}", plural(s.epics.len(), "open Epic")),
-            fg(TEXT),
-        ),
-        dot(),
-        Span::styled(plural(tickets, "Ticket"), fg(TEXT)),
-    ];
-    if !s.state.epic.is_empty() {
-        spans.push(dot());
-        spans.push(Span::styled(
-            format!("saved run on {}, /continue resumes", s.state.epic),
-            fg(PURPLE),
-        ));
-    }
-    Line::from(waiting(s, spans))
-}
-
-/// The status row ends in AWAY while the user is Away, and the hidden
-/// Questions' count.
-fn waiting(s: &Screen, mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+            let mut body = Vec::new();
+            if glyphs {
+                body.push(Span::styled(format!("{glyph} "), bold(c)));
+            }
+            body.push(Span::styled(format!("{n} {what}"), fg(c)));
+            parts.push((Span::raw("  "), body));
+        }
+        vec![
+            Span::styled(SPINNER[(s.ticks / 4) as usize % SPINNER.len()], bold(c)),
+            Span::styled(word, bold(c)),
+        ]
+    } else {
+        let tickets: usize = s.epics.iter().map(|e| e.tickets.len()).sum();
+        let text = |t: String| vec![Span::styled(t, fg(TEXT))];
+        parts.push((Span::raw("    "), text(plural(s.epics.len(), "open Epic"))));
+        parts.push((dot(), text(plural(tickets, "Ticket"))));
+        if !s.state.epic.is_empty() {
+            let saved = format!("saved run on {}", s.state.epic);
+            parts.push((dot(), vec![Span::styled(saved, fg(PURPLE))]));
+            let resume = Span::styled("/continue resumes", fg(PURPLE));
+            parts.push((Span::styled(", ", fg(PURPLE)), vec![resume]));
+        }
+        vec![Span::styled("○ IDLE", bold(MUTED))]
+    };
     if s.cfg.away.load(Ordering::SeqCst) {
-        spans.push(dot());
-        spans.push(Span::styled("AWAY", bold(ORANGE)));
+        parts.push((dot(), vec![Span::styled("AWAY", bold(ORANGE))]));
     }
     if s.hidden && !s.questions.is_empty() {
-        spans.push(dot());
-        spans.push(Span::styled(
-            format!("{} waiting", plural(s.questions.len(), "question")),
-            fg(ORANGE),
-        ));
+        let n = format!("{} waiting", plural(s.questions.len(), "question"));
+        parts.push((dot(), vec![Span::styled(n, fg(ORANGE))]));
     }
-    spans
+    (head, parts)
+}
+
+/// The status row: the head and every part on one line; wider than `width`
+/// the glyphs go, then the end is cut.
+fn status_line(s: &Screen, width: usize) -> Line<'static> {
+    let row = |glyphs: bool| {
+        let (mut spans, parts) = status_parts(s, glyphs);
+        for (sep, body) in parts {
+            spans.push(sep);
+            spans.extend(body);
+        }
+        Line::from(spans)
+    };
+    let line = row(true);
+    if line.width() > width {
+        row(false)
+    } else {
+        line
+    }
+}
+
+/// The status box, beside the header: a rounded box, padded all round so
+/// its four lines sit level with the wordmark's lowercase letters, the
+/// folder on its bottom edge; inside, the head, then as many parts to a line
+/// as fit (without their glyphs when that is too many lines), and the Overall
+/// bar on its last row.
+fn status_box(f: &mut Frame, area: Rect, s: &Screen) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(fg(FRAME))
+        .padding(Padding::uniform(1))
+        .title_bottom(
+            Line::from(Span::styled(format!(" {} ", s.folder), fg(YELLOW))).right_aligned(),
+        );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let packed = |glyphs: bool| {
+        let (head, parts) = status_parts(s, glyphs);
+        let mut lines = vec![Line::from(head)];
+        let mut line: Vec<Span> = Vec::new();
+        for (sep, body) in parts {
+            let used: usize = line.iter().chain(&body).map(Span::width).sum();
+            if !line.is_empty() && used + sep.width() > inner.width as usize {
+                lines.push(Line::from(std::mem::take(&mut line)));
+            }
+            if !line.is_empty() {
+                line.push(sep);
+            }
+            line.extend(body);
+        }
+        lines.push(Line::from(line));
+        lines
+    };
+    let rows = inner.height.saturating_sub(1) as usize;
+    let mut lines = packed(true);
+    if lines.len() > rows {
+        lines = packed(false);
+    }
+    lines.truncate(rows);
+    f.render_widget(Paragraph::new(lines), inner);
+    let last = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    f.render_widget(overall(s, inner.width), last);
 }
 
 /// Filled cells over empty, labelled N/M PRs; purple blending to green by the
@@ -691,7 +774,7 @@ fn question_lines(s: &Screen, width: usize, room: usize) -> Vec<Line<'static>> {
 /// newer, then `HH:MM:SS  <suffix> <title>  <event>` with the newest on the
 /// last row, `s.recent` rows up from it, which it keeps inside the lines.
 /// The Ticket column is as wide as the longest name shown, up to 34% of
-/// `width`, cut with … and colored per Ticket; run-level rows read harness.
+/// `width`, cut with … and colored per Ticket; run-level rows read orqadence.
 fn recent_lines(s: &Screen, height: usize, width: u16) -> Vec<Line<'static>> {
     let rows = height.saturating_sub(1);
     let back = s.recent.get().min(s.events.len().saturating_sub(rows));
@@ -702,7 +785,7 @@ fn recent_lines(s: &Screen, height: usize, width: u16) -> Vec<Line<'static>> {
         .iter()
         .map(|e| match &e.ticket {
             Some(id) => (e, s.name(id), ticket_color(id)),
-            None => (e, "harness".to_string(), MUTED),
+            None => (e, "orqadence".to_string(), MUTED),
         })
         .collect();
     let name_width = shown
