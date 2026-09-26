@@ -1127,7 +1127,7 @@ impl Screen {
 
     /// Closes the done Epic in bd, its summary in the reason, after a comment
     /// that lists each Ticket with its PR, from the 'PR merged: <url>'
-    /// poll_merges closed it with.
+    /// poll_merges closed it with; a Ticket closed any other way has no PR.
     fn close_epic(&mut self, epic: &str) {
         let tickets = self
             .epics
@@ -1139,7 +1139,10 @@ impl Screen {
             .iter()
             .map(|t| {
                 let reason = &t.close_reason;
-                let pr = reason.strip_prefix("PR merged: ").unwrap_or(reason);
+                let pr = reason
+                    .strip_prefix("PR merged: ")
+                    .filter(|url| !url.is_empty())
+                    .unwrap_or("no PR");
                 format!("- {} {}: {pr}", t.id, t.title)
             })
             .collect();

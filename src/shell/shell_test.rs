@@ -4319,3 +4319,30 @@ fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_
         assert!(sum.epic == "hx" && sum.tickets[0].merged);
     }
 }
+
+/// A Ticket closed by hand, not by its merged PR, shows as having no PR in
+/// the close comment, never its reason in the PR's place.
+#[test]
+fn the_close_comment_names_no_pr_for_a_ticket_closed_by_hand() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.lock().tickets.insert(
+        0,
+        BdTicket {
+            status: "closed".to_string(),
+            issue_type: "task".to_string(),
+            close_reason: "Done".to_string(),
+            ..BdTicket::new("hx-0")
+        },
+    );
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_end(&mut s);
+    s.key(key(KeyCode::Esc));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(
+        w.called("bd comments add hx "),
+        vec!["bd comments add hx Every Ticket merged:\n- hx-0 Ticket hx-0: no PR\n- hx-1 Ticket hx-1: https://example.test/pr/hx-1"]
+    );
+}
