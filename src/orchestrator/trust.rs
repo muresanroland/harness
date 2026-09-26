@@ -132,12 +132,35 @@ pub(super) fn cursor_slug(dir: &Path) -> String {
 }
 
 /// The folder claude keeps a directory's transcripts in, under
-/// ~/.claude/projects: every character but a letter or digit a dash.
-// ponytail: claude cuts a slug past 200 characters and adds a hash; a
-// worktree that deep is not found, and costs nothing.
+/// ~/.claude/projects: every character but a letter or digit a dash, and
+/// past 200 its first 200 and a hash of the path. claude counts and hashes
+/// a path's UTF-16 units, as JavaScript does.
 pub(crate) fn claude_slug(dir: &Path) -> String {
-    dir.to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    let path = dir.to_string_lossy();
+    let slug: String = path
+        .encode_utf16()
+        .map(|u| match char::from_u32(u.into()) {
+            Some(c) if c.is_ascii_alphanumeric() => c,
+            _ => '-',
+        })
+        .collect();
+    if slug.len() <= 200 {
+        return slug;
+    }
+    let hash = path.encode_utf16().fold(0i32, |h, u| {
+        h.wrapping_shl(5).wrapping_sub(h).wrapping_add(u.into())
+    });
+    let (mut n, mut base36) = (i64::from(hash).unsigned_abs(), Vec::new());
+    loop {
+        base36.push(char::from_digit((n % 36) as u32, 36).unwrap());
+        n /= 36;
+        if n == 0 {
+            break;
+        }
+    }
+    format!(
+        "{}-{}",
+        &slug[..200],
+        base36.iter().rev().collect::<String>()
+    )
 }
