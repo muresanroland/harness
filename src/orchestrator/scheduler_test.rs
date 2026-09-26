@@ -146,7 +146,7 @@ fn one_run_per_target_repo_but_a_stale_lock_does_not_block_a_restart() {
     );
 
     drop(release);
-    fs::write(repo.path().join(".harness/lock"), "999999").unwrap(); // a killed Orchestrator's stale lock
+    fs::write(repo.path().join(".orqadence/lock"), "999999").unwrap(); // a killed Orchestrator's stale lock
     assert!(
         acquire_lock(repo.path()).is_ok(),
         "a stale lock must not block a restart"

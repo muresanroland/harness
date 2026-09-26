@@ -12,11 +12,11 @@ use super::modal::{divider, dock, joined, wrap_spans};
 use super::{bold, cut, fg, SPINNER};
 use crate::orchestrator::app::{Check, APPS};
 use crate::setup;
+use crate::shell::brand::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::config::{
     distinct, family_label, floor_name, job_name, job_said, short, short_commit, Field, Listing,
     Pick, Settings, Typing, APPS_PAGE, FLOORS, ROWS, SECTIONS, SKILLS_PAGE, TYPESAFE_PAGE,
 };
-use crate::shell::logo::{BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::Screen;
 use crate::skills::manifest::{Location, NONE};
 
@@ -70,7 +70,7 @@ pub(super) fn config(f: &mut Frame, s: &Screen) {
 /// The Apps page: each App of the table, installed with its version or
 /// greyed with its homepage; the experimental ones under their own heading.
 fn apps_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
-    let about = "The agent CLIs a Stage runs on, found on PATH when /config opened; harness init installs herdr's integration for each.";
+    let about = "The agent CLIs a Stage runs on, found on PATH when /config opened; orqa init installs herdr's integration for each.";
     let mut lines = head("Apps", st.apps_summary(), about, width);
     lines.push(Line::default());
     let mut at = 0;
@@ -147,14 +147,14 @@ fn item(
 }
 
 /// The Skills page: where init put the skills, read-only, then each skill
-/// the Harness installed with its source @ commit and the jobs using it.
+/// Orqadence installed with its source @ commit and the jobs using it.
 fn skills_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
-    let about = "The skills the Harness installed, from their sources; the Skill manifest is .harness/skills.json.";
+    let about = "The skills Orqadence installed, from their sources; the Skill manifest is .orqadence/skills.json.";
     let summary = format!("{} installed", st.skills());
     let mut lines = head("Skills", summary, about, width);
     lines.push(Line::default());
     let location = match st.manifest.location.unwrap_or(Location::Repo) {
-        Location::Checkout => ("this checkout, uncommitted", ".harness/skills"),
+        Location::Checkout => ("this checkout, uncommitted", ".orqadence/skills"),
         Location::Repo => ("the repo, committed", ".agents/skills"),
         Location::User => ("user level", "~/.agents/skills"),
     };
@@ -176,7 +176,7 @@ fn skills_page(st: &Settings, width: usize) -> (Vec<Line<'static>>, usize) {
     for (i, name) in st.skill_names().into_iter().enumerate() {
         let skill = &st.manifest.skills[&name];
         let value = match skill.shipped {
-            true => vec![Span::styled("shipped with the Harness", fg(MUTED))],
+            true => vec![Span::styled("shipped with Orqadence", fg(MUTED))],
             false => vec![
                 Span::styled(short(&skill.repo).to_string(), fg(TEXT)),
                 Span::styled(format!(" @ {}", short_commit(&skill.commit)), fg(MUTED)),
@@ -633,7 +633,7 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
             Typing::Source => (
                 "source › ".to_string(),
                 text.clone(),
-                "owner/repo, owner/repo/path, or a git or GitHub URL (…/tree/<ref>/<path>): the Harness clones it.".to_string(),
+                "owner/repo, owner/repo/path, or a git or GitHub URL (…/tree/<ref>/<path>): Orqadence clones it.".to_string(),
             ),
             Typing::Key => (
                 "TypeSafe key › ".to_string(),
@@ -643,7 +643,7 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
             Typing::Floor(floor) => (
                 format!("{} › ", floor_name(floor)),
                 text.clone(),
-                "A number from 0 to 1, or nothing for the default, saved at once to .harness/config.json; the next Judgment reads it.".to_string(),
+                "A number from 0 to 1, or nothing for the default, saved at once to .orqadence/config.json; the next Judgment reads it.".to_string(),
             ),
         };
         let (help, color) = st.note.clone().unwrap_or((help, MUTED));
@@ -673,7 +673,7 @@ fn foot_lines(s: &Screen, st: &Settings, width: usize) -> Vec<Line<'static>> {
             (st.note_of(row, field), MUTED)
         }
         (None, None) => (
-            "↑↓ picks a Stage; Enter opens it. Every change saves at once to .harness/config.json."
+            "↑↓ picks a Stage; Enter opens it. Every change saves at once to .orqadence/config.json."
                 .to_string(),
             MUTED,
         ),

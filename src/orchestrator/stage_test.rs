@@ -99,7 +99,7 @@ fn state_that_cannot_be_saved_is_said_on_the_panel() {
     );
     let (events, received) = channel();
     o.cfg.events = events;
-    std::fs::create_dir_all(repo.path().join(".harness/state.json")).unwrap(); // a directory in the file's place
+    std::fs::create_dir_all(repo.path().join(".orqadence/state.json")).unwrap(); // a directory in the file's place
     o.update("hx-1", |_| {});
     let got: Vec<_> = received.try_iter().collect();
     assert!(
@@ -128,10 +128,10 @@ fn update_saves_the_state_file_and_ticket_snapshots_it() {
         "{ts:?}"
     );
     assert_eq!(load_state(repo.path()).unwrap().tickets["hx-1"], ts);
-    assert_eq!(o.run_dir("hx-1"), repo.path().join(".harness/runs/hx-1"));
+    assert_eq!(o.run_dir("hx-1"), repo.path().join(".orqadence/runs/hx-1"));
     assert_eq!(
         o.worktree("hx-1"),
-        repo.path().join(".harness/worktrees/hx-1")
+        repo.path().join(".orqadence/worktrees/hx-1")
     );
     assert!(!o.stopping());
     o.stop.store(true, Ordering::SeqCst);

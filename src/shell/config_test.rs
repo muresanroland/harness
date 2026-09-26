@@ -1,8 +1,8 @@
 //! /config over fake Tools and the fake world: the docked modal, its pick
 //! lists, the probe, and a change saved during a run.
 
+use super::brand::{PURPLE, RED};
 use super::config::{put, Field};
-use super::logo::{PURPLE, RED};
 use super::shell_test::{
     asking, await_line, cols, find, key, logged, render, row, rows, screen_at, shell, type_in,
     type_line,
@@ -58,7 +58,7 @@ fn await_probe(s: &mut Screen) {
 }
 
 fn config_json(repo: &Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(repo.join(".harness/config.json")).unwrap())
+    serde_json::from_str(&std::fs::read_to_string(repo.join(".orqadence/config.json")).unwrap())
         .unwrap()
 }
 
@@ -87,7 +87,7 @@ fn config_opens_docked_at_160x45_and_as_a_box_at_100x30() {
     assert!(x < 67, "RECENT is not in the Shell's left part");
 
     let buf = render(&s, 100, 30);
-    assert_eq!(find(&buf, "╭"), Some((8, 2)), "{:#?}", rows(&buf));
+    assert_eq!(buf[(8, 2)].symbol(), "╭", "{:#?}", rows(&buf));
     assert!(row(&buf, 2).contains("╭ /config ─"), "{:?}", row(&buf, 2));
     assert_eq!(find(&buf, "PIPELINE"), Some((10, 3)), "{:#?}", rows(&buf));
     assert!(row(&buf, 29).starts_with('›'), "{:#?}", rows(&buf));
@@ -100,7 +100,7 @@ fn config_opens_docked_at_160x45_and_as_a_box_at_100x30() {
 #[test]
 fn review_to_codex_a_listed_model_and_an_effort_save_all_three() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     write_file(
         &file,
         r#"{"review": {"app": "claude", "model": "opus", "effort": "high"}}"#,
@@ -148,7 +148,7 @@ fn review_to_codex_a_listed_model_and_an_effort_save_all_three() {
     );
     assert_eq!(
         note(&s),
-        "saved: Review codex gpt-6-sol/high, in .harness/config.json"
+        "saved: Review codex gpt-6-sol/high, in .orqadence/config.json"
     );
     assert!(s.settings.as_ref().unwrap().saved.is_some());
 }
@@ -158,7 +158,7 @@ fn review_to_codex_a_listed_model_and_an_effort_save_all_three() {
 #[test]
 fn a_typed_id_whose_probe_fails_keeps_the_old_value_and_shows_the_error() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     let before = r#"{"implement": {"model": "opus"}}"#;
     write_file(&file, before);
     let tools = apps("claude-nope");
@@ -213,7 +213,7 @@ fn a_typed_id_whose_probe_fails_keeps_the_old_value_and_shows_the_error() {
 fn a_model_is_probed_once_while_config_is_open() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"implement": {"model": "opus"}}"#,
     );
     let tools = apps("");
@@ -271,7 +271,7 @@ fn none_typed_off_the_fallback_is_refused_unprobed() {
     s.key(key(KeyCode::Enter));
     assert!(s.settings.as_ref().unwrap().probe.is_none());
     assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     assert_eq!(
         note(&s),
         format!(
@@ -336,7 +336,7 @@ fn a_change_during_a_run_logs_config_and_the_next_stage_starts_on_it() {
 fn the_pipeline_list_a_stage_page_and_a_pick_list_render() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"implement": {"model": "opus", "effort": "high"}, "side_b": {"model": "gpt-6-sol"}}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -511,7 +511,7 @@ fn a_refused_probe_shows_what_the_app_said() {
         s.key(key(KeyCode::Enter));
         await_probe(&mut s);
         assert_eq!(note(&s), want);
-        assert!(!repo.path().join(".harness/config.json").exists());
+        assert!(!repo.path().join(".orqadence/config.json").exists());
     }
 }
 
@@ -520,7 +520,7 @@ fn a_refused_probe_shows_what_the_app_said() {
 #[test]
 fn a_model_without_the_effort_resets_it_and_the_current_pick_changes_nothing() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     write_file(
         &file,
         r#"{"review": {"model": "gpt-6-sol", "effort": "xhigh"}}"#,
@@ -553,7 +553,7 @@ fn a_model_without_the_effort_resets_it_and_the_current_pick_changes_nothing() {
 fn a_row_on_an_unknown_app_can_be_moved_to_a_listed_one() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"fix": {"app": "gemini"}}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -581,7 +581,7 @@ fn a_row_on_an_unknown_app_can_be_moved_to_a_listed_one() {
 fn typesafe_reads_off_while_config_json_turns_it_off() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"typesafe": false}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -595,7 +595,7 @@ fn typesafe_reads_off_while_config_json_turns_it_off() {
 #[test]
 fn a_config_json_not_an_object_is_refused_not_replaced() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     write_file(&file, r#"{"fix": {"app": "gemini"}}"#);
     let mut s = screen_at(apps(""), repo.path());
     type_line(&mut s, "/config");
@@ -628,7 +628,7 @@ fn a_config_json_not_an_object_is_refused_not_replaced() {
 fn a_hand_edited_config_that_breaks_a_rule_refuses_the_run_and_shows_it() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"implement": {"model": "claude-opus-5-5"}, "review": {"app": "claude", "model": "opus"}}"#,
     );
     let mut s = shell(&w);
@@ -645,7 +645,7 @@ fn a_hand_edited_config_that_breaks_a_rule_refuses_the_run_and_shows_it() {
         "{:#?}",
         rows(&buf)
     );
-    assert_eq!(buf[(93, 4)].fg, super::logo::RED);
+    assert_eq!(buf[(93, 4)].fg, super::brand::RED);
     keys(&mut s, &[KeyCode::Down]);
     let buf = render(&s, 160, 45);
     assert!(find(&buf, "CHECKS").is_some(), "{:#?}", rows(&buf));
@@ -661,7 +661,7 @@ fn a_hand_edited_config_that_breaks_a_rule_refuses_the_run_and_shows_it() {
 #[test]
 fn a_refused_pick_says_the_rule_and_leaves_config_json_as_it_was() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     let before = "{ \"implement\":{\"model\":\"opus\"} }\n";
     write_file(&file, before);
     let tools = apps("");
@@ -745,7 +745,7 @@ fn the_toggle_off_with_implement_at_default_is_refused() {
             "Pick Implement's model first: the split needs a named model for each half."
         );
     }
-    assert!(!repo.path().join(".harness/config.json").exists());
+    assert!(!repo.path().join(".orqadence/config.json").exists());
 }
 
 /// Turning the toggle off opens the plan's model list, Implement's App's
@@ -756,7 +756,7 @@ fn the_toggle_off_with_implement_at_default_is_refused() {
 #[test]
 fn the_toggle_splits_on_a_plan_model_and_joins_again() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     write_file(
         &file,
         r#"{"implement": {"model": "opus", "effort": "high"}}"#,
@@ -813,7 +813,7 @@ fn the_toggle_splits_on_a_plan_model_and_joins_again() {
     assert_eq!(config_json(repo.path()), split);
     assert_eq!(
         note(&s),
-        "saved: Implement claude claude-fable-5-1→claude-opus-5-5/high, in .harness/config.json"
+        "saved: Implement claude claude-fable-5-1→claude-opus-5-5/high, in .orqadence/config.json"
     );
     let buf = render(&s, 160, 45);
     let right: Vec<String> = (5..16).map(|y| text(&buf, y, 99, 158)).collect();
@@ -874,7 +874,7 @@ fn the_toggle_splits_on_a_plan_model_and_joins_again() {
 fn a_pick_list_marks_each_model_that_would_break_a_rule() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"implement": {"model": "opus"}, "review": {"app": "claude", "model": "sonnet"}}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -900,7 +900,7 @@ fn a_pick_list_marks_each_model_that_would_break_a_rule() {
         ]
     );
     let (x, y) = find(&buf, "✗ side A's family").unwrap();
-    assert_eq!(buf[(x, y)].fg, super::logo::RED);
+    assert_eq!(buf[(x, y)].fg, super::brand::RED);
 
     // The Review's model list: Implement's opus.
     keys(
@@ -966,7 +966,7 @@ fn the_apps_page_renders_each_app_installed_or_not() {
         [
             "Apps  4 of 6 installed",
             "The agent CLIs a Stage runs on, found on PATH when /config",
-            "opened; harness init installs herdr's integration for each.",
+            "opened; orqa init installs herdr's integration for each.",
             "",
             "▸ claude      installed      2.1.282 (Claude Code)",
             "  codex       not installed  https://developers.openai.com…",
@@ -981,7 +981,7 @@ fn the_apps_page_renders_each_app_installed_or_not() {
         ]
     );
     let (x, y) = find(&buf, "codex       not installed").unwrap();
-    assert_eq!(buf[(x, y)].fg, super::logo::MUTED);
+    assert_eq!(buf[(x, y)].fg, super::brand::MUTED);
 }
 
 /// An App not installed is greyed in an App list; picking it says where
@@ -996,7 +996,7 @@ fn an_app_not_installed_says_where_to_get_it() {
     keys(&mut s, &[KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
     let buf = render(&s, 160, 45);
     let (x, y) = find(&buf, "codex").unwrap();
-    assert_eq!(buf[(x, y)].fg, super::logo::MUTED);
+    assert_eq!(buf[(x, y)].fg, super::brand::MUTED);
     assert!(
         cols(&buf, y, 99, 158).contains("not installed"),
         "{:#?}",
@@ -1020,7 +1020,7 @@ fn an_app_not_installed_says_where_to_get_it() {
     let buf = render(&s, 160, 45);
     assert!(find(&buf, where_).is_some(), "{:#?}", rows(&buf));
     assert_eq!(tools.calls().len(), calls, "{:#?}", tools.calls());
-    assert!(!repo.path().join(".harness/config.json").exists());
+    assert!(!repo.path().join(".orqadence/config.json").exists());
 }
 
 /// A config.json broken by hand on two rules mends one rule at a time: a
@@ -1029,7 +1029,7 @@ fn an_app_not_installed_says_where_to_get_it() {
 #[test]
 fn a_config_broken_on_two_rules_mends_one_at_a_time() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/config.json");
+    let file = repo.path().join(".orqadence/config.json");
     write_file(
         &file,
         r#"{"implement": {"model": "opus"}, "review": {"app": "claude", "model": "opus"},
@@ -1282,7 +1282,7 @@ fn adding_a_pack_shows_the_checklist_and_installs_the_ticked_skill() {
 fn picking_a_suggestion_not_installed_clones_it_and_picks_it() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/skills.json"),
+        &repo.path().join(".orqadence/skills.json"),
         r#"{"picks": {"test-first": "none"}}"#,
     );
     let tools = clones();
@@ -1405,12 +1405,12 @@ fn the_skills_page_renders_the_location_and_each_skill() {
         right,
         [
             "Skills  1 installed",
-            "The skills the Harness installed, from their sources; the",
-            "Skill manifest is .harness/skills.json.",
+            "The skills Orqadence installed, from their sources; the",
+            "Skill manifest is .orqadence/skills.json.",
             "",
             "▸ location    the repo, committed  .agents/skills",
             "",
-            "  create-pr               shipped with the Harness",
+            "  create-pr               shipped with Orqadence",
             "  tdd                     mattpocock/skills @ abc1234",
             "    ← Plan + Implement test-first",
             "",
@@ -1419,7 +1419,7 @@ fn the_skills_page_renders_the_location_and_each_skill() {
     assert!(
         find(
             &buf,
-            "Run harness init again to change where skills are installed."
+            "Run orqa init again to change where skills are installed."
         )
         .is_some(),
         "{:#?}",
@@ -1461,7 +1461,7 @@ fn typesafe_off_asks_then_saves_off() {
         rows(&buf)
     );
     s.key(key(KeyCode::Char('n')));
-    assert!(!repo.path().join(".harness/config.json").exists());
+    assert!(!repo.path().join(".orqadence/config.json").exists());
     s.key(key(KeyCode::Enter));
     s.key(key(KeyCode::Char('y')));
     assert_eq!(config_json(repo.path()), json!({"typesafe": false}));
@@ -1477,7 +1477,7 @@ fn typesafe_on_without_a_key_asks_it_masked() {
     use std::os::unix::fs::PermissionsExt;
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"typesafe": false}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -1493,7 +1493,7 @@ fn typesafe_on_without_a_key_asks_it_masked() {
     );
     assert!(find(&buf, "ts_live").is_none(), "{:#?}", rows(&buf));
     s.key(key(KeyCode::Enter));
-    let file = repo.path().join(".harness/typesafe-key");
+    let file = repo.path().join(".orqadence/typesafe-key");
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         "ts_live_51c9d0e7\n"
@@ -1515,7 +1515,7 @@ fn typesafe_on_without_a_key_asks_it_masked() {
 fn the_typesafe_page_shows_both_floors_and_saves_one_at_once() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"plan_floor": 0.6}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -1584,7 +1584,7 @@ fn the_typesafe_page_shows_both_floors_and_saves_one_at_once() {
 fn a_floor_that_is_not_a_number_from_0_to_1_is_flagged() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"wake_floor": "high"}"#,
     );
     let mut s = screen_at(apps(""), repo.path());
@@ -1642,7 +1642,7 @@ fn updating_says_the_new_commit_or_up_to_date() {
 fn a_suggestion_installed_from_a_fork_is_picked_as_it_is() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/skills.json"),
+        &repo.path().join(".orqadence/skills.json"),
         r#"{"picks": {"test-first": "none"}}"#,
     );
     let tools = clones();
@@ -1682,12 +1682,12 @@ fn a_suggestion_installed_from_a_fork_is_picked_as_it_is() {
 #[test]
 fn a_garbled_manifest_opens_config_and_refuses_a_pick() {
     let repo = TempDir::new();
-    let file = repo.path().join(".harness/skills.json");
+    let file = repo.path().join(".orqadence/skills.json");
     write_file(&file, "{");
     let mut s = screen_at(apps(""), repo.path());
     type_line(&mut s, "/config");
     assert!(
-        note(&s).starts_with(".harness/skills.json: "),
+        note(&s).starts_with(".orqadence/skills.json: "),
         "{}",
         note(&s)
     );

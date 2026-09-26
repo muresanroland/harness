@@ -33,12 +33,12 @@ cp -rf source dest          # NOT: cp -r source dest
 Rust, edition 2021, rust-version 1.89. Crates: serde, serde_json, regex, chrono, crossterm, ratatui, ureq; anything else needs a ticket.
 
 ```bash
-cargo build --release               # the binary at target/release/harness; skills/ is read with include_str!
+cargo build --release               # the binary at target/release/orqa; skills/ is read with include_str!
 cargo check                         # typecheck; cargo clippy too if installed
 cargo test                          # all tests; cargo test <name> for one
 ```
 
-- `src/main.rs`: entry point. `src/cli.rs`: `harness` alone opens the Shell; `harness init` and `--version` are the only commands. `src/shell.rs`: the Shell, which owns the Orchestrator in-process and takes the slash commands (/start-epic, /start-ticket, /continue, /stop-work, /retry, /park, /address, /questions, /away, /exit); `src/shell/draw.rs` the layout. `src/setup.rs`: `harness init` and preflight. `src/orchestrator/`: stage, pipeline, scheduler, state, herdr, result, trust. `src/tools.rs`: the seam to every external tool (herdr, bd, gh, git). `src/skills.rs`: the shipped skills via `include_str!`; `src/skills/manifest.rs` the Skill manifest, fetching a skill with git, the jobs' suggestions and the listing of skills you have. `src/update.rs`: silent self-update from GitHub Releases. `skills/`: the SKILL.md files, one Stage skill per Stage plus create-pr.
+- `src/main.rs`: entry point. `src/cli.rs`: `orqa` alone opens the Shell; `orqa init` and `--version` are the only commands. `src/shell.rs`: the Shell, which owns the Orchestrator in-process and takes the slash commands (/start-epic, /start-ticket, /continue, /stop-work, /retry, /park, /address, /questions, /away, /exit); `src/shell/draw.rs` the layout. `src/setup.rs`: `orqa init` and preflight. `src/orchestrator/`: stage, pipeline, scheduler, state, herdr, result, trust. `src/tools.rs`: the seam to every external tool (herdr, bd, gh, git). `src/skills.rs`: the shipped skills via `include_str!`; `src/skills/manifest.rs` the Skill manifest, fetching a skill with git, the jobs' suggestions and the listing of skills you have. `src/update.rs`: silent self-update from GitHub Releases. `skills/`: the SKILL.md files, one Stage skill per Stage plus create-pr.
 - Tests are in-crate `#[cfg(test)]` modules, one file per area (`src/<area>/<name>_test.rs`). Tests substitute the fake behind the Tools seam; `src/orchestrator/world.rs` fakes a whole herdr/bd/gh world and never starts real sessions, and `src/shell/shell_test.rs` drives the Shell's command handlers over it without a terminal.
 
 ## Agent skills

@@ -3,7 +3,7 @@
 
 Usage: python3 judge_plan.py [case ...]     ask TypeSafe (default: every case)
        python3 judge_plan.py --report       the tables from answers/, no calls
-The key is TYPESAFE_API_KEY, else .harness/typesafe-key. Each case is a directory
+The key is TYPESAFE_API_KEY, else .orqadence/typesafe-key. Each case is a directory
 under cases/: plan.md, ticket.json (bd show <id> --json: id, title, description,
 acceptance_criteria) and, for a built negative, case.json (expect, built). Answers
 land in answers/<case>.json.
@@ -27,7 +27,7 @@ NOULS = {
 
 
 def key():
-    return os.environ.get("TYPESAFE_API_KEY") or (REPO / ".harness" / "typesafe-key").read_text().strip()
+    return os.environ.get("TYPESAFE_API_KEY") or (REPO / ".orqadence" / "typesafe-key").read_text().strip()
 
 
 def state_for(case):

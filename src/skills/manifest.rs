@@ -1,4 +1,4 @@
-//! The Skill manifest: the skills the Harness installed for one checkout, and
+//! The Skill manifest: the skills Orqadence installed for one checkout, and
 //! each job's pick. Also fetching a third-party skill with git, and listing
 //! the skills the user already has.
 
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::tempdir::TempDir;
 use crate::tools::Tools;
 
-const MANIFEST: &str = ".harness/skills.json";
+const MANIFEST: &str = ".orqadence/skills.json";
 
 /// The pick that opts a job out: its Stage skill follows its own instructions.
 pub(crate) const NONE: &str = "none";
@@ -124,11 +124,11 @@ pub(crate) fn job_row(job: &str) -> &'static str {
     }
 }
 
-/// Where the skills the Harness installs go, as harness init asked.
+/// Where the skills Orqadence installs go, as orqa init asked.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Location {
-    /// .harness/skills, uncommitted, linked into each Ticket's worktree.
+    /// .orqadence/skills, uncommitted, linked into each Ticket's worktree.
     Checkout,
     /// .agents/skills, linked from .claude/skills; the user commits them.
     Repo,
@@ -139,7 +139,7 @@ pub(crate) enum Location {
 impl Location {
     pub(crate) fn place(self, repo: &Path, home: &Path) -> Place {
         let (root, files, links) = match self {
-            Location::Checkout => (repo, ".harness/skills", None),
+            Location::Checkout => (repo, ".orqadence/skills", None),
             Location::Repo => (repo, ".agents/skills", Some(".claude/skills")),
             Location::User => (home, ".agents/skills", Some(".claude/skills")),
         };
@@ -175,14 +175,14 @@ impl Place {
         Path::new("../..").join(self.files).join(name)
     }
 
-    /// Whether the Harness may write to dir: in the checkout only when it is
+    /// Whether Orqadence may write to dir: in the checkout only when it is
     /// the checkout's own (own); the user's home is theirs to arrange, a
     /// linked ~/.claude included.
     fn owns(&self, repo: &Path, dir: &str) -> bool {
         self.root != repo || own(repo, dir)
     }
 
-    /// The first of its folders the Harness may not write to.
+    /// The first of its folders Orqadence may not write to.
     fn unowned(&self, repo: &Path) -> Option<&'static str> {
         [Some(self.files), self.links]
             .into_iter()
@@ -191,7 +191,7 @@ impl Place {
     }
 }
 
-/// One skill the Harness installed, at its Location.
+/// One skill Orqadence installed, at its Location.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Installed {
@@ -209,7 +209,7 @@ pub(crate) struct Installed {
     pub(crate) shipped: bool,
 }
 
-/// The Skill manifest, kept in .harness/ beside init's record of the text it
+/// The Skill manifest, kept in .orqadence/ beside init's record of the text it
 /// wrote.
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -292,7 +292,7 @@ impl Manifest {
         (lines.join("\n"), lacking)
     }
 
-    /// Moves every skill the Harness installed here, the Shipped ones too,
+    /// Moves every skill Orqadence installed here, the Shipped ones too,
     /// with its link, to `to`, and records `to`. A Shipped skill the repo has
     /// committed stays, where init goes on writing it: moved, it would leave
     /// deletions in the working tree. All or none otherwise: when a skill's
@@ -318,7 +318,7 @@ impl Manifest {
             .keys()
             .filter(|name| safe_name(name) && fs::symlink_metadata(from.skill(name)).is_ok())
             .partition(|name| self.skills[*name].shipped && committed(repo, tools, &from, name));
-        // A link already to the new place is the Harness's own, left over.
+        // A link already to the new place is Orqadence's own, left over.
         if let Some(taken) = names.iter().find_map(|name| {
             let link = place
                 .link(name)
@@ -367,7 +367,7 @@ impl Manifest {
         let text = serde_json::to_string_pretty(self).unwrap() + "\n";
         let path = repo.join(MANIFEST);
         let tmp = path.with_extension("json.tmp");
-        fs::create_dir_all(repo.join(".harness"))
+        fs::create_dir_all(repo.join(".orqadence"))
             .and_then(|()| fs::write(&tmp, text))
             .and_then(|()| fs::rename(&tmp, &path))
             .map_err(|err| format!("{MANIFEST}: {err}"))
@@ -503,7 +503,7 @@ pub(crate) fn add(
     let place = manifest.place(repo, home);
     if let Some(dir) = place.unowned(repo) {
         return Err(format!(
-            "{dir} is not the checkout's own folder: the Harness will not install {name} there"
+            "{dir} is not the checkout's own folder: Orqadence will not install {name} there"
         ));
     }
     let (at, link) = (place.skill(&name), place.link(&name));
@@ -512,7 +512,7 @@ pub(crate) fn add(
         .find(|path| fs::symlink_metadata(path).is_ok())
     {
         return Err(format!(
-            "{} is there already, and the Harness did not put it there",
+            "{} is there already, and Orqadence did not put it there",
             there.display()
         ));
     }
@@ -614,7 +614,7 @@ pub(crate) fn update_all(
         .collect())
 }
 
-/// Removes a skill the Harness fetched: its folder, its link and its entry.
+/// Removes a skill Orqadence fetched: its folder, its link and its entry.
 /// A job it did, picked or by default, is set to none.
 pub(crate) fn remove(repo: &Path, home: &Path, name: &str) -> Result<(), String> {
     let mut manifest = Manifest::load(repo)?;
@@ -625,7 +625,7 @@ pub(crate) fn remove(repo: &Path, home: &Path, name: &str) -> Result<(), String>
     let link = place.link(name).filter(|link| fs::read_link(link).is_ok());
     if let (Some(_), Some(dir)) = (&link, place.unowned(repo)) {
         return Err(format!(
-            "{dir} is not the checkout's own folder: the Harness will not touch {name}"
+            "{dir} is not the checkout's own folder: Orqadence will not touch {name}"
         ));
     }
     let link = link.filter(|link| fs::read_link(link).is_ok_and(|to| to == place.target(name)));
@@ -662,7 +662,7 @@ pub(crate) fn remove(repo: &Path, home: &Path, name: &str) -> Result<(), String>
     removed
 }
 
-/// An installed skill the Harness fetched from a source, which update and
+/// An installed skill Orqadence fetched from a source, which update and
 /// remove may touch. Only while its name is a folder name and its Place's
 /// folder is the checkout's own: they delete <files>/<name>, and an entry
 /// edited by hand, or a linked .agents, could name something else.
@@ -673,15 +673,15 @@ fn third_party<'a>(
     name: &str,
 ) -> Result<&'a Installed, String> {
     match manifest.skills.get(name) {
-        None => Err(format!("{name} is not installed by the Harness")),
+        None => Err(format!("{name} is not installed by Orqadence")),
         Some(skill) if skill.shipped => Err(format!(
-            "{name} is a Shipped skill: it cannot be removed, and harness init updates it"
+            "{name} is a Shipped skill: it cannot be removed, and orqa init updates it"
         )),
         Some(_) if !safe_name(name) => Err(format!(
-            "{name} in {MANIFEST} is not a folder name: the Harness will not touch it"
+            "{name} in {MANIFEST} is not a folder name: Orqadence will not touch it"
         )),
         Some(_) if !place.owns(repo, place.files) => Err(format!(
-            "{} is not the checkout's own folder: the Harness will not touch {name}",
+            "{} is not the checkout's own folder: Orqadence will not touch {name}",
             place.files
         )),
         Some(skill) => Ok(skill),
@@ -870,7 +870,7 @@ fn unmove_skill(repo: &Path, from: &Place, to: &Place, name: &str) -> io::Result
 fn relink(repo: &Path, name: &str, old: &Path, new: &Path) -> io::Result<()> {
     let mut failed = Ok(());
     for kind in ["worktrees", "runs"] {
-        for dir in fs::read_dir(repo.join(".harness").join(kind))
+        for dir in fs::read_dir(repo.join(".orqadence").join(kind))
             .into_iter()
             .flatten()
             .flatten()
@@ -899,13 +899,13 @@ fn relink(repo: &Path, name: &str, old: &Path, new: &Path) -> io::Result<()> {
 /// Where a Ticket's worktree and Run directory get the checkout's skills.
 const SUBS: [&str; 2] = [".claude/skills", ".agents/skills"];
 
-/// Links every skill in the checkout's .harness/skills into each dir's
+/// Links every skill in the checkout's .orqadence/skills into each dir's
 /// .claude/skills and .agents/skills, where nothing is there already and
 /// that folder is dir's own (own), and hides the links from git in the repo's .git/info/exclude: a Ticket's
 /// worktree, and the Review's Run directory. Absolute: they are never
 /// committed.
 pub(crate) fn link_checkout_skills(repo: &Path, dirs: &[&Path]) -> io::Result<()> {
-    let from = repo.join(".harness/skills");
+    let from = repo.join(".orqadence/skills");
     let mut names: Vec<String> = fs::read_dir(&from)
         .into_iter()
         .flatten()
@@ -992,7 +992,7 @@ pub(crate) fn plugins(repo: &Path, tools: &dyn Tools) -> Vec<(String, PathBuf)> 
 }
 
 /// Every skill the user has, each with where it is: the repo's and the
-/// checkout's (the Harness's installs included), the user's, and the enabled Claude Code
+/// checkout's (Orqadence's installs included), the user's, and the enabled Claude Code
 /// plugins', named plugin:skill. A skill is named by its folder, as the
 /// agents name it. A skill linked from .claude/skills to .agents/skills is
 /// listed at both places: Claude reads the one, codex the other. No home, no
@@ -1003,7 +1003,7 @@ pub(crate) fn list(repo: &Path, home: &Path, tools: &dyn Tools) -> Vec<(String, 
     let mut dirs = vec![
         repo.join(".agents/skills"),
         repo.join(".claude/skills"),
-        repo.join(".harness/skills"),
+        repo.join(".orqadence/skills"),
     ];
     if !home.as_os_str().is_empty() {
         dirs.extend([home.join(".claude/skills"), home.join(".agents/skills")]);

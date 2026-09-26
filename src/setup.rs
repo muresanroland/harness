@@ -1,4 +1,4 @@
-//! The thin 'harness init': installs the shipped skills and every job's
+//! The thin 'orqa init': installs the shipped skills and every job's
 //! default where the user says, offers bd init, the docs/agents setup and
 //! herdr's integrations, keeps TypeSafe on or off and its key, and
 //! preflights the Target repo.
@@ -17,8 +17,8 @@ use crate::tools::Tools;
 
 /// The record of every skill file init wrote, path to the text it wrote:
 /// under refresh, a file that still matches is unedited and is rewritten.
-const RECORD: &str = ".harness/installed-skills.json";
-pub(crate) const KEY_FILE: &str = ".harness/typesafe-key";
+const RECORD: &str = ".orqadence/installed-skills.json";
+pub(crate) const KEY_FILE: &str = ".orqadence/typesafe-key";
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -28,9 +28,9 @@ enum Mode {
 }
 
 /// Asks where the skills go (Location), the current place the default, and
-/// moves the ones the Harness installed when the answer changes, but those
+/// moves the ones Orqadence installed when the answer changes, but those
 /// the repo has committed (`tools` asks git). Then writes
-/// the Harness's skills there. When the shipped skills are already installed
+/// Orqadence's skills there. When the shipped skills are already installed
 /// the gate asks first: cancel (false: nothing more touched), refresh only
 /// the files unedited since install (by the record), or overwrite
 /// everything; force is overwrite unasked, where they are. A Shipped skill
@@ -54,7 +54,7 @@ pub(crate) fn install_skills(
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
     let mut manifest = Manifest::load(repo).map_err(io::Error::other)?;
-    // What an older init recorded only in its record is the Harness's too.
+    // What an older init recorded only in its record is Orqadence's too.
     for name in record.keys().filter_map(|key| {
         key.strip_prefix(".agents/skills/")?
             .strip_suffix("/SKILL.md")
@@ -108,7 +108,7 @@ pub(crate) fn install_skills(
         Mode::Fresh
     };
     // The name the shipped create-pr is installed under; "" keeps the repo's own.
-    let recorded = ["create-pr", "harness-create-pr"]
+    let recorded = ["create-pr", "orqadence-create-pr"]
         .into_iter()
         .find(|name| record.contains_key(&record_key(name)));
     let pr = match (recorded, mode) {
@@ -171,7 +171,7 @@ pub(crate) fn install_skills(
         }
         manifest::link(at, name)?;
     }
-    fs::create_dir_all(repo.join(".harness"))?;
+    fs::create_dir_all(repo.join(".orqadence"))?;
     fs::write(
         repo.join(RECORD),
         serde_json::to_string_pretty(&record)? + "\n",
@@ -215,7 +215,7 @@ fn ask_location(
 ) -> io::Result<Location> {
     write!(out, "init: where should the skills go?\r\n")?;
     let options = [
-        "this checkout, uncommitted: .harness/skills, linked into each Ticket's worktree",
+        "this checkout, uncommitted: .orqadence/skills, linked into each Ticket's worktree",
         "the repo, committed: .agents/skills, linked from .claude/skills; you commit them",
         "user level: ~/.agents/skills, linked from ~/.claude/skills",
     ];
@@ -259,7 +259,7 @@ fn install_integrations(
         Err(err) => {
             write!(
                 out,
-                "init: herdr integration status failed, so no integration was offered and /continue may start Stages fresh; fix herdr and run harness init again: {err}\r\n"
+                "init: herdr integration status failed, so no integration was offered and /continue may start Stages fresh; fix herdr and run orqa init again: {err}\r\n"
             )?;
             return Ok(());
         }
@@ -514,7 +514,7 @@ fn ask_typesafe_key(
 
 /// Keeps the TypeSafe key in KEY_FILE, readable only by the user.
 pub(crate) fn keep_key(repo: &Path, key: &str) -> io::Result<()> {
-    fs::create_dir_all(repo.join(".harness"))?;
+    fs::create_dir_all(repo.join(".orqadence"))?;
     File::options()
         .write(true)
         .create(true)
@@ -631,15 +631,15 @@ fn ask_about_create_pr(
 ) -> io::Result<&'static str> {
     write!(
         out,
-        "init: this repo already has a create-pr skill, and the Harness ships its own.\r\n"
+        "init: this repo already has a create-pr skill, and Orqadence ships its own.\r\n"
     )?;
     let options = [
         "keep this repo's, install nothing",
         "replace it with the shipped one",
-        "install the shipped one beside it, as harness-create-pr",
+        "install the shipped one beside it, as orqadence-create-pr",
     ];
     let choice = raw(tty, || choose(out, input, &options, 0))?;
-    Ok(["", "create-pr", "harness-create-pr"][choice])
+    Ok(["", "create-pr", "orqadence-create-pr"][choice])
 }
 
 /// Draws a menu, the default selected, moves the selection on the arrow keys
@@ -696,9 +696,9 @@ fn done(out: &mut dyn Write, options: &[&str], sel: usize) -> io::Result<usize> 
     Ok(sel)
 }
 
-/// Adds .harness/ to the Target repo's .gitignore once.
+/// Adds .orqadence/ to the Target repo's .gitignore once.
 pub(crate) fn ignore_run_dir(repo: &Path) -> io::Result<()> {
-    add_lines(&repo.join(".gitignore"), &[".harness/".to_string()])
+    add_lines(&repo.join(".gitignore"), &[".orqadence/".to_string()])
 }
 
 /// Appends each line the file lacks, making the file and its folder if need be.
@@ -748,8 +748,7 @@ pub(crate) fn preflight(
     let home = PathBuf::from(env("HOME"));
     let found = manifest::list(repo, &home, tools);
     if !found.iter().any(|(name, _)| name == "create-pr") {
-        missing
-            .push("no create-pr skill: run 'harness init' to install the shipped one".to_string());
+        missing.push("no create-pr skill: run 'orqa init' to install the shipped one".to_string());
     }
     // Each job's pick, but none, as the App its row runs on loads or has
     // built in one.
@@ -771,7 +770,7 @@ pub(crate) fn preflight(
                 if manifest::lacks(pick, &have, row.app.built_in) {
                     // init installs only the default
                     let fix = if pick == suggestions[0].0 {
-                        "harness init installs it, or /config picks another"
+                        "orqa init installs it, or /config picks another"
                     } else {
                         "/config installs it, or picks another"
                     };
@@ -800,13 +799,13 @@ pub(crate) fn preflight(
         }
     }
     if env("HERDR_ENV") != "1" {
-        missing.push("HERDR_ENV is not 1: run the Harness from a pane inside herdr".to_string());
+        missing.push("HERDR_ENV is not 1: run Orqadence from a pane inside herdr".to_string());
     }
     missing
 }
 
 /// What the preflight warns of without failing: a personal skill that shadows
-/// one the Harness installed, since Claude Code runs a personal skill over a
+/// one Orqadence installed, since Claude Code runs a personal skill over a
 /// project one of the same name, the superpowers plugin, and an installed
 /// Stage skill that lost a job's placeholder, which the shipped one holds.
 pub(crate) fn warnings(
@@ -838,7 +837,7 @@ pub(crate) fn warnings(
             let held = manifest::placeholder(job);
             if shipped.contains(&held) && !installed.contains(&held) {
                 warn.push(format!(
-                    "the installed {name} lacks {held}: the {} skill you pick never runs there; put the line back, or refresh it with harness init",
+                    "the installed {name} lacks {held}: the {} skill you pick never runs there; put the line back, or refresh it with orqa init",
                     job.replace('-', " ")
                 ));
             }

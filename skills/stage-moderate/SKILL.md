@@ -1,6 +1,6 @@
 ---
 name: stage-moderate
-description: Harness Debate Stage. A neutral Moderator runs a debate between side A and side B over a Ticket's Findings and writes the Verdict. Run by the Harness Orchestrator, not by hand.
+description: Orqadence Debate Stage. A neutral Moderator runs a debate between side A and side B over a Ticket's Findings and writes the Verdict. Run by the Orqadence Orchestrator, not by hand.
 ---
 
 # Debate Stage: the Moderator

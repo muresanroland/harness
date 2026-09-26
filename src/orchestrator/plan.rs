@@ -137,7 +137,7 @@ impl Orchestrator {
         let _ = fs::remove_file(dir.join(PLAN));
         self.plans.lock().unwrap().remove(ticket);
         if self.cfg.exe.as_os_str().is_empty() {
-            return Err("no path to the harness binary".to_string());
+            return Err("no path to the orqa binary".to_string());
         }
         let command = format!(
             "{} __plan-hook {}",
@@ -149,7 +149,7 @@ impl Orchestrator {
             "hooks": [{ "type": "command", "command": command }],
         }] } });
         if let Some(plan_model) = &row.plan_model {
-            let log = self.cfg.repo.join(".harness").join("orchestrator.log");
+            let log = self.cfg.repo.join(".orqadence").join("orchestrator.log");
             let command = format!(
                 "{} __switch-hook {} {}",
                 quoted(self.cfg.exe.display()),

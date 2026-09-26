@@ -14,7 +14,7 @@ use super::modal::{scrolled, wrap_spans};
 use super::{bold, cut, fg, inset, ticket_color};
 use crate::orchestrator::cost::{Cost, SUPPORTED};
 use crate::orchestrator::stage::{plural, pr_ref};
-use crate::shell::logo::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
+use crate::shell::brand::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
 use crate::shell::summary::{Summary, Ticket};
 use crate::shell::{suffix, Screen};
 

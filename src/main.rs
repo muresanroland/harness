@@ -10,12 +10,12 @@ fn main() {
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let env = |key: &str| std::env::var(key).unwrap_or_default();
-    std::process::exit(harness::cli::run(
+    std::process::exit(orqadence::cli::run(
         &args,
         &mut std::io::stdout(),
         None,
         &repo,
-        Arc::new(harness::tools::Exec),
+        Arc::new(orqadence::tools::Exec),
         &env,
     ));
 }

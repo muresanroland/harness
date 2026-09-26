@@ -1,7 +1,8 @@
-use super::draw::{draw, ticket_color};
-use super::logo::{
-    lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, GREEN, MUTED, ORANGE, PINK, PURPLE, RED, TEXT,
+use super::brand::{
+    lerp, quantize, BLUE, BORDER, CYAN, DARK_ORANGE, FRAME, GREEN, INK, MUTED, ORANGE, PANE_COLORS,
+    PINK, PURPLE, RED, TEXT, WORDMARK, YELLOW,
 };
+use super::draw::{draw, ticket_color};
 use super::{About, Epic, Pending, Screen};
 use crate::orchestrator::judgment::fake::Fake as TypeSafeFake;
 use crate::orchestrator::judgment::{Action, PlanJudged};
@@ -72,7 +73,7 @@ pub(super) fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
             issue("harness-kqe.8", "Events: one plain-language line", "closed"),
             issue(
                 "harness-kqe.9",
-                "The Shell, idle: harness opens the screen",
+                "The Shell, idle: orqa opens the whole screen",
                 "in_progress",
             ),
             issue("harness-kqe.10", "The Shell runs the Orchestrator", "open"),
@@ -98,7 +99,7 @@ pub(super) fn screen_at(tools: Arc<dyn Tools>, repo: &Path) -> Screen {
     }
     Screen::new(
         Config::for_tests(tools, repo, Path::new("")),
-        "~/harness".to_string(),
+        "~/orqa".to_string(),
         true,
         vec![epic],
         state,
@@ -154,7 +155,7 @@ pub(super) fn notice(s: &Screen) -> &str {
 }
 
 pub(super) fn log(w: &World) -> String {
-    std::fs::read_to_string(w.repo.join(".harness/orchestrator.log")).unwrap_or_default()
+    std::fs::read_to_string(w.repo.join(".orqadence/orchestrator.log")).unwrap_or_default()
 }
 
 pub(super) fn render(s: &Screen, w: u16, h: u16) -> Buffer {
@@ -260,36 +261,167 @@ fn await_questions(s: &mut Screen, n: usize) {
     }
 }
 
+/// The header alone, drawn `w`×`h`.
+fn header(s: &Screen, w: u16, h: u16) -> Buffer {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| super::draw::header(f, f.area(), s, true))
+        .unwrap();
+    t.backend().buffer().clone()
+}
+
+/// The header at `half` 350 ms steps into a live run.
+fn live(half: u64) -> Screen {
+    let mut s = screen();
+    s.running = true;
+    (s.started, s.ticks) = (100, 100 + half * 7); // 7 ticks of 50 ms
+    s
+}
+
 #[test]
-fn header_at_120x40_shows_the_logo_banner_version_and_folder() {
+fn the_idle_header_at_104x8_lights_the_bottom_right_pane_and_holds_the_cursor() {
     let s = screen();
+    let buf = header(&s, 104, 8);
+    assert_eq!(
+        rows(&buf),
+        [
+            "╭────────────────────────────────────────────────────────────────────────────────────────────── ~/orqa ╮",
+            "│  ╭────╮ ╭────╮                                   ██                                                  │",
+            "│  │    │ │    │   ▄█▀▀█▄ ██▄▀▀▀ ▄█▀▀██  ▀▀▀█▄ ▄█▀▀██ ▄█▀▀█▄ ██▀▀█▄ ▄█▀▀▀▀ ▄█▀▀█▄                      │",
+            "│  ╰────╯ ╰────╯   ██  ██ ██     ██  ██  ▄▄▄██ ██  ██ ██▄▄██ ██  ██ ██     ██▄▄██                      │",
+            "│  ╭────╮ ▗▄▄▄▄▖   ██  ██ ██     ██  ██ ██  ██ ██  ██ ██     ██  ██ ██     ██                          │",
+            "│  │    │ ▐ ❯  ▌   ▀█▄▄█▀ ██     ▀█▄▄██ ▀█▄▄██ ▀█▄▄██ ▀█▄▄▄▄ ██  ██ ▀█▄▄▄▄ ▀█▄▄▄▄ █████                │",
+            "│  ╰────╯ ▝▀▀▀▀▘                     ██                                                                │",
+            "╰────────────────────────────────────────────────────────────────────────────────────────── v1.3.0-dev ╯",
+        ]
+        .map(|r| r.replace("v1.3.0-dev", &s.version))
+    );
+    assert_eq!(buf[(0, 0)].fg, FRAME);
+    assert_eq!(buf[(96, 0)].fg, YELLOW, "the folder");
+    assert_eq!(buf[(92, 7)].fg, PANE_COLORS[3], "the version");
+    assert_eq!(buf[(19, 1)].fg, WORDMARK);
+    // the bottom-right pane filled inside its half-block edges, its ❯ dark
+    // and bold; the cursor steady in its blue
+    assert_eq!(buf[(10, 4)].fg, PANE_COLORS[2]);
+    assert_eq!(buf[(11, 5)].bg, PANE_COLORS[2]);
+    assert_eq!((buf[(12, 5)].fg, buf[(12, 5)].bg), (INK, PANE_COLORS[2]));
+    assert!(buf[(12, 5)].modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        buf[(3, 1)].fg,
+        PANE_COLORS[0],
+        "an unlit pane is outlined in its color"
+    );
+    assert_eq!(buf[(82, 5)].fg, PANE_COLORS[2]);
+    let mut idle = screen();
+    for _ in 0..24 {
+        idle.tick();
+        assert_eq!(
+            rows(&header(&idle, 104, 8)),
+            rows(&buf),
+            "moved at tick {}",
+            idle.ticks
+        );
+    }
+}
+
+#[test]
+fn in_a_live_run_the_lit_pane_steps_clockwise_and_the_cursor_blinks_once_a_step() {
+    let mark = |buf: &Buffer| (1..7).map(|y| cols(buf, y, 3, 16)).collect::<Vec<_>>();
+    let cursor = |buf: &Buffer| cols(buf, 5, 82, 87);
+    // half 0: the top left lit, the cursor on in its green
+    let buf = header(&live(0), 104, 8);
+    assert_eq!(
+        mark(&buf),
+        [
+            "▗▄▄▄▄▖ ╭────╮",
+            "▐ ❯  ▌ │    │",
+            "▝▀▀▀▀▘ ╰────╯",
+            "╭────╮ ╭────╮",
+            "│    │ │    │",
+            "╰────╯ ╰────╯"
+        ]
+    );
+    assert_eq!(buf[(4, 2)].bg, PANE_COLORS[0]);
+    assert_eq!(cursor(&buf), "█████");
+    assert_eq!(buf[(82, 5)].fg, PANE_COLORS[0]);
+    // half 1: still the top left, the cursor off
+    let buf = header(&live(1), 104, 8);
+    assert_eq!(buf[(4, 2)].bg, PANE_COLORS[0]);
+    assert_eq!(cursor(&buf), "     ");
+    // half 2: the top right, the cursor back in its cyan
+    let buf = header(&live(2), 104, 8);
+    assert_eq!(
+        mark(&buf),
+        [
+            "╭────╮ ▗▄▄▄▄▖",
+            "│    │ ▐ ❯  ▌",
+            "╰────╯ ▝▀▀▀▀▘",
+            "╭────╮ ╭────╮",
+            "│    │ │    │",
+            "╰────╯ ╰────╯"
+        ]
+    );
+    assert_eq!(buf[(11, 2)].bg, PANE_COLORS[1]);
+    assert_eq!(cursor(&buf), "█████");
+    assert_eq!(buf[(82, 5)].fg, PANE_COLORS[1]);
+    // then the bottom right, the bottom left, and round again
+    assert_eq!(header(&live(4), 104, 8)[(11, 5)].bg, PANE_COLORS[2]);
+    assert_eq!(header(&live(6), 104, 8)[(4, 5)].bg, PANE_COLORS[3]);
+    assert_eq!(header(&live(8), 104, 8)[(4, 2)].bg, PANE_COLORS[0]);
+    // the run over, the idle frame at once
+    let mut s = live(3);
+    s.running = false;
+    assert_eq!(rows(&header(&s, 104, 8)), rows(&header(&screen(), 104, 8)));
+}
+
+#[test]
+fn the_header_narrows_to_the_name_then_the_mark_and_folds_to_one_line_when_short() {
+    let s = screen();
+    // 88 columns inside the border: the wordmark
+    let buf = header(&s, 90, 8);
+    assert_eq!(cols(&buf, 2, 19, 25), "▄█▀▀█▄");
+    assert_eq!(cols(&buf, 5, 82, 87), "█████");
+    // 87 down to 24: the plain name on the third row, its ▁▁ cursor after
+    for w in [89, 26] {
+        let buf = header(&s, w, 8);
+        assert_eq!(cols(&buf, 1, 0, 16), "│  ╭────╮ ╭────╮", "{w}");
+        let name = "Orqadence ▁▁"
+            .chars()
+            .take(w as usize - 20)
+            .collect::<String>();
+        assert_eq!(cols(&buf, 3, 19, w as usize - 1).trim_end(), name, "{w}");
+        assert_eq!(buf[(19, 3)].fg, WORDMARK);
+        assert!(buf[(19, 3)].modifier.contains(Modifier::BOLD));
+        assert!(!rows(&buf).concat().contains('█'), "{w} keeps the wordmark");
+    }
+    // under 24: the mark alone
+    let buf = header(&s, 25, 8);
+    assert_eq!(cols(&buf, 3, 0, 16), "│  ╰────╯ ╰────╯");
+    assert_eq!(cols(&buf, 3, 16, 24).trim(), "");
+    // shorter than the box: one line, the name and the cursor
+    let buf = header(&s, 40, 7);
+    assert_eq!(row(&buf, 0).trim_end(), " Orqadence ▁▁");
+    assert_eq!(buf[(1, 0)].fg, CYAN);
+    assert_eq!(buf[(11, 0)].fg, PANE_COLORS[2]);
+}
+
+#[test]
+fn a_portrait_or_narrow_shell_keeps_the_status_row_under_the_header_and_folds_it_under_18_rows() {
+    let s = screen();
+    let status =
+        "IDLE    1 open Epic  ·  7 Tickets  ·  saved run on harness-kqe, /continue resumes";
+    // 143 columns is one short of both boxes, 100x60 is portrait
+    for (w, h) in [(143, 40), (100, 60)] {
+        let buf = render(&s, w, h);
+        assert!(row(&buf, 0).ends_with(" ~/orqa ╮"), "{:?}", row(&buf, 0));
+        assert!(row(&buf, 8).contains(status), "{w}x{h}: {:?}", row(&buf, 8));
+        assert!(
+            row(&buf, 9).contains("2/7 PRs"),
+            "{w}x{h}: {:?}",
+            row(&buf, 9)
+        );
+    }
     let buf = render(&s, 120, 40);
-    // The logo rests one cell down and is 12 half-block columns from x 1.
-    assert!(
-        cols(&buf, 0, 0, 14).trim().is_empty(),
-        "row 0 = {:?}",
-        row(&buf, 0)
-    );
-    let logo_row = cols(&buf, 1, 1, 13);
-    assert!(
-        logo_row.chars().all(|c| c == '▀' || c == '▄' || c == ' '),
-        "{logo_row:?}"
-    );
-    assert!(logo_row.contains('▄'), "no logo cells: {logo_row:?}");
-    assert!(
-        cols(&buf, 1, 16, 120).contains('█'),
-        "no banner: {:?}",
-        row(&buf, 1)
-    );
-    assert_eq!(cols(&buf, 4, 16, 16 + s.version.len()), s.version);
-    assert!(row(&buf, 5).contains("~/harness"), "{:?}", row(&buf, 5));
-    assert!(
-        row(&buf, 8).contains(
-            "IDLE    1 open Epic  ·  7 Tickets  ·  saved run on harness-kqe, /continue resumes"
-        ),
-        "{:?}",
-        row(&buf, 8)
-    );
+    assert!(row(&buf, 8).contains(status), "{:?}", row(&buf, 8));
     assert!(find(&buf, " ━━ ▾ harness-kqe").is_some());
     assert!(find(&buf, " RECENT ").is_some());
     assert!(
@@ -297,48 +429,85 @@ fn header_at_120x40_shows_the_logo_banner_version_and_folder() {
         "{:?}",
         row(&buf, 39)
     );
-}
-
-#[test]
-fn the_hop_stays_still_while_idle_and_moves_in_a_live_run() {
-    let mut s = screen();
-    for _ in 0..24 {
-        s.tick();
-        assert!(
-            cols(&render(&s, 120, 40), 0, 0, 14).trim().is_empty(),
-            "hopped at tick {}",
-            s.ticks
-        );
-    }
-    s.running = true;
-    s.ticks = 20; // HOP[20] = 0: the top of the hop
-    assert!(cols(&render(&s, 120, 40), 0, 1, 13).contains('▀'));
-}
-
-#[test]
-fn the_fold_under_64_columns_or_18_rows_is_one_plain_line() {
-    let s = screen();
-    for (w, h) in [(60, 24), (120, 16)] {
-        let buf = render(&s, w, h);
-        assert!(
-            row(&buf, 0).starts_with(&format!("HARNESS {}  ~/harness", s.version)),
-            "{w}x{h}: {:?}",
-            row(&buf, 0)
-        );
-        assert!(row(&buf, 1).contains("IDLE"), "{w}x{h}: {:?}", row(&buf, 1));
-        assert!(!row(&buf, 1).contains('▀'), "{w}x{h} keeps the logo");
-    }
-    // 80x24 is above every fold: the logo, banner and labels all stay.
+    // a narrow screen keeps the box
+    let buf = render(&s, 60, 24);
+    assert!(row(&buf, 3).contains("Orqadence ▁▁"), "{:?}", row(&buf, 3));
+    assert!(row(&buf, 8).contains("IDLE"), "{:?}", row(&buf, 8));
+    let buf = render(&s, 120, 16);
+    assert_eq!(row(&buf, 0).trim_end(), " Orqadence ▁▁");
+    assert!(row(&buf, 1).contains(status), "{:?}", row(&buf, 1));
     let buf = render(&s, 80, 24);
-    assert!(
-        row(&buf, 4).contains(&s.version),
-        "the header folds at 80x24, it must not: {:?}",
-        row(&buf, 4)
-    );
     assert!(
         find(&buf, "CLOSED").is_some(),
         "80x24 drops the status label"
     );
+}
+
+#[test]
+fn a_landscape_shell_puts_the_status_in_its_own_box_beside_the_header() {
+    let mut s = screen();
+    let buf = render(&s, 144, 40);
+    let status = |buf: &Buffer| {
+        (0..8)
+            .map(|y| cols(buf, y, 90, buf.area.width as usize))
+            .collect::<Vec<_>>()
+    };
+    // four lines level with the lowercase letters: their tops to their baseline
+    assert_eq!(
+        status(&buf),
+        [
+            "╭────────────────────────────────────────────────────╮",
+            "│                                                    │",
+            "│ ○ IDLE                                             │",
+            "│ 1 open Epic  ·  7 Tickets                          │",
+            "│ saved run on harness-kqe, /continue resumes        │",
+            "│ Overall  ████████░░░░░░░░░░░░░░░░░░░░  2/7 PRs     │",
+            "│                                                    │",
+            "╰──────────────────────────────────────────── ~/orqa ╯",
+        ]
+    );
+    assert_eq!(cols(&buf, 2, 26, 32), "██▄▀▀▀", "the r's top");
+    assert_eq!(cols(&buf, 5, 19, 25), "▀█▄▄█▀", "the o's foot");
+    assert_eq!(buf[(90, 0)].fg, FRAME);
+    // the header keeps its full layout at 90 columns, its folder moved to the box
+    assert_eq!(cols(&buf, 0, 0, 90), format!("╭{}╮", "─".repeat(88)));
+    assert_eq!(buf[(140, 7)].fg, YELLOW);
+    // the rows the status row and Overall took go to TICKETS
+    assert!(
+        row(&buf, 9).starts_with(" ━━ ▾ harness-kqe"),
+        "{:?}",
+        row(&buf, 9)
+    );
+    // live, the counts pack as many to a line as fit
+    s.running = true;
+    s.state.epic = "harness-kqe".to_string();
+    let lines = status(&render(&s, 160, 40));
+    assert!(lines[2].contains("| RUNNING"), "{lines:#?}");
+    assert!(
+        lines[3].contains("● 2 working  ◆ 0 needs you  ◇ 0 waiting on a merge  ○ 1 to merge"),
+        "{lines:#?}"
+    );
+    assert!(lines[4].contains("✓ 1 merged"), "{lines:#?}");
+    assert!(lines[5].contains("Overall"), "{lines:#?}");
+    // counts in two figures and AWAY would take three lines with the glyphs: they go
+    let ids = (1..=40).map(|i| format!("harness-kqe.{i}"));
+    s.epics[0].tickets = ids.clone().map(|id| issue(&id, "work", "open")).collect();
+    let statuses = [STATUS_RUNNING, STATUS_PR_OPEN, STATUS_MERGED];
+    s.state.tickets = ids
+        .zip(0..)
+        .map(|(id, i)| (id, ticket(statuses[i % 3])))
+        .collect();
+    s.cfg.away.store(true, std::sync::atomic::Ordering::SeqCst);
+    let lines = status(&render(&s, 144, 40));
+    let text = |t: &str| format!("│ {t:<50} │");
+    assert_eq!(
+        lines[3..5],
+        [
+            text("14 working  0 needs you  0 waiting on a merge"),
+            text("13 to merge  13 merged  ·  AWAY"),
+        ]
+    );
+    assert!(lines[5].contains("Overall"), "{lines:#?}");
 }
 
 #[test]
@@ -483,7 +652,7 @@ fn lists_screen() -> Screen {
     ];
     Screen::new(
         Config::for_tests(Fake::quiet(), Path::new(""), Path::new("")),
-        "~/harness".to_string(),
+        "~/orqa".to_string(),
         true,
         epics,
         State::default(),
@@ -718,7 +887,7 @@ fn recent_is_newest_at_the_bottom_with_the_ticket_column_as_wide_as_its_longest_
     assert!(row(&buf, 19).trim().is_empty(), "{:#?}", rows(&buf));
     assert_eq!(
         row(&buf, 20).trim_end(),
-        " 12:04:44  harness       started Epic harness-kqe: 3 Tickets"
+        " 12:04:44  orqadence     started Epic harness-kqe: 3 Tickets"
     );
     assert_eq!(
         row(&buf, 21).trim_end(),
@@ -730,27 +899,27 @@ fn recent_is_newest_at_the_bottom_with_the_ticket_column_as_wide_as_its_longest_
     );
     let (x, y) = find(&buf, "11 Questions  implemented").unwrap();
     assert_eq!(buf[(x, y)].fg, ticket_color("harness-kqe.11"));
-    let (x, y) = find(&buf, "harness   ").unwrap();
+    let (x, y) = find(&buf, "orqadence  ").unwrap();
     assert_eq!(buf[(x, y)].fg, MUTED);
     // A name longer than 34% of the width is cut there: 27 of 80 columns.
     s.push(event(Some("harness-kqe.9"), "reviewed", true));
     let buf = render(&s, 80, 24);
     assert_eq!(
         row(&buf, 21).trim_end(),
-        " 12:04:44  9 The Shell, idle: harness…  reviewed"
+        " 12:04:44  9 The Shell, idle: orqa op…  reviewed"
     );
     assert_eq!(
         row(&buf, 20).trim_end(),
         " 12:04:44  11 Questions                 implemented"
     );
-    let (x, y) = find(&buf, "9 The Shell, idle: harness…").unwrap();
+    let (x, y) = find(&buf, "9 The Shell, idle: orqa op…").unwrap();
     assert_eq!(buf[(x, y)].fg, CYAN);
     assert_eq!(ticket_color("harness-kqe.9"), CYAN);
     // 40 of 120 columns.
     assert!(
         find(
             &render(&s, 120, 40),
-            " 12:04:44  9 The Shell, idle: harness opens the sc…  reviewed"
+            " 12:04:44  9 The Shell, idle: orqa opens the whole…  reviewed"
         )
         .is_some(),
         "{:#?}",
@@ -825,7 +994,7 @@ fn up_and_down_scroll_recent_and_its_rule_counts_older_and_newer() {
 fn the_idle_tree_renders_from_a_fake_bd_with_the_saved_epic_resumable() {
     let repo = TempDir::new();
     write_file(
-        &repo.path().join(".harness/state.json"),
+        &repo.path().join(".orqadence/state.json"),
         r#"{"epic":"harness-kqe","tickets":{"harness-kqe.9":{"status":"running","stage":"review","round":2},"harness-kqe.10":{"status":"parked","stage":"implement","round":0,"reason":"went idle"}}}"#,
     );
     let fake = Fake::new(|_, argv| {
@@ -1003,7 +1172,7 @@ fn sections_screen(running: bool) -> Screen {
     }
     let mut s = Screen::new(
         Config::for_tests(fake, Path::new(""), Path::new("")),
-        "~/harness".to_string(),
+        "~/orqa".to_string(),
         true,
         epics,
         state,
@@ -1294,11 +1463,11 @@ fn a_long_limit_ends_the_run_and_continue_after_the_reset_resumes_it() {
 fn the_reviews_limit_question_offers_the_fallback_and_its_answer_stands() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     write_file(
-        &w.repo.join(".harness/runs/hx-1/implement.md"),
+        &w.repo.join(".orqadence/runs/hx-1/implement.md"),
         "STATUS: done\n",
     );
     write_file(
-        &w.repo.join(".harness/config.json"),
+        &w.repo.join(".orqadence/config.json"),
         r#"{"review_if_limited": {"app": "claude", "model": "opus"}}"#,
     );
     hits(
@@ -1533,9 +1702,14 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
     w.lock().merged = true;
     let mut s = shell(&w);
+    s.ticks = 45;
     s.command("/start-epic hx --max 1");
     assert_eq!(notice(&s), "", "start refused");
     assert!(s.running && s.run.is_some());
+    assert_eq!(
+        s.started, 45,
+        "the header's panes count from the run's start"
+    );
     assert!(
         acquire_lock(&w.repo).is_err(),
         "the lock is not held while the run is live"
@@ -1568,12 +1742,12 @@ fn start_epic_runs_the_tickets_to_prs_and_a_done_epic_clears_the_saved_run() {
     assert!(find(&buf, "saved run").is_none());
 }
 
-/// .harness/config.json is read when a run starts: one no Pipeline Stage can
+/// .orqadence/config.json is read when a run starts: one no Pipeline Stage can
 /// start on refuses the run, naming the file.
 #[test]
 fn an_unreadable_config_or_a_stage_codex_cannot_run_refuses_the_run() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
-    let file = w.repo.join(".harness/config.json");
+    let file = w.repo.join(".orqadence/config.json");
     let mut s = shell(&w);
     write_file(&file, "{ not json");
     s.command("/start-epic hx");
@@ -2047,14 +2221,14 @@ fn exit_during_a_run_asks_and_ctrl_c_twice_stops_the_run() {
 fn release_shell(w: &Arc<World>) -> (Screen, PathBuf) {
     let mut s = shell(w);
     s.version = "v1.0.0".to_string();
-    s.cfg.exe = w.repo.join("harness");
+    s.cfg.exe = w.repo.join("orqa");
     std::fs::write(&s.cfg.exe, b"old").unwrap();
-    (s, w.repo.join("harness"))
+    (s, w.repo.join("orqa"))
 }
 
 /// The pending download beside the scratch exe.
 fn temp_file(w: &World) -> PathBuf {
-    w.repo.join(format!("harness.new.{}", std::process::id()))
+    w.repo.join(format!("orqa.new.{}", std::process::id()))
 }
 
 fn await_update(s: &mut Screen) {
@@ -2092,16 +2266,12 @@ fn an_update_waits_while_the_lock_is_held_and_installs_at_stop_work() {
     );
     assert_eq!(s.shown_version(), "v1.0.0 → v1.1.0 at stop");
     let buf = render(&s, 120, 40);
-    assert_eq!(cols(&buf, 4, 16, 16 + 24), "v1.0.0 → v1.1.0 at stop ");
+    let (x, y) = find(&buf, "─ v1.0.0 → v1.1.0 at stop ╯").unwrap();
+    assert_eq!(y, 7, "not on the header's bottom edge");
     assert_eq!(
-        buf[(16, 4)].fg,
-        buf[(30, 4)].fg,
-        "the pending text is not the version's gray"
-    );
-    assert!(
-        row(&render(&s, 60, 16), 0).starts_with("HARNESS v1.0.0 → v1.1.0 at stop  ~/hx"),
-        "{:?}",
-        row(&render(&s, 60, 16), 0)
+        buf[(x + 2, y)].fg,
+        buf[(x + 16, y)].fg,
+        "the pending text is not the version's color"
     );
     assert!(s.run.is_some() && !s.quit);
 
@@ -2244,7 +2414,7 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
     let repo = TempDir::new();
     let fake = Fake::quiet();
     let mut s = screen_at(fake.clone(), repo.path());
-    let file = Path::new("/r/.harness/runs/harness-kqe.11/fix-1.md");
+    let file = Path::new("/r/.orqadence/runs/harness-kqe.11/fix-1.md");
     let wake = || Ask::Wake {
         pane: "w1:p7".to_string(),
         tail: "Ran the tests: 12 passed.\n> Should I also update the docs?\n".to_string(),
@@ -2320,7 +2490,7 @@ fn a_wake_question_renders_the_pane_tail_and_its_options_and_hides_on_esc() {
     );
     s.running = false;
     assert!(
-        std::fs::read_to_string(repo.path().join(".harness/orchestrator.log"))
+        std::fs::read_to_string(repo.path().join(".orqadence/orchestrator.log"))
             .unwrap()
             .lines()
             .any(|l| l.get(20..) == Some("harness-kqe.11 asking you: stuck in fix 1"))
@@ -2487,7 +2657,7 @@ fn a_confirmation_and_the_continue_checklist_render_as_questions() {
         [
             "continue the saved run: each Ticket resumes at its Stage, or is reset to Implement",
             "",
-            "› 1. 9 The Shell, idle: harness opens the screen  fix 1  parked: went idle  → resume",
+            "› 1. 9 The Shell, idle: orqa opens the whole screen  fix 1  parked: went idle  → resume",
             "2. 10 The Shell runs the Orchestrator  fix 1  → resume",
             "3. 11 Questions  fix 1  → resume",
         ]
@@ -2530,7 +2700,7 @@ fn a_wake_question_nudges_opens_the_pane_and_parks() {
         question(&s),
         "stuck in implement: went idle without a result (pane 1-1)"
     );
-    let file = w.repo.join(".harness/runs/hx-1/implement.md");
+    let file = w.repo.join(".orqadence/runs/hx-1/implement.md");
     let pane = asked_pane(&s);
     assert_eq!(pane, s.state.tickets["hx-1"].panes["implement"]);
     // What the session was prompted with, the Stage prompt left out.
@@ -2658,7 +2828,7 @@ fn a_wake_question_below_the_floor_shows_the_scores_and_its_one_nudge() {
     });
     s.command("/start-epic hx");
     await_line(&mut s, "hx-1 asking you: stuck in implement");
-    let [_, proceed] = nudges(&w.repo.join(".harness/runs/hx-1/implement.md"));
+    let [_, proceed] = nudges(&w.repo.join(".orqadence/runs/hx-1/implement.md"));
     let rest = ["open the pane", "a prompt of your own"].map(str::to_string);
     let options = |actions: &[&str]| -> Vec<String> {
         std::iter::once(format!("nudge: {proceed}"))
@@ -2795,7 +2965,7 @@ fn a_question_closes_when_its_ticket_moves_on_and_a_late_answer_is_dropped() {
         s.command("/start-epic hx");
         await_line(&mut s, "hx-1 asking you: stuck in implement");
         write_file(
-            &w.repo.join(".harness/runs/hx-1/implement.md"),
+            &w.repo.join(".orqadence/runs/hx-1/implement.md"),
             "STATUS: done\n",
         );
         let o = orchestrator(&s);
@@ -2866,7 +3036,7 @@ fn park_takes_a_running_ticket_out_at_its_stage() {
     // /continue takes a saved run of Parked Tickets alone: resume unparks
     // the Ticket at its Stage, where the result it wrote meanwhile is taken.
     write_file(
-        &w.repo.join(".harness/runs/hx-1/implement.md"),
+        &w.repo.join(".orqadence/runs/hx-1/implement.md"),
         "STATUS: done\n",
     );
     w.session(succeed);
@@ -2901,8 +3071,8 @@ fn the_continue_checklist_resets_a_ticket_to_implement() {
     await_line(&mut s, "hx-1 review 1 started: codex (pane 1-2)");
     s.command("/stop-work");
     await_end(&mut s);
-    let runs = w.repo.join(".harness/runs");
-    let state = std::fs::read_to_string(w.repo.join(".harness/state.json")).unwrap();
+    let runs = w.repo.join(".orqadence/runs");
+    let state = std::fs::read_to_string(w.repo.join(".orqadence/state.json")).unwrap();
     let closed = w.called("herdr pane close").len();
 
     // Another process's run holds the lock: nothing is closed, moved or saved.
@@ -2919,7 +3089,7 @@ fn the_continue_checklist_resets_a_ticket_to_implement() {
     assert_eq!(w.called("herdr pane close").len(), closed);
     assert!(runs.join("hx-1/implement.md").exists() && !runs.join("hx-1.reset-1").exists());
     assert_eq!(
-        std::fs::read_to_string(w.repo.join(".harness/state.json")).unwrap(),
+        std::fs::read_to_string(w.repo.join(".orqadence/state.json")).unwrap(),
         state
     );
     drop(other);
@@ -2974,7 +3144,7 @@ fn dump() {
 fn a_plan_question_takes_feedback_typed_in_the_modal_then_approval() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     w.lock().merged = true;
-    let run = w.repo.join(".harness/runs/hx-1");
+    let run = w.repo.join(".orqadence/runs/hx-1");
     let words = vec!["word"; 60].join(" "); // four rows at 88 columns
     let steps: String = (1..=80).map(|n| format!("- step {n}\n")).collect();
     let plan = format!("{words}\n{steps}");
@@ -3147,7 +3317,7 @@ fn kept_feedback_can_be_resent_and_a_failed_plan_step_offers_retry() {
     pick(&mut s, 1);
     assert_eq!(fake.calls(), ["herdr agent focus w1:p7"]);
     assert_eq!(s.questions.len(), 1, "open the pane answered the Question");
-    let log = std::fs::read_to_string(repo.path().join(".harness/orchestrator.log")).unwrap();
+    let log = std::fs::read_to_string(repo.path().join(".orqadence/orchestrator.log")).unwrap();
     for line in [
         "harness-kqe.11 you answered: feedback",
         "harness-kqe.11 asking you: stuck in implement",
@@ -3174,7 +3344,8 @@ fn answered(s: &mut Screen, w: &World, ticket: &str) {
     await_line(s, &format!("{ticket} sent your answer"));
     let pane = s.state.tickets[ticket].panes["implement"].clone();
     write_file(
-        &w.repo.join(format!(".harness/runs/{ticket}/implement.md")),
+        &w.repo
+            .join(format!(".orqadence/runs/{ticket}/implement.md")),
         "STATUS: done\n",
     );
     w.lock().agents.insert(pane, "idle".to_string());
@@ -3363,7 +3534,7 @@ fn plan_screen(repo: &Path) -> Screen {
         Ask::Wake {
             pane: "w1:p9".to_string(),
             tail: "Ran the tests.\n".to_string(),
-            file: PathBuf::from("/r/.harness/runs/harness-kqe.10/fix-1.md"),
+            file: PathBuf::from("/r/.orqadence/runs/harness-kqe.10/fix-1.md"),
             actions: Action::ALL[..4].to_vec(),
             judged: None,
         },
@@ -3531,8 +3702,8 @@ fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
     render(&s, 100, 30); // it opens
     s.say("a line after it opened");
     let buf = render(&s, 100, 30);
-    assert_eq!(find(&buf, "╭"), Some((8, 2)), "{:#?}", rows(&buf));
-    assert_eq!(find(&buf, "╯"), Some((91, 27)), "{:#?}", rows(&buf));
+    assert_eq!(buf[(8, 2)].symbol(), "╭", "{:#?}", rows(&buf));
+    assert_eq!(buf[(91, 27)].symbol(), "╯", "{:#?}", rows(&buf));
     assert!(row(&buf, 2).contains(" PLAN · 11 Questions "));
     assert!(row(&buf, 3).contains("1 more waiting · 1 new on RECENT"));
     assert!(row(&buf, 5).contains("judged: covers 0.62 < 0.65, in scope 0.90, asks 0.05"));
@@ -3590,12 +3761,7 @@ fn under_110_columns_the_plan_folds_over_the_dimmed_shell() {
     type_in(&mut s, "/st");
     let buf = render(&s, 100, 30);
     let (_, y) = find(&buf, "› /start-epic").expect("the / list is under the box");
-    assert_eq!(
-        find(&buf, "╯").map(|(_, r)| r),
-        Some(y - 1),
-        "{:#?}",
-        rows(&buf)
-    );
+    assert_eq!(buf[(91, y - 1)].symbol(), "╯", "{:#?}", rows(&buf));
 }
 
 /// The badges shorten, and the folded options to their first words,
@@ -3858,7 +4024,7 @@ fn summary_world() -> (Arc<World>, Screen) {
         BdTicket::new("hx-3"),
     ]);
     w.lock().tickets[0].status = "closed".to_string();
-    let runs = w.repo.join(".harness/runs");
+    let runs = w.repo.join(".orqadence/runs");
     let files = [
         (
             "hx-1/verdict-1.md",
@@ -3903,7 +4069,7 @@ fn summary_world() -> (Arc<World>, Screen) {
         (
             ".claude/projects/{slug}/s1.jsonl",
             COST_CLAUDE,
-            w.repo.join(".harness/worktrees/hx-1"),
+            w.repo.join(".orqadence/worktrees/hx-1"),
         ),
         (
             ".codex/sessions/2026/09/24/rollout-1.jsonl",
@@ -3929,7 +4095,7 @@ fn summary_world() -> (Arc<World>, Screen) {
         "2026-09-24 19:05:00 hx-2 PR #2 opened after 3 rounds (https://example.test/pr/2)",
         "2026-09-24 19:10:00 hx-3 parked: the session asked which model name to use",
     ];
-    write_file(&w.repo.join(".harness/orchestrator.log"), &log.join("\n"));
+    write_file(&w.repo.join(".orqadence/orchestrator.log"), &log.join("\n"));
     let mut s = shell(&w);
     s.state.epic = "hx".to_string();
     s.state.tickets.insert(
@@ -4072,7 +4238,7 @@ fn summary_counts_each_tickets_rounds_and_findings_from_its_run_directory() {
 #[test]
 fn fixed_leaves_out_the_last_verdicts_fix_items() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1"), BdTicket::new("hx-2")]);
-    let runs = w.repo.join(".harness/runs");
+    let runs = w.repo.join(".orqadence/runs");
     let one = verdict(&["(low) src/a.rs:1 — one"], &[]);
     let files = [
         ("hx-1/verdict-1.md", verdict(&["(high) a", "(low) b"], &[])),
@@ -4257,7 +4423,7 @@ fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
         list
     });
     write_file(
-        &w.repo.join(".harness/runs/hy-1/verdict-1.md"),
+        &w.repo.join(".orqadence/runs/hy-1/verdict-1.md"),
         &verdict(&[], &["(low) src/y.rs:1 — why not"]),
     );
     s.reload_epics();
@@ -4289,7 +4455,7 @@ fn summary_at_an_epic_shows_that_epics_and_one_with_no_evidence_is_a_notice() {
 
     // A closed Epic by its id; three Rounds with no PR leave nothing on one,
     // and the cap's fix item is not fixed.
-    let runs = w.repo.join(".harness/runs/hw-1");
+    let runs = w.repo.join(".orqadence/runs/hw-1");
     for n in 1..=3 {
         let body = verdict(&["(low) src/w.rs:1 — w"], &[]);
         write_file(&runs.join(format!("verdict-{n}.md")), &body);
@@ -4471,7 +4637,7 @@ fn the_close_reason_keeps_a_parked_tickets_reason() {
     let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
     w.lock().tickets[0].status = "closed".to_string();
     write_file(
-        &w.repo.join(".harness/state.json"),
+        &w.repo.join(".orqadence/state.json"),
         r#"{"epic":"hx","tickets":{"hx-1":{"status":"parked","stage":"implement","round":0,"reason":"went idle"}}}"#,
     );
     let mut s = shell(&w);
@@ -4509,4 +4675,39 @@ fn a_failed_close_asks_again_and_never_comments_twice() {
     assert_eq!(w.called("bd comments add hx ").len(), 2);
     assert_eq!(w.called("bd close hx ").len(), 2);
     assert!(!s.showing(), "the confirmation stayed");
+}
+
+#[test]
+fn the_12x12_logo_and_its_ascii_fallback_match_the_brand_reference() {
+    let reference = include_str!("../../assets/brand/orqadence-logo-12x12.txt");
+    // The 12 rows under a heading, a lit cell's █ a blank filled with color.
+    let frame = |heading: &str| -> Vec<String> {
+        let at = reference.find(heading).unwrap() + heading.len();
+        let rows = reference[at..].trim_start_matches('\n').lines().take(12);
+        rows.map(|r| r.replace('█', " ")).collect()
+    };
+    let text = |lit: usize| -> Vec<String> {
+        let lines = super::brand::logo_12(lit);
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    };
+    assert_eq!(text(2), frame("STATIC FRAME (default — bottom-right lit):"));
+    assert_eq!(text(0), frame("frame 0 — lit: top-left (green #00f27c)"));
+    assert_eq!(
+        text(3),
+        frame("frame 3 — lit: bottom-left (purple #aa2efa)")
+    );
+    let ascii = frame("PURE-ASCII FALLBACK (no Unicode / no color), static frame:");
+    assert_eq!(
+        super::brand::LOGO_ASCII.lines().collect::<Vec<_>>(),
+        ascii.iter().map(|r| r.trim_end()).collect::<Vec<_>>()
+    );
+    let lines = super::brand::logo_12(2);
+    let centre = &lines[9].spans[4];
+    assert_eq!(
+        (centre.content.as_ref(), centre.style.fg, centre.style.bg),
+        ("❯", Some(INK), Some(PANE_COLORS[2]))
+    );
 }

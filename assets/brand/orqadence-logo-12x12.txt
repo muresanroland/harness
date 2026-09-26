@@ -1,0 +1,108 @@
+ORQADENCE — 12×12 TERMINAL LOGO
+
+Grid: two 5×5 panes per row, 2-column and 2-row gaps → exactly 12 columns × 12 rows.
+Unlit pane = rounded outline drawn in the pane's own color.
+Lit pane   = 5×5 cells: the inner cells filled with the pane's own color as BACKGROUND (█ below
+             marks those cells; render them as spaces with a bg color), with a bold ❯ in #000a1a on the
+             centre cell; its edge cells are half and quarter blocks (▗▄▖ ▐▌ ▝▀▘) in the pane's color, so
+             the fill ends mid-cell where an unlit pane's outline runs and both panes are one size.
+Note: terminal cells are ~2× taller than wide, so 12×12 cells looks tall; the header uses the 13×6 mark instead.
+
+STATIC FRAME (default — bottom-right lit):
+
+╭───╮  ╭───╮
+│   │  │   │
+│   │  │   │
+│   │  │   │
+╰───╯  ╰───╯
+            
+            
+╭───╮  ▗▄▄▄▖
+│   │  ▐███▌
+│   │  ▐█❯█▌
+│   │  ▐███▌
+╰───╯  ▝▀▀▀▘
+
+ANIMATION FRAMES (clockwise: TL → TR → BR → BL):
+
+frame 0 — lit: top-left (green #00f27c)
+▗▄▄▄▖  ╭───╮
+▐███▌  │   │
+▐█❯█▌  │   │
+▐███▌  │   │
+▝▀▀▀▘  ╰───╯
+            
+            
+╭───╮  ╭───╮
+│   │  │   │
+│   │  │   │
+│   │  │   │
+╰───╯  ╰───╯
+
+frame 1 — lit: top-right (cyan #2cf2fa)
+╭───╮  ▗▄▄▄▖
+│   │  ▐███▌
+│   │  ▐█❯█▌
+│   │  ▐███▌
+╰───╯  ▝▀▀▀▘
+            
+            
+╭───╮  ╭───╮
+│   │  │   │
+│   │  │   │
+│   │  │   │
+╰───╯  ╰───╯
+
+frame 2 — lit: bottom-right (blue #0090fa)
+╭───╮  ╭───╮
+│   │  │   │
+│   │  │   │
+│   │  │   │
+╰───╯  ╰───╯
+            
+            
+╭───╮  ▗▄▄▄▖
+│   │  ▐███▌
+│   │  ▐█❯█▌
+│   │  ▐███▌
+╰───╯  ▝▀▀▀▘
+
+frame 3 — lit: bottom-left (purple #aa2efa)
+╭───╮  ╭───╮
+│   │  │   │
+│   │  │   │
+│   │  │   │
+╰───╯  ╰───╯
+            
+            
+▗▄▄▄▖  ╭───╮
+▐███▌  │   │
+▐█❯█▌  │   │
+▐███▌  │   │
+▝▀▀▀▘  ╰───╯
+
+PURE-ASCII FALLBACK (no Unicode / no color), static frame:
+
++---+  +---+
+|   |  |   |
+|   |  |   |
+|   |  |   |
++---+  +---+
+            
+            
++---+  #####
+|   |  #####
+|   |  ##>##
+|   |  #####
++---+  #####
+
+HEADER MARK (13×6, used inside the app header — unchanged structure):
+
+╭────╮ ╭────╮
+│    │ │    │
+╰────╯ ╰────╯
+╭────╮ ▗▄▄▄▄▖
+│    │ ▐█❯██▌
+╰────╯ ▝▀▀▀▀▘
+
+(same rules: lit pane = half-block edges round bg-colored cells, ❯ on the middle row, 3rd cell; bottom-right lit when static)

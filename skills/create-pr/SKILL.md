@@ -11,7 +11,7 @@ Open a pull request for the current branch. This skill ends at "PR created".
 approving your own PR. Merging is the human's.
 
 Nothing here assumes a stack. The repo's own conventions win over everything below: find them
-in step 1 and follow them. You may be running unwatched (the Harness Fix Stage runs this in a
+in step 1 and follow them. You may be running unwatched (the Orqadence Fix Stage runs this in a
 worktree), so never ask a question you can decide: choose, and say what you chose in the PR body.
 
 ## 1. Find the repo's checks

@@ -1,4 +1,6 @@
-# Harness
+<p align="center">
+  <img src="assets/brand/orqadence-banner.gif" alt="Orqadence — terminal orchestrator" width="640">
+</p>
 
 Drives a [beads](https://github.com/gastownhall/beads) Epic through a fixed multi-agent pipeline, from Tickets to open pull requests, with every agent visible in [herdr](https://herdr.dev).
 
@@ -9,7 +11,7 @@ Each Ticket gets its own git worktree and herdr tab. It passes through:
 3. **Debate**: a Claude moderator settles each Finding as fix or skip.
 4. **Fix**: Claude Code applies the fix items.
 
-Review, Debate and Fix repeat for up to 3 rounds, then a pull request opens. You merge it. The Harness then closes the Ticket and cleans up its worktree. Vocabulary: [CONTEXT.md](CONTEXT.md).
+Review, Debate and Fix repeat for up to 3 rounds, then a pull request opens. You merge it. Orqadence then closes the Ticket and cleans up its worktree. Vocabulary: [CONTEXT.md](CONTEXT.md).
 
 ## Requirements
 
@@ -17,39 +19,39 @@ Review, Debate and Fix repeat for up to 3 rounds, then a pull request opens. You
 
 | Tool | Used for | Setup |
 |---|---|---|
-| [herdr](https://herdr.dev) | Runs every agent in a visible pane | Start `harness` from a pane inside herdr (`HERDR_ENV=1`) |
-| [beads (`bd`)](https://github.com/gastownhall/beads) | The Epic and its Tickets | `bd init` in the Target repo, which `harness init` offers to run |
+| [herdr](https://herdr.dev) | Runs every agent in a visible pane | Start `orqa` from a pane inside herdr (`HERDR_ENV=1`) |
+| [beads (`bd`)](https://github.com/gastownhall/beads) | The Epic and its Tickets | `bd init` in the Target repo, which `orqa init` offers to run |
 | [git](https://git-scm.com) | Branches and worktrees | The repo needs a remote on GitHub |
 | [GitHub CLI (`gh`)](https://cli.github.com) | Opens PRs, watches for merges | `gh auth login` |
 | [Claude Code (`claude`)](https://claude.com/claude-code) | Implement, Debate, Fix, Address | Logged in |
 | [Codex CLI (`codex`)](https://github.com/openai/codex) | Review | Logged in |
-| [TypeSafe](https://docs.typesafe.ai) API key | Optional: the Judgment approves plans and handles stuck sessions, and the Debate settles disputed Findings | `TYPESAFE_API_KEY`, or say yes and paste it at `harness init` |
+| [TypeSafe](https://docs.typesafe.ai) API key | Optional: the Judgment approves plans and handles stuck sessions, and the Debate settles disputed Findings | `TYPESAFE_API_KEY`, or say yes and paste it at `orqa init` |
 
-With TypeSafe off, the Harness works the same but asks you instead: every plan approval and every stuck session becomes a Question in the Shell, and a Finding the Debate's sides still dispute is skipped and listed in the PR.
+With TypeSafe off, Orqadence works the same but asks you instead: every plan approval and every stuck session becomes a Question in the Shell, and a Finding the Debate's sides still dispute is skipped and listed in the PR.
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muresanroland/harness/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/muresanroland/orqadence/main/install.sh | sh
 ```
 
-This installs the latest release as `~/.local/bin/harness`. Set `HARNESS_INSTALL_DIR` to install somewhere else. Keep that directory writable by you and on your `PATH`.
+This installs the latest release as `~/.local/bin/orqa`. Set `ORQADENCE_INSTALL_DIR` to install somewhere else. Keep that directory writable by you and on your `PATH`.
 
-**Updates are automatic.** A release build checks GitHub Releases each time the Shell opens, and once a day while it stays open. It downloads a newer version and swaps it in when no run is live in that repo. `harness --version` prints the version, for example `v1.0.0`.
+**Updates are automatic.** A release build checks GitHub Releases each time the Shell opens, and once a day while it stays open. It downloads a newer version and swaps it in when no run is live in that repo. `orqa --version` prints the version, for example `v1.0.0`.
 
-To build from source instead, run `cargo install --git https://github.com/muresanroland/harness`. That gives a `-dev` build, which never updates itself.
+To build from source instead, run `cargo install --git https://github.com/muresanroland/orqadence`. That gives a `-dev` build, which never updates itself.
 
 ## Set up a Target repo
 
 A Target repo is the repository whose Epic you want worked on. Once, from a herdr pane inside it:
 
 ```bash
-harness init
+orqa init
 ```
 
 `init` does these things:
 - It asks where the skills go:
-  - this checkout, uncommitted: this is the default, and what a non-interactive `init` takes. The skills go in `.harness/skills`, and each Ticket's worktree gets links to them that git ignores.
+  - this checkout, uncommitted: this is the default, and what a non-interactive `init` takes. The skills go in `.orqadence/skills`, and each Ticket's worktree gets links to them that git ignores.
   - the repo, committed: the skills go in `.agents/skills`, linked from `.claude/skills`. You commit them.
   - user level: the skills go in `~/.agents/skills`, linked from `~/.claude/skills`.
 
@@ -57,12 +59,12 @@ harness init
 - It installs the Stage skills and `create-pr` there. They are yours to edit from then on, and running `init` again asks before touching them. If the repo already has them committed in `.agents/skills`, those stay.
 - With no `bd` workspace, it offers to run `bd init`.
 - It offers to write the beads `docs/agents` setup the skills read, only what is missing: `docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md`, and an Agent skills block in `CLAUDE.md`, or `AGENTS.md` when there is no `CLAUDE.md`. A non-interactive `init` writes them too.
-- It asks whether to use TypeSafe, yes by default. Yes asks for the key, which it keeps in `.harness/typesafe-key`, and installs the `typesafe-ai` skill; an empty key is no. With `TYPESAFE_API_KEY` set it is on without asking. Without it, a non-interactive `init` leaves TypeSafe on only where it is already on with a kept key, and off everywhere else. On or off is kept in `.harness/config.json`.
+- It asks whether to use TypeSafe, yes by default. Yes asks for the key, which it keeps in `.orqadence/typesafe-key`, and installs the `typesafe-ai` skill; an empty key is no. With `TYPESAFE_API_KEY` set it is on without asking. Without it, a non-interactive `init` leaves TypeSafe on only where it is already on with a kept key, and off everywhere else. On or off is kept in `.orqadence/config.json`.
 - It installs each job's default skill, pinned by commit: `tdd`, `code-review`, `ponytail`, `caveman`, `ponytail-review` and `resolving-merge-conflicts`. At user level, a skill of the same name you already have stays as it is.
 - It offers to install herdr's integration for claude or codex when it is not installed or outdated, listing what each install writes. Without it herdr does not know a session's id, so `/continue` starts those Stages fresh instead of resuming them.
 - It runs a preflight that reports anything still missing: the `bd` workspace, `gh` auth, the git remote, the `create-pr` skill, a job's skill, an App a Stage runs on that is not on `PATH`, or herdr. It also warns about a personal skill that shadows an installed one on Claude, and about the superpowers plugin being enabled.
 
-`.harness/` is added to `.gitignore`.
+`.orqadence/` is added to `.gitignore`.
 
 ## Run an Epic
 
@@ -76,14 +78,14 @@ harness init
 2. Open the Shell from a herdr pane in the Target repo:
 
    ```bash
-   harness
+   orqa
    ```
 
    It shows the open Epics and their Tickets. Type `/` to pick a command, then `@` to pick an Epic or Ticket by its id or part of its title; Tab or Enter fills in the one under the cursor.
 
 3. Watch progress in the Shell. Each Ticket's panes appear in its own herdr tab. Answer Questions as they come up: plan approvals, sessions waiting at a prompt, and Wakes the Judgment wasn't sure about.
 
-4. Review and merge the PRs on GitHub. The Harness closes each merged Ticket and starts the Tickets that were waiting on it. When every Ticket is closed, the Epic is done.
+4. Review and merge the PRs on GitHub. Orqadence closes each merged Ticket and starts the Tickets that were waiting on it. When every Ticket is closed, the Epic is done.
 
 ### Shell commands
 
@@ -97,7 +99,7 @@ harness init
 | `/park <ticket>` | Take the Ticket out of the pipeline; the others keep going |
 | `/address <ticket>` | Act on the review comments or merge conflicts on the Ticket's open PR |
 | `/questions` | Show the Questions waiting for you |
-| `/config` | Pick the App, model and effort each Stage runs on, and a plan model other than Implement's; every change saves at once to `.harness/config.json`, and during a run the Stages that start after it use it. A change that breaks a check (the Review on Implement's model, the Debate's sides in one family) is refused; the Apps page shows which Apps are installed. Each Stage's page also picks its jobs' Delegate skills; the Skills page adds (`a`), updates (`u`, `U` for all) and removes (`d`) the skills the Harness installed; the TypeSafe page turns TypeSafe on or off and asks the key when there is none |
+| `/config` | Pick the App, model and effort each Stage runs on, and a plan model other than Implement's; every change saves at once to `.orqadence/config.json`, and during a run the Stages that start after it use it. A change that breaks a check (the Review on Implement's model, the Debate's sides in one family) is refused; the Apps page shows which Apps are installed. Each Stage's page also picks its jobs' Delegate skills; the Skills page adds (`a`), updates (`u`, `U` for all) and removes (`d`) the skills Orqadence installed; the TypeSafe page turns TypeSafe on or off and asks the key when there is none |
 | `/away` | Toggle Away: a Stage's question parks its Ticket, with a bd comment, until you `/continue @ticket` it |
 | `/summary [<epic>]` | Show the Epic's PRs, Rounds and Findings; it also opens by itself once every Ticket has its PR or is Parked |
 | `/exit` | Leave the Shell (asks first during a run). Ctrl-C twice does the same |
@@ -106,7 +108,7 @@ Leaving the Shell never kills agent panes.
 
 ### What it writes
 
-Everything goes under `.harness/` in the Target repo:
+Everything goes under `.orqadence/` in the Target repo:
 - `orchestrator.log`: one line per event.
 - `state.json`: the run, so it can be resumed.
 - `runs/<ticket>/`: each Stage's results, diffs and Debate transcripts.

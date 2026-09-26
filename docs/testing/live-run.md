@@ -1,4 +1,4 @@
-# Controlled live Harness test
+# Controlled live Orqadence test
 
 The live run on the Rust binary, driven through the Shell. It is the merge gate
 for the Rust port (harness-kqe.5) and the Shell running the Orchestrator
@@ -24,14 +24,14 @@ The run has two phases:
 ### 0.1 Build the binary
 
 ```bash
-cd ~/Documents/Projects/harness
-cargo build --release     # target/release/harness
+cd ~/Documents/Projects/orqadence
+cargo build --release     # target/release/orqa
 cargo test
 ```
 
-The binary is `../harness/target/release/harness` from inside the target repo.
+The binary is `../orqadence/target/release/orqa` from inside the target repo.
 It reports `v1.0.0-dev` and a dev build never self-updates. The globally
-installed `harness` may be the old Go build, which has no version and no
+installed `harness` is the old Go build, which has no version and no
 updater: do not use it for this run.
 
 ### 0.2 Archive the earlier run in the target repo
@@ -44,12 +44,12 @@ move that run's files aside so the new Epic starts from clean state:
 ```bash
 cd ~/Documents/Projects/test-harness-repo
 git pull --ff-only
-a=.harness/archive/2026-09-23-go-regression-run
+a=.orqadence/archive/2026-09-23-go-regression-run
 mkdir -p "$a"
-mv -f .harness/state.json .harness/orchestrator.log .harness/runs .harness/control .harness/live-test.json "$a"/
+mv -f .orqadence/state.json .orqadence/orchestrator.log .orqadence/runs .orqadence/control .orqadence/live-test.json "$a"/
 ```
 
-The old worktrees under `.harness/worktrees` stay, and so do their branches.
+The old worktrees under `.orqadence/worktrees` stay, and so do their branches.
 They belong to the earlier run, not to this cleanup.
 
 ### 0.3 Refresh the Stage skills
@@ -59,7 +59,7 @@ first" section. The other shipped skills already match. From a Herdr shell pane
 (the preflight wants `HERDR_ENV=1`), in the target repo:
 
 ```bash
-../harness/target/release/harness init
+../orqadence/target/release/orqa init
 ```
 
 - At the gate ("the shipped skills are already installed here"), choose
@@ -67,12 +67,12 @@ first" section. The other shipped skills already match. From a Herdr shell pane
 - If asked about create-pr, keep the shipped one; it is identical.
 - If asked for a TypeSafe key, press Enter when `TYPESAFE_API_KEY` is exported
   in the shell you will launch from. Otherwise paste it; init keeps it in
-  `.harness/typesafe-key`.
+  `.orqadence/typesafe-key`.
 
 The preflight should report nothing missing. Check the refresh landed:
 
 ```bash
-grep -c "Plan first" .harness/skills/stage-implement/SKILL.md   # 1, in the checkout location
+grep -c "Plan first" .orqadence/skills/stage-implement/SKILL.md   # 1, in the checkout location
 ```
 
 The leftover `start-work` skill is unused by the Shell. Leave it.
@@ -83,12 +83,12 @@ Four Tickets, with D blocked by A. Run this in the target repo, then note the
 printed ids: the Shell takes them.
 
 ```bash
-rules='This ticket is part of the approved controlled live Harness test. Keep changes limited to the named files, with Go standard library only. Read AGENTS.md and run its build, vet, and race-test gates. The run authorizes commits and pushing/opening one PR on this ticket branch. Never merge a PR or close a ticket yourself; the human merges and the orchestrator closes. Do not work on other epics or the open PRs #1, #3, #4 and #5. Do not add unrelated improvements or alter agent/skill configuration.'
-label=harness-live-20260923
+rules='This ticket is part of the approved controlled live Orqadence test. Keep changes limited to the named files, with Go standard library only. Read AGENTS.md and run its build, vet, and race-test gates. The run authorizes commits and pushing/opening one PR on this ticket branch. Never merge a PR or close a ticket yourself; the human merges and the orchestrator closes. Do not work on other epics or the open PRs #1, #3, #4 and #5. Do not add unrelated improvements or alter agent/skill configuration.'
+label=orqadence-live-20260923
 
 epic=$(bd create --silent --type=epic --priority=2 --labels=$label \
   --title="Controlled live run on the Rust binary: plan mode, Questions, recovery, merge dependency" \
-  --description="Four small tickets for the Rust Harness live run (docs/testing/live-run.md in the harness repo). D waits for A to merge.")
+  --description="Four small tickets for the Rust Orqadence live run (docs/testing/live-run.md in the orqadence repo). D waits for A to merge.")
 
 a=$(bd create --silent --parent "$epic" --type=task --priority=1 --labels=$label \
   --title="slug.Make turns text into a lowercase hyphenated slug" \
@@ -109,7 +109,7 @@ c=$(bd create --silent --parent "$epic" --type=task --priority=2 --labels=$label
   --description="Add vowels/vowels.go and vowels/vowels_test.go. Export Count(text string) int: how many of a, e, i, o and u the text holds, in either case. Do not change main.go.
 
 $rules" \
-  --acceptance='Count("")=0; Count("Harness")=2; Count("AEIOU xyz")=5. Tests cover all cases. main.go unchanged.')
+  --acceptance='Count("")=0; Count("Orqadence")=4; Count("AEIOU xyz")=5. Tests cover all cases. main.go unchanged.')
 
 d=$(bd create --silent --parent "$epic" --type=task --priority=1 --labels=$label --deps "$a" \
   --title="The command prints slug.Make of an explicit --slug flag" \
@@ -128,7 +128,7 @@ bd show "$d"    # DEPENDS ON lists A
 
 Open a shell pane in the Herdr workspace where the Ticket tabs should appear.
 The checks below report missing variables without printing the key.
-`TYPESAFE_API_KEY` may instead come from `.harness/typesafe-key` (step 0.3);
+`TYPESAFE_API_KEY` may instead come from `.orqadence/typesafe-key` (step 0.3);
 drop that line if it does.
 
 ```bash
@@ -137,7 +137,7 @@ cd ~/Documents/Projects/test-harness-repo
   : "${HERDR_ENV:?Open a Herdr terminal pane first}"
   : "${HERDR_WORKSPACE_ID:?This shell needs a Herdr workspace ID}"
   : "${TYPESAFE_API_KEY:?Load your TypeSafe API key into this shell}"
-  ../harness/target/release/harness
+  ../orqadence/target/release/orqa
 )
 ```
 
@@ -148,7 +148,7 @@ The Shell shows the open Epics and their Tickets in TICKETS. On the input line:
 ```
 
 Tab completes the Epic from its id or a title substring. The status row reads
-RUNNING, and RECENT (and `.harness/orchestrator.log`) shows
+RUNNING, and RECENT (and `.orqadence/orchestrator.log`) shows
 `implement started: claude (pane 2-1)` for A and B. C waits for a slot, and D
 waits for A. Leave the Shell open.
 
@@ -171,8 +171,8 @@ feedback.
 For A, check the plan hook's evidence:
 
 ```bash
-cat .harness/runs/<A>/settings.json   # one PreToolUse hook on ExitPlanMode running harness __plan-hook
-head .harness/runs/<A>/plan.md        # the plan Claude presented
+cat .orqadence/runs/<A>/settings.json   # one PreToolUse hook on ExitPlanMode running orqa __plan-hook
+head .orqadence/runs/<A>/plan.md        # the plan Claude presented
 ```
 
 Record for each Ticket whether the Judgment approved its plan or asked you.
@@ -183,7 +183,7 @@ A Question is the form above the input line. Up/Down or a digit picks an
 option, Enter answers, and Esc hides it (`/questions` brings it back).
 
 - **Trust**: `waiting: claude does not trust <dir> yet, open it there once and accept (pane 2-1)`.
-  Open that agent in the exact directory, accept, then exit it. The Harness goes on by
+  Open that agent in the exact directory, accept, then exit it. Orqadence goes on by
   itself (`claude trusts <dir> now, carrying on`). Do not edit trust files by hand.
 - **Other prompts**: `asking you: waiting at a prompt in implement (pane 2-1)`. Pick
   **open the pane**, answer the prompt there, and the Question closes on
@@ -197,10 +197,10 @@ option, Enter answers, and Esc hides it (`/questions` brings it back).
 
 Let A finish an uninterrupted Implement → Review → Debate → Fix pipeline until
 RECENT shows `PR #N opened after K rounds`. Review A's code, tests, stage
-results (`.harness/runs/<A>/`) and PR description.
+results (`.orqadence/runs/<A>/`) and PR description.
 
 D must not have started. Its row shows `waiting for PR #N to merge`, and there
-is no `.harness/worktrees/<D>`. An open PR does not unblock it. **Do not merge
+is no `.orqadence/worktrees/<D>`. An open PR does not unblock it. **Do not merge
 A yet**: step 5 merges it while the Shell is closed.
 
 ### 5. Stop, resume, exit mid-run, then resume without the key
@@ -225,8 +225,8 @@ Do this while B or C is still active.
    cd ~/Documents/Projects/test-harness-repo
    (
      unset TYPESAFE_API_KEY
-     [ -f .harness/typesafe-key ] && mv -f .harness/typesafe-key .harness/typesafe-key.off
-     ../harness/target/release/harness
+     [ -f .orqadence/typesafe-key ] && mv -f .orqadence/typesafe-key .orqadence/typesafe-key.off
+     ../orqadence/target/release/orqa
    )
    ```
 
@@ -283,7 +283,7 @@ includes the commit that merged A. Keep the Shell open until RECENT says
 their worktrees removed. Then restore the key file if step 5 moved it:
 
 ```bash
-[ -f .harness/typesafe-key.off ] && mv -f .harness/typesafe-key.off .harness/typesafe-key
+[ -f .orqadence/typesafe-key.off ] && mv -f .orqadence/typesafe-key.off .orqadence/typesafe-key
 ```
 
 ## Evidence and acceptance
@@ -296,8 +296,8 @@ gh pr list --state all --json number,headRefName,state,url
 git worktree list
 ```
 
-Keep `.harness/orchestrator.log`, `.harness/state.json` and
-`.harness/runs/<epic>.*` (each with `settings.json` and `plan.md` for
+Keep `.orqadence/orchestrator.log`, `.orqadence/state.json` and
+`.orqadence/runs/<epic>.*` (each with `settings.json` and `plan.md` for
 Implement). Note the PR URLs, which plans the Judgment approved and which you
 did, where stop/resume and the pane loss were exercised, and every Wake with
 its answer.
@@ -325,12 +325,12 @@ and what you saw. A clean restart must not erase the evidence being tested.
 
 ## After the run: closing the tickets
 
-In the harness repo:
+In the orqadence repo:
 
 1. **Record the evidence** on each ticket, then close them:
 
    ```bash
-   bd comments add harness-kqe.5 "Live run passed on target/release/harness: <epic>, PRs <urls>; evidence in test-harness-repo/.harness"
+   bd comments add harness-kqe.5 "Live run passed on target/release/orqa: <epic>, PRs <urls>; evidence in test-harness-repo/.orqadence"
    bd comments add harness-kqe.10 "Live run passed through the Shell: /start-epic, /stop-work, /continue, /exit mid-run, retry via the Wake Question"
    bd comments add harness-kqe.13 "Real plan-mode Implement: <A> approved by the Judgment <score>; <D> feedback then approve via the Question"
    bd close harness-kqe.5 harness-kqe.10
@@ -341,7 +341,7 @@ In the harness repo:
    once the run has passed.
 3. **Release v1.0.0.** On the merged `main`, run
    `git tag v1.0.0 && git push origin v1.0.0`. The release workflow builds the
-   binaries and attaches them to the release. Reinstall the global `harness`
+   binaries and attaches them to the release. Reinstall the global `orqa`
    (`cargo install --path .`, or the release binary): from then on, it updates
    itself.
 4. **Close the Epic**: `bd close harness-kqe`.

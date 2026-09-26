@@ -1,4 +1,4 @@
-//! The Shell: the full-terminal screen that `harness` alone opens (ADR 0004).
+//! The Shell: the full-terminal screen that `orqa` alone opens (ADR 0004).
 //! `Screen` is the plain state the tests drive; `open` wraps it in the
 //! terminal and the one draw, poll and tick loop (ADR 0003). The Shell owns
 //! the Orchestrator: the scheduler runs on a thread of this process, its
@@ -32,13 +32,13 @@ use crate::tools::Tools;
 use crate::update::{self, Checked, Ready, Releases};
 use summary::Summary;
 
+mod brand;
 mod config;
 mod draw;
-mod logo;
 mod summary;
 
-/// The hop and the banner step every 50 ms while a run is live; at rest the
-/// screen redraws every 250 ms.
+/// The screen redraws every 50 ms while a run is live, for the spinner and
+/// the header's panes; at rest every 250 ms.
 const TICK: Duration = Duration::from_millis(50);
 const IDLE_TICK: Duration = Duration::from_millis(250);
 /// How long 'press Ctrl-C again to exit' stands.
@@ -92,7 +92,7 @@ const COMMANDS: [(&str, &str, &str); 12] = [
         "[<epic>]",
         "the Epic's PRs, Rounds and Findings",
     ),
-    ("/exit", "", "leave the Harness"),
+    ("/exit", "", "leave Orqadence"),
 ];
 
 /// An open Epic and its child Tickets, one row each on the TICKETS tree.
@@ -168,7 +168,6 @@ pub(crate) struct Screen {
     pub(crate) version: String,
     /// COLORTERM says 24-bit; otherwise every color is folded to the 256 cube.
     pub(crate) truecolor: bool,
-    pub(crate) logo: logo::Logo,
     pub(crate) epics: Vec<Epic>,
     /// The run's State: a snapshot of the live Orchestrator's, or the saved
     /// one; the Overall bar, the TICKETS rows and the resumable mark come
@@ -189,8 +188,10 @@ pub(crate) struct Screen {
     pub(crate) notice: Option<(String, Instant)>,
     ctrl_c: Option<Instant>,
     pub(crate) ticks: u64,
-    /// A run is live: the logo hops, the status row spins.
+    /// A run is live: the header's panes step, the status row spins.
     pub(crate) running: bool,
+    /// The tick the live run started on, where the panes' steps count from.
+    pub(crate) started: u64,
     pub(crate) quit: bool,
     /// Every run's Config, cloned for the run. Its exe is the running
     /// binary's real path, resolved once at open: an update renames over it,
@@ -251,7 +252,6 @@ impl Screen {
             folder,
             version: crate::version::version(),
             truecolor,
-            logo: logo::Logo::embedded(),
             epics,
             state,
             events: Vec::new(),
@@ -263,6 +263,7 @@ impl Screen {
             ctrl_c: None,
             ticks: 0,
             running: false,
+            started: 0,
             quit: false,
             cfg,
             missing: Vec::new(),
@@ -649,7 +650,7 @@ impl Screen {
     /// Orchestrator's are; None is a run-level line.
     fn tell(&mut self, ticket: Option<&str>, text: &str) {
         let time = chrono::Local::now();
-        let dir = self.cfg.repo.join(".harness");
+        let dir = self.cfg.repo.join(".orqadence");
         let log = fs::create_dir_all(&dir).and_then(|()| {
             File::options()
                 .create(true)
@@ -1526,7 +1527,7 @@ impl Screen {
         let log: Box<dyn io::Write + Send> = match File::options()
             .create(true)
             .append(true)
-            .open(repo.join(".harness").join("orchestrator.log"))
+            .open(repo.join(".orqadence").join("orchestrator.log"))
         {
             Ok(file) => Box::new(file),
             Err(_) => Box::new(io::sink()),
@@ -1567,6 +1568,7 @@ impl Screen {
             _lock: lock,
         });
         self.running = true;
+        self.started = self.ticks;
     }
 
     /// /stop-work: scheduling ends, live panes stay, the state file holds
@@ -1712,14 +1714,14 @@ pub(crate) fn open(
     screen.close();
     if screen.reexec {
         // An idle-Shell update: the same argv comes back under the new version.
-        eprintln!("harness: {}", update::reexec(&screen.cfg.exe));
+        eprintln!("orqa: {}", update::reexec(&screen.cfg.exe));
     }
     result
 }
 
 /// The screen thread: take the Events and the State, draw, poll for a key
 /// until the next tick, tick. A redraw follows every key, Event and tick; at
-/// rest the tick is 250 ms, in a live run 50 ms for the hop. It never waits
+/// rest the tick is 250 ms, in a live run 50 ms. It never waits
 /// on the Orchestrator: the State mutex is held for a clone, nothing longer.
 fn run(terminal: &mut DefaultTerminal, screen: &mut Screen) -> io::Result<()> {
     let mut last = Instant::now();

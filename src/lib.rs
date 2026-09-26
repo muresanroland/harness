@@ -1,4 +1,4 @@
-//! The Harness: drives a beads Epic through the Pipeline.
+//! Orqadence: drives a beads Epic through the Pipeline.
 
 pub mod cli;
 pub(crate) mod orchestrator;
@@ -25,7 +25,7 @@ pub(crate) mod tempdir {
             static N: AtomicU64 = AtomicU64::new(0);
             loop {
                 let path = std::env::temp_dir().join(format!(
-                    "harness-{}-{}",
+                    "orqadence-{}-{}",
                     std::process::id(),
                     N.fetch_add(1, Ordering::Relaxed)
                 ));

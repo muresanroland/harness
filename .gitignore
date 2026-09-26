@@ -6,8 +6,8 @@
 .beads/proxieddb/
 *.gate.lock*
 
-# Harness build output and run directory
-.harness/
+# Orqadence build output and run directory
+.orqadence/
 .claude/worktrees/
 /target/
 graphify-out/

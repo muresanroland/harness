@@ -10,7 +10,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-const RECORD: &str = ".harness/installed-skills.json";
+const RECORD: &str = ".orqadence/installed-skills.json";
 const STAGE_FIX: &str = ".agents/skills/stage-fix/SKILL.md";
 
 /// A Target repo that already has a create-pr skill of its own.
@@ -55,11 +55,11 @@ fn install_skills_asks_before_touching_the_repos_own_create_pr() {
         (
             "\x1b[B\x1b[B\x1b[B\r",
             "the repo's own",
-            "name: harness-create-pr",
+            "name: orqadence-create-pr",
         ), // down past the end
         ("1", "the repo's own", ""),  // a digit picks its option outright
         ("2", "name: create-pr", ""),
-        ("3", "the repo's own", "name: harness-create-pr"),
+        ("3", "the repo's own", "name: orqadence-create-pr"),
     ] {
         let repo = repo_with_own_pr();
         let out = install(repo.path(), answer);
@@ -74,25 +74,25 @@ fn install_skills_asks_before_touching_the_repos_own_create_pr() {
         );
         let body = fs::read_to_string(
             repo.path()
-                .join(".claude/skills/harness-create-pr/SKILL.md"),
+                .join(".claude/skills/orqadence-create-pr/SKILL.md"),
         );
         if beside.is_empty() {
             assert!(
                 body.is_err(),
-                "{answer:?}: installed harness-create-pr anyway"
+                "{answer:?}: installed orqadence-create-pr anyway"
             );
             continue;
         }
         let body = body.unwrap_or_else(|err| {
-            panic!("{answer:?}: harness-create-pr not installed through its link: {err}")
+            panic!("{answer:?}: orqadence-create-pr not installed through its link: {err}")
         });
         assert!(
             body.contains(beside),
-            "{answer:?}: harness-create-pr not installed through its link: {body:?}"
+            "{answer:?}: orqadence-create-pr not installed through its link: {body:?}"
         );
         assert!(
             !body.contains("name: create-pr"),
-            "{answer:?}: harness-create-pr still calls itself create-pr"
+            "{answer:?}: orqadence-create-pr still calls itself create-pr"
         );
     }
 }
@@ -135,16 +135,16 @@ fn install_skills_force_skips_the_questions_and_keeps_the_repos_own_create_pr() 
         "the repo's own"
     );
     // A fresh repo's place, as a silent init takes it.
-    assert!(read(repo.path(), ".harness/skills/stage-fix/SKILL.md").contains("name: stage-fix"));
+    assert!(read(repo.path(), ".orqadence/skills/stage-fix/SKILL.md").contains("name: stage-fix"));
 }
 
 #[test]
 fn install_skills_overwrite_keeps_the_repos_own_create_pr_beside_the_recorded_one() {
     let repo = repo_with_own_pr();
-    install(repo.path(), "3"); // beside it, as harness-create-pr
+    install(repo.path(), "3"); // beside it, as orqadence-create-pr
     let beside = repo
         .path()
-        .join(".agents/skills/harness-create-pr/SKILL.md");
+        .join(".agents/skills/orqadence-create-pr/SKILL.md");
     fs::write(&beside, "edited").unwrap();
     let out = install(repo.path(), "3"); // the gate: overwrite everything
     assert!(out.contains("already installed"), "no gate:\n{out}");
@@ -159,8 +159,8 @@ fn install_skills_overwrite_keeps_the_repos_own_create_pr_beside_the_recorded_on
     assert!(
         fs::read_to_string(&beside)
             .unwrap()
-            .contains("name: harness-create-pr"),
-        "overwrite left the edited harness-create-pr"
+            .contains("name: orqadence-create-pr"),
+        "overwrite left the edited orqadence-create-pr"
     );
 }
 
@@ -169,7 +169,7 @@ fn moving_an_older_install_leaves_the_shipped_skills_the_repo_committed() {
     let repo = TempDir::new();
     install(repo.path(), ""); // the repo Location: no gate yet
                               // An older init kept only its record.
-    fs::remove_file(repo.path().join(".harness/skills.json")).unwrap();
+    fs::remove_file(repo.path().join(".orqadence/skills.json")).unwrap();
     // git tracks stage-fix alone.
     let git = Fake::new(|_, argv| {
         Ok(match argv {
@@ -195,7 +195,7 @@ fn moving_an_older_install_leaves_the_shipped_skills_the_repo_committed() {
     assert!(repo.path().join(STAGE_FIX).exists(), "{out}");
     assert!(
         repo.path()
-            .join(".harness/skills/stage-implement/SKILL.md")
+            .join(".orqadence/skills/stage-implement/SKILL.md")
             .exists(),
         "{out}"
     );
@@ -363,7 +363,7 @@ fn ask_typesafe_key_stores_the_typed_key_read_only_to_the_user() {
     let repo = TempDir::new();
     let out = ask_key(repo.path(), "", "sk-typed\n");
     assert!(out.contains("TypeSafe API key"), "not asked:\n{out}");
-    let path = repo.path().join(".harness/typesafe-key");
+    let path = repo.path().join(".orqadence/typesafe-key");
     assert_eq!(fs::read_to_string(&path).unwrap().trim(), "sk-typed");
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -391,7 +391,7 @@ fn ask_typesafe_key_skips_when_the_variable_is_set_or_stdin_is_silent() {
         !out.contains("TypeSafe API key"),
         "asked with the variable set:\n{out}"
     );
-    assert!(!repo.path().join(".harness/typesafe-key").exists());
+    assert!(!repo.path().join(".orqadence/typesafe-key").exists());
 
     for typed in ["", "\n", "sk-a\x03", "sk-b\x04sk-c\n", "\x1b[A\t\n"] {
         let out = ask_key(repo.path(), "", typed);
@@ -400,14 +400,14 @@ fn ask_typesafe_key_skips_when_the_variable_is_set_or_stdin_is_silent() {
             "{typed:?}: not asked:\n{out}"
         );
         assert!(
-            !repo.path().join(".harness/typesafe-key").exists(),
+            !repo.path().join(".orqadence/typesafe-key").exists(),
             "{typed:?}: stored anyway"
         );
     }
     assert_eq!(typesafe_key(repo.path(), &|_| String::new()), None);
     // Control bytes and an arrow key never reach the key.
     ask_key(repo.path(), "", "\x1b[Ask-\x01d\x7f\n");
-    assert_eq!(read(repo.path(), ".harness/typesafe-key").trim(), "sk-");
+    assert_eq!(read(repo.path(), ".orqadence/typesafe-key").trim(), "sk-");
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
     let missing = picks_missing(repo.path(), home.path());
     assert!(
         missing.contains(
-            &"the self review skill code-review is missing: harness init installs it, or /config picks another"
+            &"the self review skill code-review is missing: orqa init installs it, or /config picks another"
                 .to_string()
         ),
         "{missing:?}"
@@ -494,14 +494,14 @@ fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
     );
     // Only codex has it: a Review on claude lacks it.
     write_file(
-        &repo.path().join(".harness/config.json"),
+        &repo.path().join(".orqadence/config.json"),
         r#"{"review": {"app": "claude"}}"#,
     );
     assert_eq!(
         picks_missing(repo.path(), home.path()),
         ["the review skill review-agent is missing: /config installs it, or picks another"]
     );
-    fs::remove_file(repo.path().join(".harness/config.json")).unwrap();
+    fs::remove_file(repo.path().join(".orqadence/config.json")).unwrap();
 
     // A pick you have anywhere, at user level here, is there. One not a
     // job's default is /config's to install.
@@ -513,7 +513,7 @@ fn preflight_fails_on_a_missing_pick_naming_its_job_and_none_opts_out() {
     assert_eq!(
         picks_missing(repo.path(), home.path()),
         [
-            "the test first skill tdd is missing: harness init installs it, or /config picks another",
+            "the test first skill tdd is missing: orqa init installs it, or /config picks another",
             "the prose skill caveman-commit is missing: /config installs it, or picks another",
         ]
     );
@@ -595,7 +595,7 @@ fn preflight_names_each_row_whose_app_is_not_on_path() {
     );
     // The Review's fallback once its key is set, no model needed; unset, it
     // runs nothing.
-    let config = repo.path().join(".harness/config.json");
+    let config = repo.path().join(".orqadence/config.json");
     crate::orchestrator::write_file(&config, r#"{"review_if_limited": {"app": "codex"}}"#);
     let got = preflight(repo.path(), &*no_codex, &home_env(home.path()));
     assert!(
@@ -629,6 +629,6 @@ fn preflight_warns_of_a_stage_skill_that_lost_a_placeholder() {
     write_file(&at, &edited.join("\n"));
     assert_eq!(
         warnings(repo.path(), &*Fake::quiet(), &env),
-        ["the installed stage-implement lacks {{test-first}}: the test first skill you pick never runs there; put the line back, or refresh it with harness init"]
+        ["the installed stage-implement lacks {{test-first}}: the test first skill you pick never runs there; put the line back, or refresh it with orqa init"]
     );
 }

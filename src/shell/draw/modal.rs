@@ -15,7 +15,7 @@ use ratatui::Frame;
 
 use super::{bold, cut, fg, shell};
 use crate::orchestrator::stage::Ask;
-use crate::shell::logo::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
+use crate::shell::brand::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, RED, TEXT};
 use crate::shell::{About, Screen};
 
 /// Under this many columns the dock folds over the Shell.

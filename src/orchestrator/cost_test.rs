@@ -160,7 +160,7 @@ fn at(time: &str) -> NaiveDateTime {
 
 fn log_repo() -> TempDir {
     let repo = TempDir::new();
-    write_file(&repo.path().join(".harness/orchestrator.log"), LOG);
+    write_file(&repo.path().join(".orqadence/orchestrator.log"), LOG);
     repo
 }
 

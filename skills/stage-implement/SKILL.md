@@ -1,11 +1,11 @@
 ---
 name: stage-implement
-description: Harness Implement Stage. Implements one beads Ticket in its worktree and writes a result file. Run by the Harness Orchestrator, not by hand.
+description: Orqadence Implement Stage. Implements one beads Ticket in its worktree and writes a result file. Run by the Orqadence Orchestrator, not by hand.
 ---
 
 # Implement Stage
 
-You are one Stage of the Harness Pipeline, in a fresh session inside the Ticket's git worktree. Ask only what the Ticket, the approved plan, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them. The Orchestrator only reads your result file. Your inputs are under **Inputs** at the end.
+You are one Stage of the Orqadence Pipeline, in a fresh session inside the Ticket's git worktree. Ask only what the Ticket, the approved plan, the repo's docs and the Inputs leave open; otherwise decide, and note the answer you took from them. The Orchestrator only reads your result file. Your inputs are under **Inputs** at the end.
 
 ## Plan first
 

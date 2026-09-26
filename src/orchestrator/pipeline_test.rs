@@ -30,7 +30,7 @@ fn implement_stage_runs_in_a_ticket_tab_and_reports_to_main() {
 
     let got = w.called("bd worktree create");
     assert!(
-        got.len() == 1 && got[0].ends_with(".harness/worktrees/hx-12 --branch hx-12"),
+        got.len() == 1 && got[0].ends_with(".orqadence/worktrees/hx-12 --branch hx-12"),
         "worktree calls = {got:?}"
     );
     let got = w.called("bd update hx-12");
@@ -236,7 +236,7 @@ fn a_prepared_worktree_links_the_checkouts_skills_and_hides_the_links() {
     assert!(*seen.lock().unwrap(), "the Run directory got no links");
 
     // The fake world's init put the skills in the checkout.
-    let skill = w.repo.join(".harness/skills/stage-implement");
+    let skill = w.repo.join(".orqadence/skills/stage-implement");
     for sub in [".claude/skills", ".agents/skills"] {
         let link = o.worktree("hx-1").join(sub).join("stage-implement");
         assert_eq!(
@@ -266,7 +266,7 @@ fn a_resumed_tickets_worktree_is_linked_too() {
     let link = o.worktree("hx-1").join(".claude/skills/stage-implement");
     assert_eq!(
         std::fs::read_link(&link).ok(),
-        Some(w.repo.join(".harness/skills/stage-implement")),
+        Some(w.repo.join(".orqadence/skills/stage-implement")),
         "{link:?}"
     );
 }
