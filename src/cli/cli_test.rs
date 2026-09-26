@@ -4,6 +4,17 @@ use crate::tools::fake::Fake;
 
 // No arguments opens the Shell (harness-kqe.9), which no test can run
 // without a terminal; the usage is checked on an unknown command instead.
+// Before init it never gets there: it says to run harness init.
+#[test]
+fn no_command_before_init_says_to_run_init() {
+    let (code, out) = run_with(&[], TempDir::new().path(), Fake::quiet(), &|_| {
+        String::new()
+    });
+    assert_eq!(code, 1, "exit code = {code}, want 1:\n{out}");
+    assert!(out.contains("hasn't been run"), "no init notice:\n{out}");
+    assert!(out.contains("harness init"), "no harness init:\n{out}");
+}
+
 #[test]
 fn unknown_command_prints_usage() {
     let (code, out) = run_with(&["bogus"], TempDir::new().path(), Fake::quiet(), &|_| {

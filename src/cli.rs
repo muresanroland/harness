@@ -4,6 +4,8 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crossterm::style::Stylize;
+
 use crate::orchestrator::app;
 use crate::orchestrator::stage::log_line;
 use crate::setup;
@@ -26,8 +28,18 @@ pub fn run(
     tools: Arc<dyn Tools>,
     env: &dyn Fn(&str) -> String,
 ) -> i32 {
-    // harness alone opens the Shell (ADR 0004).
+    // harness alone opens the Shell (ADR 0004), once init has made .harness.
     let Some(name) = args.first() else {
+        if !repo.join(".harness").is_dir() {
+            let _ = write!(
+                out,
+                "\n  {} {}\n\n  Run it to set this repo up, then start the Harness again:\n\n    {}\n\n",
+                "!".yellow().bold(),
+                "harness init hasn't been run in this repo".bold(),
+                "harness init".cyan().bold(),
+            );
+            return 1;
+        }
         return match crate::shell::open(repo, tools, env) {
             Ok(()) => 0,
             Err(err) => {
