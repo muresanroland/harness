@@ -102,6 +102,8 @@ orqa init
 | `/config` | Pick the App, model and effort each Stage runs on, and a plan model other than Implement's; every change saves at once to `.orqadence/config.json`, and during a run the Stages that start after it use it. A change that breaks a check (the Review on Implement's model, the Debate's sides in one family) is refused; the Apps page shows which Apps are installed. Each Stage's page also picks its jobs' Delegate skills; the Skills page adds (`a`), updates (`u`, `U` for all) and removes (`d`) the skills Orqadence installed; the TypeSafe page turns TypeSafe on or off and asks the key when there is none |
 | `/away` | Toggle Away: a Stage's question parks its Ticket, with a bd comment, until you `/continue @ticket` it |
 | `/summary [<epic>]` | Show the Epic's PRs, Rounds and Findings; it also opens by itself once every Ticket has its PR or is Parked |
+| `/demo` | Play a made-up run to see the Shell at work: Tickets moving through their Stages, RECENT filling, each kind of Question waiting for your answer, a Ticket waiting on a merge, a usage limit, and the Epic summary at the end. Nothing starts and nothing is written |
+| `/stop-demo` | End the demo; the Shell is back as it was. `/stop-work` does the same |
 | `/exit` | Leave the Shell (asks first during a run). Ctrl-C twice does the same |
 
 Leaving the Shell never kills agent panes.

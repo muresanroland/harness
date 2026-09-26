@@ -34,6 +34,7 @@ use summary::Summary;
 
 mod brand;
 mod config;
+mod demo;
 mod draw;
 mod summary;
 
@@ -52,7 +53,7 @@ const KEPT_EVENTS: usize = 1000;
 const RETRY: Duration = Duration::from_secs(60);
 /// Every command the Shell takes: its name, arguments and what it does. The
 /// / list shows it, and the README's table.
-const COMMANDS: [(&str, &str, &str); 12] = [
+const COMMANDS: [(&str, &str, &str); 14] = [
     (
         "/start-epic",
         "<epic> [--max N]",
@@ -92,6 +93,8 @@ const COMMANDS: [(&str, &str, &str); 12] = [
         "[<epic>]",
         "the Epic's PRs, Rounds and Findings",
     ),
+    ("/demo", "", "a made-up run to see the Shell at work"),
+    ("/stop-demo", "", "end the demo, the Shell as it was"),
     ("/exit", "", "leave Orqadence"),
 ];
 
@@ -236,6 +239,8 @@ pub(crate) struct Screen {
     /// The Epic of the last run to finish, whose done Epic cleared the
     /// State: what /summary alone shows next. In memory only.
     last_epic: String,
+    /// /demo's scripted run, in place of the Shell's Epics, State and RECENT.
+    pub(crate) demo: Option<demo::Demo>,
 }
 
 impl Screen {
@@ -284,6 +289,7 @@ impl Screen {
             reexec: false,
             summary: None,
             last_epic: String::new(),
+            demo: None,
         }
     }
 
@@ -561,6 +567,7 @@ impl Screen {
         if self.run.is_none() && self.update.is_some() && Instant::now() >= self.retry {
             self.install(true);
         }
+        demo::tick(self);
     }
 
     /// An Event from the Orchestrator; only panel lines show. Any line of
@@ -647,16 +654,19 @@ impl Screen {
     }
 
     /// A line of the Shell's own, on RECENT and in the log as the
-    /// Orchestrator's are; None is a run-level line.
+    /// Orchestrator's are, but for the demo's; None is a run-level line.
     fn tell(&mut self, ticket: Option<&str>, text: &str) {
         let time = chrono::Local::now();
         let dir = self.cfg.repo.join(".orqadence");
-        let log = fs::create_dir_all(&dir).and_then(|()| {
-            File::options()
-                .create(true)
-                .append(true)
-                .open(dir.join("orchestrator.log"))
-        });
+        let log = match self.demo {
+            Some(_) => Err(io::ErrorKind::Unsupported.into()),
+            None => fs::create_dir_all(&dir).and_then(|()| {
+                File::options()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("orchestrator.log"))
+            }),
+        };
         if let Ok(mut log) = log {
             // one write: Ticket threads append to the same file
             let _ = log.write_all(log_line(time, ticket.unwrap_or(""), text).as_bytes());
@@ -1186,6 +1196,9 @@ impl Screen {
 
     /// Focuses the pane a Question is about; the Question stays.
     fn open_pane(&mut self, pane: String) {
+        if self.demo.is_some() {
+            return self.notice("demo: no pane behind it", NOTICE_WINDOW);
+        }
         let focus = self
             .cfg
             .tools
@@ -1202,6 +1215,9 @@ impl Screen {
         let q = self.questions.remove(0);
         let id = q.ticket.unwrap_or_default();
         self.tell(Some(&id), &format!("you answered: {word}"));
+        if self.demo.is_some() {
+            return demo::answered(self, &id, &q.about, answer);
+        }
         if let (
             Some(run),
             About::Asked(
@@ -1281,6 +1297,16 @@ impl Screen {
         let (name, rest) = line.split_once(' ').unwrap_or((line, ""));
         let query = rest.trim();
         let query = query.strip_prefix('@').unwrap_or(query); // '@<id>' typed, not picked
+        let starts = [
+            "/start-epic",
+            "/start-ticket",
+            "/continue",
+            "/summary",
+            "/demo",
+        ];
+        if self.demo.is_some() && starts.contains(&name) {
+            return self.refuse("refused: the demo is on, /stop-demo ends it");
+        }
         match name {
             "/start-epic" | "/start-ticket" => {
                 if self.busy() {
@@ -1342,6 +1368,14 @@ impl Screen {
                 true => self.notice("no questions waiting", NOTICE_WINDOW),
                 false => self.hidden = false,
             },
+            "/stop-work" | "/stop-demo" if self.demo.is_some() => demo::stop(self),
+            "/stop-demo" => self.notice("no demo is running", NOTICE_WINDOW),
+            // A confirmation answered in the demo would act on the real bd.
+            "/demo" if self.questions.iter().any(|q| q.ticket.is_none()) => {
+                self.refuse("refused: answer the waiting question first")
+            }
+            "/demo" if !self.busy() => demo::start(self),
+            "/demo" => {}
             "/stop-work" => self.stop_work(),
             "/config" => self.open_config(),
             "/away" => {
@@ -1746,5 +1780,7 @@ fn run(terminal: &mut DefaultTerminal, screen: &mut Screen) -> io::Result<()> {
 
 #[cfg(test)]
 mod config_test;
+#[cfg(test)]
+mod demo_test;
 #[cfg(test)]
 mod shell_test;

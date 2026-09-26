@@ -234,7 +234,7 @@ pub(super) fn type_line(s: &mut Screen, line: &str) {
 }
 
 /// Picks option `n`, as numbered, of the front Question.
-fn pick(s: &mut Screen, n: usize) {
+pub(super) fn pick(s: &mut Screen, n: usize) {
     s.key(key(KeyCode::Char(char::from(b'0' + n as u8))));
     s.key(key(KeyCode::Enter));
 }
@@ -579,7 +579,7 @@ fn the_slash_list_filters_the_command_table_and_fills_in() {
     type_in(&mut s, "/st");
     assert_eq!(
         list_keys(&s),
-        ["/start-epic", "/start-ticket", "/stop-work"]
+        ["/start-epic", "/start-ticket", "/stop-work", "/stop-demo"]
     );
     s.key(key(KeyCode::Esc));
     assert!(
@@ -740,11 +740,11 @@ fn up_and_down_move_an_open_lists_cursor_and_scroll_recent_when_none_is() {
     for _ in 0..20 {
         s.key(key(KeyCode::Down));
     }
-    assert_eq!(s.pick, 11, "past the last row");
+    assert_eq!(s.pick, 13, "past the last row");
     s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Up));
     s.key(key(KeyCode::Enter));
-    assert_eq!(s.input, "/away ");
+    assert_eq!(s.input, "/demo ");
     // Typing puts the cursor back on the top row.
     s.input.clear();
     type_in(&mut s, "/");
@@ -810,17 +810,25 @@ fn the_slash_list_renders_above_the_input_with_its_hint() {
     assert_eq!(at("run every Ticket").0, TEXT);
     assert_eq!(at("run one Ticket").0, MUTED);
     // The window follows the cursor to the last row.
-    for _ in 0..11 {
+    for _ in 0..13 {
         s.key(key(KeyCode::Down));
     }
     let buf = render(&s, 120, 40);
-    assert!(row(&buf, 29).starts_with("   /retry"), "{:#?}", rows(&buf));
+    assert!(
+        row(&buf, 29).starts_with("   /address"),
+        "{:#?}",
+        rows(&buf)
+    );
     assert!(row(&buf, 36).starts_with(" › /exit"), "{:#?}", rows(&buf));
     // 80x24 keeps TICKETS its three rows: the list shows seven and the hint.
     let buf = render(&s, 80, 24);
     assert!(row(&buf, 11).contains("harness-kqe"), "{:#?}", rows(&buf));
     assert!(row(&buf, 13).contains("6 more, PgDn"), "{:#?}", rows(&buf));
-    assert!(row(&buf, 14).starts_with("   /park"), "{:#?}", rows(&buf));
+    assert!(
+        row(&buf, 14).starts_with("   /questions"),
+        "{:#?}",
+        rows(&buf)
+    );
     assert!(row(&buf, 20).starts_with(" › /exit"), "{:#?}", rows(&buf));
     assert!(row(&buf, 21).contains("↑↓ pick"), "{:#?}", rows(&buf));
     assert_eq!(row(&buf, 23).trim_end(), "› /▌");
