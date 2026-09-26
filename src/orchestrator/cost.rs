@@ -147,7 +147,7 @@ pub(crate) fn costs(home: &Path, repo: &Path, tickets: &[&str]) -> HashMap<Strin
     // own file and total, not in its parent's.
     let mut codex = Vec::new();
     for file in jsonl(&home.join(".codex/sessions")) {
-        let Some(ticket) = started(&file).and_then(|f| folders.get(&f).copied()) else {
+        let Some(ticket) = opened(&file).and_then(|f| folders.get(&f).copied()) else {
             continue;
         };
         found(ticket, "codex");
@@ -177,7 +177,7 @@ pub(crate) fn costs(home: &Path, repo: &Path, tickets: &[&str]) -> HashMap<Strin
     // pi logs each message's cost itself.
     let mut pi = Vec::new();
     for file in jsonl(&home.join(".pi/agent/sessions")) {
-        let Some(ticket) = started(&file).and_then(|f| folders.get(&f).copied()) else {
+        let Some(ticket) = opened(&file).and_then(|f| folders.get(&f).copied()) else {
             continue;
         };
         found(ticket, "pi");
@@ -242,6 +242,15 @@ fn started(file: &Path) -> Option<PathBuf> {
         let cwd = line.get("cwd").or(line["payload"].get("cwd"))?;
         cwd.as_str().map(PathBuf::from)
     })
+}
+
+/// Where a codex or pi session started: the cwd on its first line, codex's
+/// in its payload. Only that line is read, as every session on the machine is.
+fn opened(file: &Path) -> Option<PathBuf> {
+    let line = BufReader::new(File::open(file).ok()?).lines().next()?.ok()?;
+    let line: Value = serde_json::from_str(&line).ok()?;
+    let cwd = line.get("cwd").or(line["payload"].get("cwd"))?;
+    cwd.as_str().map(PathBuf::from)
 }
 
 fn count(v: &Value) -> u64 {
