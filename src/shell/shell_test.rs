@@ -4346,3 +4346,26 @@ fn the_close_comment_names_no_pr_for_a_ticket_closed_by_hand() {
         vec!["bd comments add hx Every Ticket merged:\n- hx-0 Ticket hx-0: no PR\n- hx-1 Ticket hx-1: https://example.test/pr/hx-1"]
     );
 }
+
+/// A Parked Ticket closed by hand keeps its park reason in the close
+/// reason: the summary is of the run's State, which poll has cleared.
+#[test]
+fn the_close_reason_keeps_a_parked_tickets_reason() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().tickets[0].status = "closed".to_string();
+    write_file(
+        &w.repo.join(".harness/state.json"),
+        r#"{"epic":"hx","tickets":{"hx-1":{"status":"parked","stage":"implement","round":0,"reason":"went idle"}}}"#,
+    );
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_end(&mut s);
+    s.key(key(KeyCode::Esc));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    s.key(key(KeyCode::Char('y')));
+    let closed = w.called("bd close hx ");
+    assert!(
+        closed.len() == 1 && closed[0].contains("parked: went idle"),
+        "{closed:?}"
+    );
+}

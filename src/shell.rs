@@ -123,8 +123,9 @@ pub(crate) enum Pending {
     Start { id: String, max: usize, epic: bool },
     /// Stop the run and exit.
     Exit,
-    /// Close the done Epic in bd.
-    Close(String),
+    /// Close the done Epic in bd: its completed State, which poll has
+    /// cleared from the Shell, for the summary in the reason.
+    Close(State),
 }
 
 /// What a Question is about, which decides its options and what an answer does.
@@ -498,7 +499,8 @@ impl Screen {
         } else if run.failed {
             self.state = load_state(&self.cfg.repo).unwrap_or_default();
         } else if run.epic {
-            let epic = std::mem::take(&mut self.state).epic; // Epic done: nothing to resume
+            let done = std::mem::take(&mut self.state); // Epic done: nothing to resume
+            let epic = done.epic.clone();
             if let Err(err) = self.state.save(&self.cfg.repo) {
                 self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
@@ -506,7 +508,7 @@ impl Screen {
                 Some(e) => format!("close Epic {epic} {}?", e.title),
                 None => format!("close Epic {epic}?"),
             };
-            self.confirm(&text, Pending::Close(epic.clone()));
+            self.confirm(&text, Pending::Close(done));
             self.last_epic = epic;
         }
         self.reload_epics();
@@ -1108,7 +1110,7 @@ impl Screen {
                 match pending {
                     Pending::Start { id, max, epic } => self.start(&id, max, epic, true),
                     Pending::Exit => self.quit(),
-                    Pending::Close(epic) => self.close_epic(&epic),
+                    Pending::Close(done) => self.close_epic(&done),
                 }
             }
             (About::Confirm(_), _) => {
@@ -1128,7 +1130,9 @@ impl Screen {
     /// Closes the done Epic in bd, its summary in the reason, after a comment
     /// that lists each Ticket with its PR, from the 'PR merged: <url>'
     /// poll_merges closed it with; a Ticket closed any other way has no PR.
-    fn close_epic(&mut self, epic: &str) {
+    /// The summary is of the run's completed State, Parked Tickets and all.
+    fn close_epic(&mut self, done: &State) {
+        let epic = done.epic.as_str();
         let tickets = self
             .epics
             .iter()
@@ -1149,7 +1153,7 @@ impl Screen {
         let comment = format!("Every Ticket merged:\n{}", lines.join("\n"));
         let (tools, repo) = (&self.cfg.tools, &self.cfg.repo);
         let reason = match bd_list(repo, &**tools)
-            .and_then(|issues| Summary::build(repo, &issues, &self.state, epic))
+            .and_then(|issues| Summary::build(repo, &issues, done, epic))
         {
             Ok(summary) => format!("every Ticket merged\n\n{}", draw::plain(&summary)),
             Err(_) => "every Ticket merged".to_string(), // no evidence: the reason alone
