@@ -1370,6 +1370,10 @@ impl Screen {
             },
             "/stop-work" | "/stop-demo" if self.demo.is_some() => demo::stop(self),
             "/stop-demo" => self.notice("no demo is running", NOTICE_WINDOW),
+            // A confirmation answered in the demo would act on the real bd.
+            "/demo" if self.questions.iter().any(|q| q.ticket.is_none()) => {
+                self.refuse("refused: answer the waiting question first")
+            }
             "/demo" if !self.busy() => demo::start(self),
             "/demo" => {}
             "/stop-work" => self.stop_work(),

@@ -90,3 +90,17 @@ fn stop_demo_ends_the_demo_where_it_stands() {
         assert_eq!(s.notice.as_ref().unwrap().0, "no demo is running");
     }
 }
+
+/// /demo waits on a confirmation still asked: answered in the demo it would
+/// close the real Epic in bd.
+#[test]
+fn the_demo_is_refused_while_a_confirmation_waits() {
+    let mut s = screen_at(Fake::quiet(), TempDir::new().path());
+    s.confirm("close Epic harness-kqe?", crate::shell::Pending::Exit);
+    type_line(&mut s, "/demo");
+    assert!(s.demo.is_none() && !s.running);
+    assert_eq!(
+        s.notice.as_ref().unwrap().0,
+        "refused: answer the waiting question first"
+    );
+}
