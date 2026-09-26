@@ -1,5 +1,5 @@
 use super::app::{app, APPS};
-use super::trust::{cursor_slug, trusts};
+use super::trust::{claude_slug, cursor_slug, trusts};
 use super::write_file;
 use crate::tempdir::TempDir;
 use std::fs;
@@ -200,5 +200,20 @@ fn cursor_names_a_project_by_its_path() {
     assert_eq!(
         cursor_slug(Path::new("/Users/me/my.repo")),
         "Users-me-my-repo"
+    );
+}
+
+/// claude cuts a slug past 200 characters and adds its hash of the path;
+/// the expected one is claude's own function's, run in node.
+#[test]
+fn claude_names_a_deep_project_by_a_prefix_and_a_hash() {
+    let deep = format!("/Users/me/{}repo.é😀", "deep/".repeat(40));
+    let slug = claude_slug(Path::new(&deep));
+    assert_eq!(slug.len(), 207);
+    assert!(slug.starts_with("-Users-me-deep-deep-"));
+    assert!(slug.ends_with("-deep--2qcswf"));
+    assert_eq!(
+        claude_slug(Path::new("/Users/me/my.repo")),
+        "-Users-me-my-repo"
     );
 }

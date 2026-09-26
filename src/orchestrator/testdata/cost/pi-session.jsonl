@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"p1","timestamp":"2026-09-24T15:40:00.000Z","cwd":"{cwd}"}
+{"type":"model_change","provider":"acme","modelId":"acme-large-9"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"review it"}]}}
+{"type":"message","message":{"role":"assistant","model":"acme-large-9","provider":"acme","usage":{"input":800,"output":200,"cacheRead":0,"cacheWrite":0,"totalTokens":1000,"cost":{"input":0.05,"output":0.2,"cacheRead":0,"cacheWrite":0,"total":0.25}}}}
+{"type":"message","message":{"role":"assistant","model":"acme-large-9","provider":"acme","usage":{"input":1500,"output":500,"cacheRead":0,"cacheWrite":0,"totalTokens":2000,"cost":{"input":0.1,"output":0.4,"cacheRead":0,"cacheWrite":0,"total":0.5}}}}

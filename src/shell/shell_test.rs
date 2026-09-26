@@ -11,9 +11,10 @@ use crate::orchestrator::question_test::ASKS;
 use crate::orchestrator::scheduler::BdIssue;
 use crate::orchestrator::stage::{Ask, Config, Event, Orchestrator};
 use crate::orchestrator::state::{
-    acquire_lock, load_state, Review, State, TicketState, STATUS_MERGED, STATUS_PARKED,
+    acquire_lock, load_state, Review, Session, State, TicketState, STATUS_MERGED, STATUS_PARKED,
     STATUS_PR_OPEN, STATUS_RUNNING,
 };
+use crate::orchestrator::trust::claude_slug;
 use crate::orchestrator::world::{new_world, set_clock, succeed, BdTicket, World};
 use crate::orchestrator::write_file;
 use crate::tempdir::TempDir;
@@ -3896,6 +3897,39 @@ fn summary_world() -> (Arc<World>, Screen) {
     for (path, body) in files {
         write_file(&runs.join(path), &body);
     }
+    // Its cost: hx-1's claude sessions in its worktree, hx-2's codex Review
+    // in its Run directory; hx-3 ran on opencode, which is not read.
+    let transcripts = [
+        (
+            ".claude/projects/{slug}/s1.jsonl",
+            COST_CLAUDE,
+            w.repo.join(".harness/worktrees/hx-1"),
+        ),
+        (
+            ".codex/sessions/2026/09/24/rollout-1.jsonl",
+            COST_CODEX,
+            runs.join("hx-2"),
+        ),
+    ];
+    for (path, fixture, cwd) in transcripts {
+        let body = fixture
+            .replace("{cwd}", &cwd.display().to_string())
+            .replace("{model}", "claude-opus-5-5");
+        let path = path.replace("{slug}", &claude_slug(&cwd));
+        write_file(&w.home.join(path), &body);
+    }
+    // Its time: hx-1 1h 32m and hx-2 2h to their PRs, hx-3 30m Parked;
+    // 2h 10m on the wall clock.
+    let log = [
+        "2026-09-24 17:00:00 hx-1 branch hx-1 created",
+        "2026-09-24 17:00:05 hx-1 implement started: claude (pane 3-1)",
+        "2026-09-24 17:05:00 hx-2 branch hx-2 created",
+        "2026-09-24 18:32:00 hx-1 PR #1 opened after 2 rounds (https://example.test/pr/1)",
+        "2026-09-24 18:40:00 hx-3 branch hx-3 created",
+        "2026-09-24 19:05:00 hx-2 PR #2 opened after 3 rounds (https://example.test/pr/2)",
+        "2026-09-24 19:10:00 hx-3 parked: the session asked which model name to use",
+    ];
+    write_file(&w.repo.join(".harness/orchestrator.log"), &log.join("\n"));
     let mut s = shell(&w);
     s.state.epic = "hx".to_string();
     s.state.tickets.insert(
@@ -3903,11 +3937,22 @@ fn summary_world() -> (Arc<World>, Screen) {
         TicketState {
             status: STATUS_PARKED.to_string(),
             reason: "the session asked which model name to use".to_string(),
+            sessions: [(
+                "implement".to_string(),
+                Session {
+                    app: "opencode".to_string(),
+                    ..Default::default()
+                },
+            )]
+            .into(),
             ..Default::default()
         },
     );
     (w, s)
 }
+
+const COST_CLAUDE: &str = include_str!("../orchestrator/testdata/cost/claude-session.jsonl");
+const COST_CODEX: &str = include_str!("../orchestrator/testdata/cost/codex-rollout.jsonl");
 
 /// /summary builds the Epic summary from bd, the State and each Ticket's
 /// Run directory: Rounds from the Verdicts, fixed and skipped from their
@@ -3970,6 +4015,56 @@ fn summary_counts_each_tickets_rounds_and_findings_from_its_run_directory() {
             ),
         ]
     );
+    // Each Ticket's cost from its transcripts, its Apps from them, the log,
+    // its State sessions and, after a Debate, the sides; its time from the log.
+    let got: Vec<_> = sum
+        .tickets
+        .iter()
+        .map(|t| {
+            let apps: Vec<&str> = t.cost.apps.iter().map(String::as_str).collect();
+            let time = t.time.map(|span| (span.length().num_minutes(), span.pr));
+            (
+                t.id.as_str(),
+                apps,
+                t.cost.tokens,
+                format!("{:.2}", t.cost.dollars),
+                time,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "hx-1",
+                vec!["claude", "codex"],
+                3_000_000,
+                "12.20".to_string(),
+                Some((92, true))
+            ),
+            (
+                "hx-2",
+                vec!["claude", "codex"],
+                2_200_000,
+                "3.30".to_string(),
+                Some((120, true))
+            ),
+            (
+                "hx-3",
+                vec!["opencode"],
+                0,
+                "0.00".to_string(),
+                Some((30, false))
+            ),
+        ]
+    );
+    let total = (
+        sum.cost.tokens,
+        format!("{:.2}", sum.cost.dollars),
+        sum.cost.unpriced,
+    );
+    assert_eq!(total, (5_200_000, "15.50".to_string(), false));
+    assert_eq!(sum.time.map(|t| t.num_minutes()), Some(130));
 }
 
 /// Fixed counts the fix items a later Verdict followed: not the last
@@ -4000,10 +4095,11 @@ fn fixed_leaves_out_the_last_verdicts_fix_items() {
     assert_eq!(got, [(1, 0, 0), (3, 2, 0)]);
 }
 
-/// The summary takes the whole terminal: the title bar, the lead and the
-/// totals, a TICKETS outline from 100 columns, a section per Ticket then
-/// PARKED, and the position line. Read only: Tab goes Ticket to Ticket,
-/// PageDown a page, Esc closes. Built fresh, it shows a merge since.
+/// The summary takes the whole terminal: the title bar, the Epic's cost and
+/// time, the lead and the totals, a TICKETS outline from 100 columns, the
+/// cost table, a section per Ticket then PARKED, and the position line. Read
+/// only: Tab goes Ticket to Ticket, PageDown a page, Esc closes. Built
+/// fresh, it shows a merge since.
 #[test]
 fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
     let (w, mut s) = summary_world();
@@ -4016,14 +4112,18 @@ fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
     );
     assert_eq!(
         row(&buf, 1).trim_end(),
-        " Every Ticket has its PR. Review and merge them; each Ticket closes as its PR merges."
+        " Cost $15.50 API-equivalent, at list prices, not what was billed · time 2h 10m"
     );
     assert_eq!(
         row(&buf, 2).trim_end(),
+        " Every Ticket has its PR. Review and merge them; each Ticket closes as its PR merges."
+    );
+    assert_eq!(
+        row(&buf, 3).trim_end(),
         " 5 Rounds · 4 Findings fixed · 2 skipped · 1 left on its PR · 1 parked"
     );
     assert!(row_of(&buf, "TICKETS").starts_with(" TICKETS"));
-    let body: Vec<String> = (4..18)
+    let body: Vec<String> = (5..26)
         .map(|y| cols(&buf, y, 31, 120).trim_end().to_string())
         .collect();
     let rule = |name: &str, word: &str| {
@@ -4033,6 +4133,13 @@ fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
     assert_eq!(
         body,
         [
+            "Ticket  Apps           tokens    cost  time".to_string(),
+            "hx-1    claude, codex    3.0M  $12.20  1h 32m".to_string(),
+            "hx-2    claude, codex    2.2M   $3.30  2h 0m".to_string(),
+            "hx-3    opencode            0   $0.00  30m, no PR".to_string(),
+            "opencode: app not supported yet".to_string(),
+            "total                    5.2M  $15.50  2h 10m".to_string(),
+            String::new(),
             rule("hx-1 Ticket hx-1", "merged"),
             "  PR #1  https://example.test/pr/1".to_string(),
             "  2 Rounds · 1 fixed · 1 skipped · 0 left".to_string(),
@@ -4058,8 +4165,10 @@ fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
     assert_eq!(at(&buf, "hx-1 Ticket hx-1 ─"), ticket_color("hx-1"));
     assert_eq!(at(&buf, "merged"), GREEN);
     assert_eq!(at(&buf, "https://example.test/pr/2"), CYAN);
+    assert_eq!(at(&buf, "hx-2    claude"), ticket_color("hx-2"));
+    assert_eq!(at(&buf, "opencode: app"), ORANGE);
     assert!(
-        row(&buf, 39).starts_with(" rows 1–14 of 14 · 100%"),
+        row(&buf, 39).starts_with(" rows 1–21 of 21 · 100%"),
         "{:?}",
         row(&buf, 39)
     );
@@ -4068,23 +4177,31 @@ fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
     let buf = render(&s, 90, 30);
     assert!(find(&buf, "TICKETS").is_none(), "{:#?}", rows(&buf));
     assert!(
-        row(&buf, 4).starts_with(" hx-1 Ticket hx-1 ──"),
+        row(&buf, 5).starts_with(" Ticket  Apps"),
         "{:#?}",
         rows(&buf)
     );
-    assert!(row(&buf, 29).starts_with(" rows 1–14 of 14 · 100%"));
+    assert!(row(&buf, 29).starts_with(" rows 1–21 of 21 · 100%"));
 
-    // Tab goes to the next Ticket, PageDown a page; typing does nothing.
+    // Tab goes to the next Ticket, the first below the cost table, PageDown
+    // a page; typing does nothing.
     render(&s, 90, 12);
     s.key(key(KeyCode::Tab));
     let buf = render(&s, 90, 12);
     assert!(
-        row(&buf, 4).starts_with(" hx-2 Ticket hx-2 ──"),
+        row(&buf, 5).starts_with(" hx-1 Ticket hx-1 ──"),
+        "{:#?}",
+        rows(&buf)
+    );
+    s.key(key(KeyCode::Tab));
+    let buf = render(&s, 90, 12);
+    assert!(
+        row(&buf, 5).starts_with(" hx-2 Ticket hx-2 ──"),
         "{:#?}",
         rows(&buf)
     );
     assert!(
-        row(&buf, 11).starts_with(" rows 6–12 of 14 · 85%"),
+        row(&buf, 11).starts_with(" rows 13–18 of 21 · 85%"),
         "{:?}",
         row(&buf, 11)
     );
@@ -4093,7 +4210,7 @@ fn the_summary_pages_over_the_whole_terminal_and_esc_closes_it() {
     s.key(key(KeyCode::Char('x')));
     let buf = render(&s, 90, 12);
     assert!(
-        row(&buf, 4).starts_with(" hx-2 Ticket hx-2 ──"),
+        row(&buf, 5).starts_with(" opencode: app not supported yet"),
         "{:#?}",
         rows(&buf)
     );

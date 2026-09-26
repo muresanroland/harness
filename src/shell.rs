@@ -1162,7 +1162,7 @@ impl Screen {
         let comment = format!("Every Ticket merged:\n{}", lines.join("\n"));
         let (tools, repo) = (&self.cfg.tools, &self.cfg.repo);
         let reason = match bd_list(repo, &**tools)
-            .and_then(|issues| Summary::build(repo, &issues, &done, epic))
+            .and_then(|issues| Summary::build(repo, &self.cfg.home, &issues, &done, epic))
         {
             Ok(summary) => format!("every Ticket merged\n\n{}", draw::plain(&summary)),
             Err(_) => "every Ticket merged".to_string(), // no evidence: the reason alone
@@ -1500,7 +1500,7 @@ impl Screen {
     fn summarize(&mut self, epic: &str) {
         let repo = &self.cfg.repo;
         let built = bd_list(repo, &*self.cfg.tools)
-            .and_then(|issues| Summary::build(repo, &issues, &self.state, epic));
+            .and_then(|issues| Summary::build(repo, &self.cfg.home, &issues, &self.state, epic));
         match built {
             Ok(summary) => self.summary = Some(summary),
             Err(err) => self.notice(&err, NOTICE_WINDOW),

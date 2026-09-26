@@ -1,0 +1,9 @@
+{"type":"permission-mode","permissionMode":"auto","sessionId":"s1"}
+{"type":"user","cwd":"{cwd}","sessionId":"s1","message":{"role":"user","content":"implement the Ticket"}}
+{"type":"assistant","cwd":"{cwd}","requestId":"req_a","message":{"id":"msg_a","model":"{model}","usage":{"input_tokens":0,"cache_creation_input_tokens":900000,"cache_read_input_tokens":1000000,"output_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":500000}}}}
+{"type":"assistant","cwd":"{cwd}","requestId":"req_a","message":{"id":"msg_a","model":"{model}","usage":{"input_tokens":0,"cache_creation_input_tokens":900000,"cache_read_input_tokens":1000000,"output_tokens":100000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":500000}}}}
+{"type":"user","cwd":"{cwd}","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}
+{"type":"assistant","cwd":"{cwd}","requestId":"req_b","message":{"id":"msg_b","model":"{model}","usage":{"input_tokens":1000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}
+{"type":"assistant","cwd":"{cwd}","requestId":"req_a","message":{"id":"msg_a","model":"{model}","usage":{"input_tokens":0,"cache_creation_input_tokens":900000,"cache_read_input_tokens":1000000,"output_tokens":100000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":500000}}}}
+{"type":"assistant","cwd":"{cwd}","requestId":"req_s","message":{"id":"msg_s","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"assistant", a half-written line
