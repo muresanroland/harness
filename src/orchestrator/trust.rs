@@ -126,12 +126,18 @@ pub(super) fn cursor_records(home: &Path, dir: &Path) -> Option<bool> {
 
 /// The name cursor keeps a directory's project under.
 // ponytail: the research names <slug> without its rule; this is claude's
-// (every other character a dash) without the leading one, unverified.
+// without the leading dash, unverified.
 pub(super) fn cursor_slug(dir: &Path) -> String {
-    let slug: String = dir
-        .to_string_lossy()
+    claude_slug(dir).trim_start_matches('-').to_string()
+}
+
+/// The folder claude keeps a directory's transcripts in, under
+/// ~/.claude/projects: every character but a letter or digit a dash.
+// ponytail: claude cuts a slug past 200 characters and adds a hash; a
+// worktree that deep is not found, and costs nothing.
+pub(crate) fn claude_slug(dir: &Path) -> String {
+    dir.to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    slug.trim_start_matches('-').to_string()
+        .collect()
 }

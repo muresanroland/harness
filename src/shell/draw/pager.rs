@@ -1,7 +1,8 @@
 //! The Epic summary as a read-only pager over the whole terminal (layout B
-//! of harness-0sx.5): the title bar, the lead and the totals, a TICKETS
-//! outline on the left from 100 columns, a section per Ticket then PARKED,
-//! and the position line. No cursor: a PR opens by Cmd-clicking its url.
+//! of harness-0sx.5): the title bar, the Epic's cost and time, the lead and
+//! the totals, a TICKETS outline on the left from 100 columns, the cost
+//! table, a section per Ticket then PARKED, and the position line. No
+//! cursor: a PR opens by Cmd-clicking its url.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier};
@@ -11,6 +12,7 @@ use ratatui::Frame;
 
 use super::modal::{scrolled, wrap_spans};
 use super::{bold, cut, fg, inset, ticket_color};
+use crate::orchestrator::cost::{Cost, SUPPORTED};
 use crate::orchestrator::stage::{plural, pr_ref};
 use crate::shell::logo::{lerp, BORDER, CYAN, GREEN, MUTED, ORANGE, PURPLE, TEXT};
 use crate::shell::summary::{Summary, Ticket};
@@ -26,7 +28,7 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
     let area = f.area();
     let [top, lead, mid, foot] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
@@ -61,8 +63,14 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
         false => "Not every Ticket has its PR yet.",
     };
     let w = lead.width.saturating_sub(1) as usize;
+    let time = summary.time.map_or("-".to_string(), hm);
+    let spent = format!(
+        "Cost {} API-equivalent, at list prices, not what was billed · time {time}",
+        dollars(&summary.cost)
+    );
     f.render_widget(
         Paragraph::new(vec![
+            Line::from(Span::styled(cut(&spent, w), bold(TEXT))),
             Line::from(Span::styled(cut(text, w), fg(TEXT))),
             Line::from(Span::styled(cut(&totals, w), fg(MUTED))),
         ]),
@@ -81,7 +89,14 @@ pub(super) fn pager(f: &mut Frame, s: &Screen, summary: &Summary) {
         width: body.width.saturating_sub(2),
         ..inset(body)
     };
-    let (rows, heads) = sections(summary, body.width as usize);
+    // The cost table first, then the sections.
+    let mut rows = cost_table(summary, body.width as usize);
+    let (sections, heads) = sections(summary, body.width as usize);
+    let heads: Vec<(usize, &Ticket)> = heads
+        .into_iter()
+        .map(|(row, t)| (row + rows.len(), t))
+        .collect();
+    rows.extend(sections);
     let (total, h) = (rows.len(), body.height as usize);
     let starts = heads.iter().map(|(row, _)| *row).collect();
     let from = scrolled(f, s, rows, starts, &summary.scroll, body);
@@ -155,6 +170,104 @@ pub(crate) fn plain(summary: &Summary) -> String {
         .join("\n")
         .trim_end()
         .to_string()
+}
+
+/// The cost table `width` wide: a row per Ticket with its Apps, tokens,
+/// API-equivalent cost and time, a row per App whose cost is not read yet,
+/// then the totals, the time the Epic's on the wall clock.
+fn cost_table(summary: &Summary, width: usize) -> Vec<Line<'static>> {
+    let head = ["Ticket", "Apps", "tokens", "cost", "time"].map(String::from);
+    let row = |id: &str, cost: &Cost, time: String| {
+        let apps = cost.apps.iter().cloned().collect::<Vec<_>>().join(", ");
+        [
+            id.to_string(),
+            apps,
+            tokens(cost.tokens),
+            dollars(cost),
+            time,
+        ]
+    };
+    let mut cells = vec![(head, bold(MUTED))];
+    for t in &summary.tickets {
+        let time = t.time.map_or("-".to_string(), |span| match span.pr {
+            true => hm(span.length()),
+            false => format!("{}, no PR", hm(span.length())),
+        });
+        cells.push((row(suffix(&t.id), &t.cost, time), fg(ticket_color(&t.id))));
+    }
+    let mut total = row(
+        "total",
+        &summary.cost,
+        summary.time.map_or("-".to_string(), hm),
+    );
+    total[1].clear();
+    let at = cells.len();
+    cells.push((total, bold(TEXT)));
+    let w: [usize; 5] = std::array::from_fn(|i| {
+        cells
+            .iter()
+            .map(|(c, _)| c[i].chars().count())
+            .max()
+            .unwrap_or(0)
+    });
+    let mut rows: Vec<Line<'static>> = cells
+        .into_iter()
+        .map(|(c, style)| {
+            let text = format!(
+                "{:<a$}  {:<b$}  {:>t$}  {:>d$}  {}",
+                c[0],
+                c[1],
+                c[2],
+                c[3],
+                c[4],
+                a = w[0],
+                b = w[1],
+                t = w[2],
+                d = w[3]
+            );
+            Line::from(Span::styled(cut(text.trim_end(), width), style))
+        })
+        .collect();
+    let unsupported = summary
+        .cost
+        .apps
+        .iter()
+        .filter(|app| !SUPPORTED.contains(&app.as_str()));
+    let notes = unsupported.map(|app| {
+        let text = cut(&format!("{app}: app not supported yet"), width);
+        Line::from(Span::styled(text, fg(ORANGE)))
+    });
+    rows.splice(at..at, notes.collect::<Vec<_>>());
+    rows.push(Line::default());
+    rows
+}
+
+/// "$12.34"; "$12.34 + unpriced" with tokens on a model with no price, and
+/// "unpriced" with only those.
+fn dollars(cost: &Cost) -> String {
+    match (cost.unpriced, cost.dollars > 0.0) {
+        (true, false) => "unpriced".to_string(),
+        (true, true) => format!("${:.2} + unpriced", cost.dollars),
+        (false, _) => format!("${:.2}", cost.dollars),
+    }
+}
+
+/// "950", "48k", "8.3M".
+fn tokens(n: u64) -> String {
+    match n {
+        1_000_000.. => format!("{:.1}M", n as f64 / 1e6),
+        1_000.. => format!("{}k", n / 1_000),
+        _ => n.to_string(),
+    }
+}
+
+/// "1h 32m"; minutes alone under an hour.
+fn hm(d: chrono::TimeDelta) -> String {
+    let m = d.num_minutes();
+    match m / 60 {
+        0 => format!("{m}m"),
+        h => format!("{h}h {}m", m % 60),
+    }
 }
 
 /// The body rows `width` wide, and the row each Ticket starts on: a section

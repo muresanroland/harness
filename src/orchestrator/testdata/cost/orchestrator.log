@@ -1,0 +1,12 @@
+2026-09-24 17:00:00 hx.1 branch hx.1 created
+2026-09-24 17:00:05 hx.1 implement started: claude (pane 3-1)
+2026-09-24 17:10:00 hx.10 branch hx.10 created
+2026-09-24 17:10:05 hx.10 implement started: opencode opus/high (pane 3-2)
+2026-09-24 17:20:00 run started over 2 Tickets
+not a log line
+2026-09-24 25:61:00 hx.1 a line with no real time
+2026-09-24 18:32:00 hx.1 PR #22 opened after 2 rounds (https://example.test/pr/22)
+2026-09-24 18:40:00 hx.1 PR #22 conflicts with main
+2026-09-24 18:50:00 hx.1 merged, Ticket closed
+2026-09-24 18:55:00 hx.10 review 1 started: codex (pane 3-3)
+2026-09-24 19:05:00 hx.10 parked: the session asked which model name to use

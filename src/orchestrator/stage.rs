@@ -324,11 +324,7 @@ impl Orchestrator {
     }
 
     pub(crate) fn worktree(&self, ticket: &str) -> PathBuf {
-        self.cfg
-            .repo
-            .join(".harness")
-            .join("worktrees")
-            .join(ticket)
+        worktree(&self.cfg.repo, ticket)
     }
 
     /// The one way an event is said: a log line 'YYYY-MM-DD HH:MM:SS <bd id>
@@ -517,6 +513,11 @@ pub(crate) fn log_line(time: chrono::DateTime<chrono::Local>, ticket: &str, text
         format!("{ticket} ")
     };
     format!("{} {id}{text}\n", time.format("%Y-%m-%d %H:%M:%S"))
+}
+
+/// A Ticket's worktree under the Target repo.
+pub(crate) fn worktree(repo: &Path, ticket: &str) -> PathBuf {
+    repo.join(".harness").join("worktrees").join(ticket)
 }
 
 /// A Ticket's Run directory under the Target repo.
