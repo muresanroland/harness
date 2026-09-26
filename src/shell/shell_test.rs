@@ -4369,3 +4369,27 @@ fn the_close_reason_keeps_a_parked_tickets_reason() {
         "{closed:?}"
     );
 }
+
+/// A failed close asks again: yes retries the comment only if it failed,
+/// then bd close, so the comment never goes in twice.
+#[test]
+fn a_failed_close_asks_again_and_never_comments_twice() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_end(&mut s);
+    s.key(key(KeyCode::Esc));
+    w.fail_once("bd comments add hx ", "comment failed");
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    assert!(w.called("bd close hx ").is_empty());
+    w.fail_once("bd close hx ", "close failed");
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    s.key(key(KeyCode::Char('y')));
+    // the failed comment and the one that went in; the failed close and the one that did
+    assert_eq!(w.called("bd comments add hx ").len(), 2);
+    assert_eq!(w.called("bd close hx ").len(), 2);
+    assert!(!s.showing(), "the confirmation stayed");
+}
