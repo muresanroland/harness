@@ -309,9 +309,9 @@ pub(crate) fn logged(repo: &Path) -> HashMap<String, Logged> {
             end: at,
             pr: false,
         });
-        // "PR #22 opened after 2 rounds"; a later one is a re-run's
+        // "PR #22 opened after 2 rounds"; a later one is a re-run's, ignored
         let opened = text.starts_with("PR #") && text.contains(" opened ");
-        if opened || !span.pr {
+        if !span.pr {
             span.end = at;
             span.pr |= opened;
         }

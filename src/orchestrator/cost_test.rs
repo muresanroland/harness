@@ -164,8 +164,9 @@ fn log_repo() -> TempDir {
     repo
 }
 
-/// A Ticket's time runs from its first line to its PR's opening: a merge
-/// waited on after it is not counted. Lines that do not parse are skipped.
+/// A Ticket's time runs from its first line to its first PR's opening: a merge
+/// waited on or a re-run after it is not counted. Lines that do not parse
+/// are skipped.
 #[test]
 fn a_tickets_time_ends_at_its_pr_opening() {
     let repo = log_repo();
