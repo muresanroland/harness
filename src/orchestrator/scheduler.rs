@@ -39,9 +39,9 @@ impl BdIssue {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct BdDependency {
-    depends_on_id: String,
+    pub(crate) depends_on_id: String,
     #[serde(rename = "type")]
-    kind: String,
+    pub(crate) kind: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
