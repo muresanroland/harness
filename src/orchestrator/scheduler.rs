@@ -22,6 +22,8 @@ pub(crate) struct BdIssue {
     pub(crate) issue_type: String,
     pub(crate) parent: String,
     pub(crate) dependencies: Vec<BdDependency>,
+    /// 'PR merged: <url>' on a Ticket poll_merges closed.
+    pub(crate) close_reason: String,
 }
 
 impl BdIssue {

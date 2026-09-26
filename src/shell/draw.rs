@@ -28,6 +28,8 @@ mod config;
 mod modal;
 mod pager;
 
+pub(crate) use pager::plain;
+
 const PLACEHOLDER: &str = "  / for a command, @ for an Epic or Ticket";
 const COMPOSING: &str = "  your prompt, Enter sends it, Esc goes back";
 const SPINNER: [&str; 4] = ["|", "/", "—", "\\"];

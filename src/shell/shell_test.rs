@@ -4281,7 +4281,8 @@ fn a_ticket_added_mid_run_holds_the_summary_until_its_pr_opens() {
 }
 
 /// When the last Ticket merges and the Epic is done, a confirmation offers
-/// to close the Epic: yes runs bd close, no runs nothing.
+/// to close the Epic: yes comments each Ticket's PR on it and runs bd close
+/// with the Epic summary in the reason, no runs nothing.
 #[test]
 fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_no() {
     for (answer, want) in [('y', 1), ('n', 0)] {
@@ -4296,8 +4297,19 @@ fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_
         assert_eq!(question(&s), "close Epic hx Epic hx?");
         s.key(key(KeyCode::Char(answer)));
         assert_eq!(
+            w.called("bd comments add hx "),
+            vec!["bd comments add hx Every Ticket merged:\n- hx-1 Ticket hx-1: https://example.test/pr/hx-1"; want],
+            "answered {answer}"
+        );
+        let reason = "every Ticket merged\n\n\
+            1 PR · 0 parked\n\
+            1 Round · 0 Findings fixed · 0 skipped · 0 left on its PR · 0 parked\n\n\
+            hx-1 Ticket hx-1 ──────────────────────────────────────────────── merged\n  \
+            PR #hx-1  https://example.test/pr/hx-1\n  \
+            1 Round · 0 fixed · 0 skipped · 0 left";
+        assert_eq!(
             w.called("bd close hx "),
-            vec!["bd close hx --reason every Ticket merged"; want],
+            vec![format!("bd close hx --reason {reason}"); want],
             "answered {answer}"
         );
         assert!(!s.showing(), "the confirmation stayed");
@@ -4306,4 +4318,78 @@ fn the_close_confirmation_on_the_last_merge_runs_bd_close_on_yes_and_nothing_on_
         let sum = s.summary.as_ref().expect("no summary of the last run");
         assert!(sum.epic == "hx" && sum.tickets[0].merged);
     }
+}
+
+/// A Ticket closed by hand, not by its merged PR, shows as having no PR in
+/// the close comment, never its reason in the PR's place.
+#[test]
+fn the_close_comment_names_no_pr_for_a_ticket_closed_by_hand() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    w.lock().tickets.insert(
+        0,
+        BdTicket {
+            status: "closed".to_string(),
+            issue_type: "task".to_string(),
+            close_reason: "Done".to_string(),
+            ..BdTicket::new("hx-0")
+        },
+    );
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_end(&mut s);
+    s.key(key(KeyCode::Esc));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(
+        w.called("bd comments add hx "),
+        vec!["bd comments add hx Every Ticket merged:\n- hx-0 Ticket hx-0: no PR\n- hx-1 Ticket hx-1: https://example.test/pr/hx-1"]
+    );
+}
+
+/// A Parked Ticket closed by hand keeps its park reason in the close
+/// reason: the summary is of the run's State, which poll has cleared.
+#[test]
+fn the_close_reason_keeps_a_parked_tickets_reason() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().tickets[0].status = "closed".to_string();
+    write_file(
+        &w.repo.join(".harness/state.json"),
+        r#"{"epic":"hx","tickets":{"hx-1":{"status":"parked","stage":"implement","round":0,"reason":"went idle"}}}"#,
+    );
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_end(&mut s);
+    s.key(key(KeyCode::Esc));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    s.key(key(KeyCode::Char('y')));
+    let closed = w.called("bd close hx ");
+    assert!(
+        closed.len() == 1 && closed[0].contains("parked: went idle"),
+        "{closed:?}"
+    );
+}
+
+/// A failed close asks again: yes retries the comment only if it failed,
+/// then bd close, so the comment never goes in twice.
+#[test]
+fn a_failed_close_asks_again_and_never_comments_twice() {
+    let (w, _) = new_world(vec![BdTicket::new("hx-1")]);
+    w.lock().merged = true;
+    let mut s = shell(&w);
+    s.command("/start-epic hx");
+    await_end(&mut s);
+    s.key(key(KeyCode::Esc));
+    w.fail_once("bd comments add hx ", "comment failed");
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    assert!(w.called("bd close hx ").is_empty());
+    w.fail_once("bd close hx ", "close failed");
+    s.key(key(KeyCode::Char('y')));
+    assert_eq!(question(&s), "close Epic hx Epic hx?");
+    s.key(key(KeyCode::Char('y')));
+    // the failed comment and the one that went in; the failed close and the one that did
+    assert_eq!(w.called("bd comments add hx ").len(), 2);
+    assert_eq!(w.called("bd close hx ").len(), 2);
+    assert!(!s.showing(), "the confirmation stayed");
 }

@@ -123,8 +123,10 @@ pub(crate) enum Pending {
     Start { id: String, max: usize, epic: bool },
     /// Stop the run and exit.
     Exit,
-    /// Close the done Epic in bd.
-    Close(String),
+    /// Close the done Epic in bd: its completed State, which poll has
+    /// cleared from the Shell, for the summary in the reason, and whether
+    /// the close comment went in, so a retry never adds it twice.
+    Close { done: State, commented: bool },
 }
 
 /// What a Question is about, which decides its options and what an answer does.
@@ -498,7 +500,8 @@ impl Screen {
         } else if run.failed {
             self.state = load_state(&self.cfg.repo).unwrap_or_default();
         } else if run.epic {
-            let epic = std::mem::take(&mut self.state).epic; // Epic done: nothing to resume
+            let done = std::mem::take(&mut self.state); // Epic done: nothing to resume
+            let epic = done.epic.clone();
             if let Err(err) = self.state.save(&self.cfg.repo) {
                 self.notice(&format!("state not saved: {err}"), NOTICE_WINDOW);
             }
@@ -506,7 +509,13 @@ impl Screen {
                 Some(e) => format!("close Epic {epic} {}?", e.title),
                 None => format!("close Epic {epic}?"),
             };
-            self.confirm(&text, Pending::Close(epic.clone()));
+            self.confirm(
+                &text,
+                Pending::Close {
+                    done,
+                    commented: false,
+                },
+            );
             self.last_epic = epic;
         }
         self.reload_epics();
@@ -1102,19 +1111,14 @@ impl Screen {
                 }
             }
             (About::Confirm(_), 0) => {
-                let About::Confirm(pending) = self.questions.remove(0).about else {
+                let q = self.questions.remove(0);
+                let About::Confirm(pending) = q.about else {
                     unreachable!()
                 };
                 match pending {
                     Pending::Start { id, max, epic } => self.start(&id, max, epic, true),
                     Pending::Exit => self.quit(),
-                    Pending::Close(epic) => {
-                        let argv = ["bd", "close", &epic, "--reason", "every Ticket merged"];
-                        match self.cfg.tools.run(&self.cfg.repo, &argv) {
-                            Ok(_) => _ = self.reload_epics(),
-                            Err(err) => self.notice(&err.to_string(), NOTICE_WINDOW),
-                        }
-                    }
+                    Pending::Close { done, commented } => self.close_epic(&q.text, done, commented),
                 }
             }
             (About::Confirm(_), _) => {
@@ -1129,6 +1133,54 @@ impl Screen {
             _ => {}
         }
         self.hidden = false;
+    }
+
+    /// Closes the done Epic in bd, its summary in the reason, after a comment
+    /// that lists each Ticket with its PR, from the 'PR merged: <url>'
+    /// poll_merges closed it with; a Ticket closed any other way has no PR.
+    /// The summary is of the run's completed State, Parked Tickets and all.
+    /// A failure asks `text` again, to retry what has not gone in yet.
+    fn close_epic(&mut self, text: &str, done: State, commented: bool) {
+        let epic = done.epic.as_str();
+        let tickets = self
+            .epics
+            .iter()
+            .find(|e| e.id == epic)
+            .map(|e| &e.tickets[..]);
+        let lines: Vec<String> = tickets
+            .unwrap_or_default()
+            .iter()
+            .map(|t| {
+                let reason = &t.close_reason;
+                let pr = reason
+                    .strip_prefix("PR merged: ")
+                    .filter(|url| !url.is_empty())
+                    .unwrap_or("no PR");
+                format!("- {} {}: {pr}", t.id, t.title)
+            })
+            .collect();
+        let comment = format!("Every Ticket merged:\n{}", lines.join("\n"));
+        let (tools, repo) = (&self.cfg.tools, &self.cfg.repo);
+        let reason = match bd_list(repo, &**tools)
+            .and_then(|issues| Summary::build(repo, &issues, &done, epic))
+        {
+            Ok(summary) => format!("every Ticket merged\n\n{}", draw::plain(&summary)),
+            Err(_) => "every Ticket merged".to_string(), // no evidence: the reason alone
+        };
+        let mut closed = Ok(String::new());
+        if !commented {
+            closed = tools.run(repo, &["bd", "comments", "add", epic, &comment]);
+        }
+        let commented = closed.is_ok();
+        let closed =
+            closed.and_then(|_| tools.run(repo, &["bd", "close", epic, "--reason", &reason]));
+        match closed {
+            Ok(_) => _ = self.reload_epics(),
+            Err(err) => {
+                self.notice(&err.to_string(), NOTICE_WINDOW);
+                self.confirm(text, Pending::Close { done, commented });
+            }
+        }
     }
 
     /// Focuses the pane a Question is about; the Question stays.

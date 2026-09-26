@@ -29,6 +29,7 @@ pub(crate) struct BdTicket {
     pub(crate) issue_type: String,
     /// Ids that must be closed first.
     pub(crate) deps: Vec<String>,
+    pub(crate) close_reason: String,
 }
 
 impl BdTicket {
@@ -53,6 +54,7 @@ impl BdTicket {
             "issue_type": self.issue_type,
             "parent": EPIC,
             "dependencies": deps,
+            "close_reason": self.close_reason,
         })
     }
 }
@@ -472,7 +474,9 @@ impl World {
         }
         if cmd.starts_with("bd close") {
             if argv[2] != EPIC {
-                w.find(argv[2]).status = "closed".to_string();
+                let t = w.find(argv[2]);
+                t.status = "closed".to_string();
+                t.close_reason = flag_value(argv, "--reason").to_string();
             }
             return Ok(String::new());
         }
