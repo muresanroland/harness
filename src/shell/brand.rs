@@ -118,14 +118,15 @@ fn panes(lit: usize, (w, h): (usize, usize), (gx, gy): (usize, usize)) -> Vec<Li
 
 /// Row `y` of pane `i`. Lit, its edges are half and quarter blocks, so the
 /// fill stops mid-cell where an unlit pane's outline runs and both are one size.
+/// Both have square corners: a curve can't be filled in a cell.
 fn pane_row(i: usize, lit: bool, (w, h): (usize, usize), y: usize) -> Vec<Span<'static>> {
     let c = PANE_COLORS[i];
     let (edge, (l, m, r)) = match (lit, y) {
         (true, 0) => (true, ("▗", "▄", "▖")),
         (true, _) if y + 1 == h => (true, ("▝", "▀", "▘")),
         (true, _) => (false, ("▐", " ", "▌")),
-        (false, 0) => (true, ("╭", "─", "╮")),
-        (false, _) if y + 1 == h => (true, ("╰", "─", "╯")),
+        (false, 0) => (true, ("┌", "─", "┐")),
+        (false, _) if y + 1 == h => (true, ("└", "─", "┘")),
         (false, _) => (true, ("│", " ", "│")),
     };
     if edge {

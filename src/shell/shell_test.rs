@@ -285,12 +285,12 @@ fn the_idle_header_at_104x8_lights_the_bottom_right_pane_and_holds_the_cursor() 
         rows(&buf),
         [
             "╭────────────────────────────────────────────────────────────────────────────────────────────── ~/orqa ╮",
-            "│  ╭────╮ ╭────╮                                   ██                                                  │",
+            "│  ┌────┐ ┌────┐                                   ██                                                  │",
             "│  │    │ │    │   ▄█▀▀█▄ ██▄▀▀▀ ▄█▀▀██  ▀▀▀█▄ ▄█▀▀██ ▄█▀▀█▄ ██▀▀█▄ ▄█▀▀▀▀ ▄█▀▀█▄                      │",
-            "│  ╰────╯ ╰────╯   ██  ██ ██     ██  ██  ▄▄▄██ ██  ██ ██▄▄██ ██  ██ ██     ██▄▄██                      │",
-            "│  ╭────╮ ▗▄▄▄▄▖   ██  ██ ██     ██  ██ ██  ██ ██  ██ ██     ██  ██ ██     ██                          │",
+            "│  └────┘ └────┘   ██  ██ ██     ██  ██  ▄▄▄██ ██  ██ ██▄▄██ ██  ██ ██     ██▄▄██                      │",
+            "│  ┌────┐ ▗▄▄▄▄▖   ██  ██ ██     ██  ██ ██  ██ ██  ██ ██     ██  ██ ██     ██                          │",
             "│  │    │ ▐ ❯  ▌   ▀█▄▄█▀ ██     ▀█▄▄██ ▀█▄▄██ ▀█▄▄██ ▀█▄▄▄▄ ██  ██ ▀█▄▄▄▄ ▀█▄▄▄▄ █████                │",
-            "│  ╰────╯ ▝▀▀▀▀▘                     ██                                                                │",
+            "│  └────┘ ▝▀▀▀▀▘                     ██                                                                │",
             "╰────────────────────────────────────────────────────────────────────────────────────────── v1.3.0-dev ╯",
         ]
         .map(|r| r.replace("v1.3.0-dev", &s.version))
@@ -332,12 +332,12 @@ fn in_a_live_run_the_lit_pane_steps_clockwise_and_the_cursor_blinks_once_a_step(
     assert_eq!(
         mark(&buf),
         [
-            "▗▄▄▄▄▖ ╭────╮",
+            "▗▄▄▄▄▖ ┌────┐",
             "▐ ❯  ▌ │    │",
-            "▝▀▀▀▀▘ ╰────╯",
-            "╭────╮ ╭────╮",
+            "▝▀▀▀▀▘ └────┘",
+            "┌────┐ ┌────┐",
             "│    │ │    │",
-            "╰────╯ ╰────╯"
+            "└────┘ └────┘"
         ]
     );
     assert_eq!(buf[(4, 2)].bg, PANE_COLORS[0]);
@@ -352,12 +352,12 @@ fn in_a_live_run_the_lit_pane_steps_clockwise_and_the_cursor_blinks_once_a_step(
     assert_eq!(
         mark(&buf),
         [
-            "╭────╮ ▗▄▄▄▄▖",
+            "┌────┐ ▗▄▄▄▄▖",
             "│    │ ▐ ❯  ▌",
-            "╰────╯ ▝▀▀▀▀▘",
-            "╭────╮ ╭────╮",
+            "└────┘ ▝▀▀▀▀▘",
+            "┌────┐ ┌────┐",
             "│    │ │    │",
-            "╰────╯ ╰────╯"
+            "└────┘ └────┘"
         ]
     );
     assert_eq!(buf[(11, 2)].bg, PANE_COLORS[1]);
@@ -383,7 +383,7 @@ fn the_header_narrows_to_the_name_then_the_mark_and_folds_to_one_line_when_short
     // 87 down to 24: the plain name on the third row, its ▁▁ cursor after
     for w in [89, 26] {
         let buf = header(&s, w, 8);
-        assert_eq!(cols(&buf, 1, 0, 16), "│  ╭────╮ ╭────╮", "{w}");
+        assert_eq!(cols(&buf, 1, 0, 16), "│  ┌────┐ ┌────┐", "{w}");
         let name = "Orqadence ▁▁"
             .chars()
             .take(w as usize - 20)
@@ -395,7 +395,7 @@ fn the_header_narrows_to_the_name_then_the_mark_and_folds_to_one_line_when_short
     }
     // under 24: the mark alone
     let buf = header(&s, 25, 8);
-    assert_eq!(cols(&buf, 3, 0, 16), "│  ╰────╯ ╰────╯");
+    assert_eq!(cols(&buf, 3, 0, 16), "│  └────┘ └────┘");
     assert_eq!(cols(&buf, 3, 16, 24).trim(), "");
     // shorter than the box: one line, the name and the cursor
     let buf = header(&s, 40, 7);
